@@ -1,0 +1,209 @@
+This is not a demo-first project. It is a real application that must be designed for production, cloud deployment, low operational cost, and gradual evolution toward enterprise integration.
+
+
+CORE PRODUCT INTENT
+
+We are building a mobile-first field application for instrumentation / maintenance / automation technicians working inside industrial plants. The app is centered on the tag/instrument as the unit of work.
+
+The core workflow is:
+
+tag -> context -> calculation -> comparison with history -> guided diagnosis -> checklist / best practice / normative reference -> report -> supervisor approval -> sync / validation
+
+The product must help a field technician make decisions faster, document work with less friction, and continue operating even with poor or no connectivity.
+
+NON-NEGOTIABLE PRODUCT CONSTRAINTS
+
+1. Offline-first is mandatory.
+- The app must work inside industrial plants with unstable or absent internet.
+- Normative references, best practices, checklists, and the calculator must work offline.
+- Instrument history / machine history may require internet to download initially, but once downloaded it must remain available offline.
+- The technician should be able to download the working set before going to the field, typically around 5 to 10 instruments/jobs/tags.
+
+2. Sync-later behavior is mandatory.
+- The technician can perform the work, fill forms, attach photos, run checklists, record measurements, and generate reports offline.
+- When connectivity becomes available again, the app should sync reports, evidence, and pending actions.
+- AI diagnosis may depend on internet, so it should be treated as asynchronous or deferred when needed, never as a blocker to field execution.
+
+3. Never hard-block the user.
+- The system must alert about missing data, incomplete checklist items, missing history, weak evidence, or pending justification.
+- But the technician must still be able to proceed, generate a report, and submit it for approval.
+- Missing data should become visible risk/context, not a dead end.
+
+4. Production-ready architecture is mandatory.
+- Do not design this as a prototype-only architecture.
+- The architecture must support future growth, observability, security, auditability, versioned contracts, and eventual integration with larger enterprise systems.
+- Early releases may use mocked or seeded data, but the data contracts must already be shaped as if future SAP / Maximo / TOTVS integrations are expected.
+- All mocked data must be integration-friendly, realistic, and aligned with enterprise patterns such as structured APIs, versioned schemas, import/export compatibility, and traceable identifiers.
+
+5. Do not over-concretize too early.
+- Use BMAD correctly: guide, explore, compare, and converge.
+- Do not lock the project too early into one rigid implementation without first evaluating tradeoffs.
+- Provide options when architecture or product direction is still open, then recommend a direction based on constraints.
+- We want strong guidance, not premature rigidity.
+
+6. This app is not only for 4–20 mA instruments.
+- The product must support multiple major instrument families and test patterns over time.
+- Example: loop test curves from 0–100% for analog instruments, valve ON/OFF tests, sealing tests, travel tests, positioners, switches, transmitters, and other major industrial instrumentation categories.
+- Each instrument family may require its own calculation logic, checklist structure, expected test behavior, and historical visualization model.
+- The system must be designed to support this variability from the beginning.
+
+7. Normative and best-practice content must be lightweight in the UX.
+- Do not dump full standards into the main flow.
+- Show concise operational guidance, why the step matters, what it rules out, and what normative/procedural reference it comes from.
+- The app should present practical field guidance first, with deeper reference behind drill-downs if needed.
+
+BASIC ACCESS CONTROL AND APPROVAL ROLES
+
+The application must include simple role-based access control from the beginning.
+
+Initial roles:
+- Technician
+- Supervisor
+- Manager
+
+Role expectations:
+- Technicians create, edit, save offline, and submit technical reports and evidence.
+- Technicians do not perform final approval.
+- Supervisors review submitted reports, approve them, return them for clarification/complementation, or escalate them when the case presents higher operational risk, uncertainty, or impact.
+- Managers act as a higher approval level for escalated cases.
+- A report escalated to management should only become fully approved after manager approval.
+
+Approval flow principles:
+- Standard case: Technician submits -> Supervisor approves or returns.
+- Higher-risk case: Technician submits -> Supervisor escalates to Manager -> Manager approves or returns -> final outcome is recorded.
+- The system should support comments, justification, and decision traceability at each approval step.
+- Approval history must be auditable, simple, and clear.
+
+Access control principles:
+- Keep access control basic and practical, not overengineered.
+- Use simple role-based permissions, with room for future expansion.
+- The architecture must support authenticated users, role assignment, approval authority, and audit trail from the start.
+- Offline behavior must remain usable: the technician can continue working offline, while approval actions that require server-side validation can sync when connectivity is restored.
+
+AI / DIAGNOSIS PRINCIPLES
+
+- The diagnosis feature should be architected as assistive, not authoritative.
+- It should use report data, historical context, measured values, checklist results, and evidence already collected by the technician.
+- It must be cheap, simple, and replaceable. Do not assume one provider too early.
+- Treat AI as a pluggable external service behind a clean boundary.
+- The user’s consumer subscriptions must never be assumed to be a valid production backend.
+- If internet is not available, the app should continue normally and queue the AI diagnosis request or mark it as pending.
+- Supervisor review remains part of the workflow even if AI produces an analysis.
+
+BMAD OPERATING MODE
+
+Always use BMAD best practices.
+
+Preferred workflow:
+1. Start with BMAD party mode for exploration and critical discussion.
+2. Let BMAD debate the best product, architecture, sync, domain, and delivery options.
+3. Then refine if needed:
+   - Product Brief
+   - PRD
+   - Architecture
+   - Epics
+   - Stories
+4. Run readiness / gap analysis before implementation.
+5. Only after artifacts are coherent should we move into implementation story by story.
+
+We'll analyze the BMAD experience and verify it.
+
+When discussing options, evaluate them against:
+- offline-first reliability
+- field usability
+- production readiness
+- cost simplicity
+- maintainability
+- future enterprise integration
+- observability and auditability
+- low-friction sync behavior
+- support for multiple instrument families
+- safe handling of incomplete data
+
+CODEX / CLAUDE COLLABORATION RULES
+
+We may use Codex or Claude as the implementation executor.
+Therefore:
+- Keep implementation prompts tool-agnostic when possible.
+- Write prompts that work well for both Codex and Claude.
+- When a prompt must be tool-specific, clearly state why.
+- Use BMAD as the thinking/planning/QA/Dev structured by Codex/Claude as the execution layer.
+
+PROJECT DELIVERABLE EXPECTATIONS
+
+You must help me verify if BMAD+Codex/Claude is doing the following:
+- a real backlog
+- a production-minded architecture
+- realistic data models
+- sync-aware workflows
+- offline-capable UX
+- report generation flow
+- supervisor approval flow
+- AI integration boundary
+- deploy strategy for a cheap and simple cloud setup
+- implementation-ready development prompts for VS Code
+
+Do not optimize for theoretical elegance over field practicality.
+
+ARCHITECTURE GUARDRAILS
+
+Keep these architectural principles in mind:
+- local-first data access
+- resilient offline storage
+- deterministic sync behavior
+- background retry / queueing for uploads and API calls
+- conflict-aware but low-friction synchronization
+- versioned schemas and contracts
+- evidence and report traceability
+- secure attachment handling
+- realistic identity / approval / audit considerations
+- modular domain model for different instrument types and test protocols
+- future-ready integration boundaries for ERP/EAM/CMMS systems
+
+Avoid proposing fragile architectures that only work online.
+
+DATA AND DOMAIN MODELING GUARDRAILS
+
+Model the domain in a way that can later map to industrial enterprise systems.
+This includes:
+- tag / asset identity
+- instrument family / subtype
+- measurement variable
+- signal type
+- range, unit, tolerance
+- procedure / checklist references
+- history events
+- test execution records
+- evidence attachments
+- report lifecycle
+- approval lifecycle
+- sync state
+- justification for missing data or skipped items
+
+The data model must support:
+- multiple test patterns by instrument type
+- historical trend visualization
+- pass/fail logic
+- calculated errors / offsets / deviations
+- structured reports that remain useful even when incomplete
+
+USER EXPERIENCE PRINCIPLES
+
+- The app should feel fast, clear, and field-usable.
+- It should reduce cognitive switching.
+- It should explain the “why” behind the next step without becoming a training manual wall of text.
+- It should highlight missing context without punishing the user.
+- Reports should be a consequence of the workflow, not a separate bureaucratic burden.
+
+
+IMPORTANT PRIORITY ORDER
+
+When making decisions, follow this priority:
+1. My latest instructions in chat
+2. Real production viability
+3. Offline-first field usability
+4. BMAD best practices
+5. MVP PDF baseline
+6. Speed of implementation
+
+If something in the MVP PDF is intentionally narrow but my latest instruction expands it, follow my latest instruction and explain the impact.
