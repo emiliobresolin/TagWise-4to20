@@ -1,9 +1,9 @@
 # TagWise PRD
 
-Status: PRD baseline reviewed and ready for Architecture
+Status: Approved PRD baseline
 
 Source of truth:
-- Approved Product Brief in this chat
+- `_bmad-output/planning-artifacts/product-brief.md`
 - `docs/MVP/TagWise_Project_Instructions.txt`
 - `docs/MVP/TagWise.pdf`
 
