@@ -8,9 +8,11 @@ const tokenCodec_1 = require("./tokenCodec");
 class AuthService {
     repository;
     config;
-    constructor(repository, config) {
+    auditEvents;
+    constructor(repository, config, auditEvents) {
         this.repository = repository;
         this.config = config;
+        this.auditEvents = auditEvents;
     }
     async ensureSeedUsers() {
         const entries = Object.values(this.config.seedUsers);
@@ -26,7 +28,7 @@ class AuthService {
             });
         }
     }
-    async loginConnected(request) {
+    async loginConnected(request, context) {
         const user = await this.repository.findByEmail(request.email);
         if (!user) {
             throw new model_1.AuthenticationError('Invalid email or password.');
@@ -38,7 +40,7 @@ class AuthService {
         if (!validPassword) {
             throw new model_1.AuthenticationError('Invalid email or password.');
         }
-        return {
+        const session = {
             user: {
                 id: user.id,
                 email: user.email,
@@ -47,14 +49,28 @@ class AuthService {
             },
             tokens: (0, tokenCodec_1.issueTokenPair)(user, user.sessionVersion, this.config),
         };
+        await this.auditEvents.recordEvent({
+            actorId: user.id,
+            actorRole: user.role,
+            actionType: 'auth.login.connected',
+            targetObjectType: 'user-session',
+            targetObjectId: user.id,
+            correlationId: context.correlationId,
+            priorState: 'signed_out',
+            nextState: 'connected',
+            metadata: {
+                email: user.email,
+            },
+        });
+        return session;
     }
-    async refreshConnected(refreshToken) {
+    async refreshConnected(refreshToken, context) {
         const claims = (0, tokenCodec_1.verifyRefreshToken)(refreshToken, this.config);
         const user = await this.repository.findById(claims.sub);
         if (!user || user.sessionVersion !== claims.ver) {
             throw new model_1.AuthenticationError('Session is no longer valid.');
         }
-        return {
+        const session = {
             user: {
                 id: user.id,
                 email: user.email,
@@ -63,6 +79,20 @@ class AuthService {
             },
             tokens: (0, tokenCodec_1.issueTokenPair)(user, user.sessionVersion, this.config),
         };
+        await this.auditEvents.recordEvent({
+            actorId: user.id,
+            actorRole: user.role,
+            actionType: 'auth.refresh.connected',
+            targetObjectType: 'user-session',
+            targetObjectId: user.id,
+            correlationId: context.correlationId,
+            priorState: 'connected',
+            nextState: 'connected',
+            metadata: {
+                email: user.email,
+            },
+        });
+        return session;
     }
 }
 exports.AuthService = AuthService;

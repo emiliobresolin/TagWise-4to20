@@ -30,6 +30,31 @@ const postgresMigrations = [
       );
     `,
     },
+    {
+        id: '0003_audit_events',
+        sql: `
+      CREATE TABLE IF NOT EXISTS audit_events (
+        id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        actor_role TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        target_object_type TEXT NOT NULL,
+        target_object_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        correlation_id TEXT NOT NULL,
+        prior_state TEXT,
+        next_state TEXT,
+        comment TEXT,
+        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_events_target
+      ON audit_events (target_object_type, target_object_id, occurred_at ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_audit_events_correlation
+      ON audit_events (correlation_id);
+    `,
+    },
 ];
 async function runPostgresMigrations(database) {
     const migrationTableExists = await database.query(`SELECT COUNT(*) AS count

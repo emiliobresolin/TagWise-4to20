@@ -6,6 +6,8 @@ Story 1.3 adds connected authentication, secure token storage, offline session r
 
 Story 1.4 adds user-partitioned local draft, evidence metadata, and queue placeholders plus a user-owned sandbox media path baseline.
 
+Story 1.5 adds baseline mobile diagnostics capture backed by SQLite so forced runtime errors can be stored with device and session context.
+
 ## Commands
 - `npm start`
 - `npm run android`
@@ -38,3 +40,8 @@ Optional environment:
 - the app restores the same cached user session
 - session mode shows `offline`
 - review actions remain unavailable from the cached offline session
+12. Return to the `Foundation` route and tap `Capture diagnostic error`.
+13. Expected result after diagnostics capture:
+- `Captured errors` increments
+- `Latest mobile diagnostic` shows `Forced mobile diagnostics capture`
+- the stored diagnostic remains available after fully closing and reopening the app

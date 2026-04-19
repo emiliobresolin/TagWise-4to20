@@ -17,6 +17,7 @@ import {
   type BootstrapDemoRecord,
   type DatabaseMigrationSummary,
   type LocalOwnershipProofSnapshot,
+  type MobileDiagnosticsSnapshot,
   type ShellRoute,
 } from '../features/app-shell/model';
 import {
@@ -26,6 +27,7 @@ import {
 import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/auth/authApiClient';
 import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
+import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
 
@@ -37,9 +39,11 @@ type BootstrapStatus =
       runtime: LocalRuntime;
       route: ShellRoute;
       demoRecord: BootstrapDemoRecord;
+      diagnostics: MobileDiagnosticsSnapshot;
       migrationSummary: DatabaseMigrationSummary;
       databaseName: string;
       sessionController: SessionController;
+      errorCapture: MobileErrorCaptureService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
@@ -75,12 +79,14 @@ export function TagWiseApp() {
           authSessionCache: runtime.repositories.authSessionCache,
           localWorkState: runtime.repositories.localWorkState,
         });
+        const errorCapture = new MobileErrorCaptureService(runtime.repositories.mobileRuntimeErrors);
         const restoredSession = await sessionController.restoreSession();
         const session =
           restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null;
         const localOwnership = session
           ? await loadLocalOwnershipProof(runtime, session)
           : null;
+        const diagnostics = await errorCapture.getSnapshot();
 
         if (!isActive) {
           await runtime.database.closeAsync?.();
@@ -92,9 +98,11 @@ export function TagWiseApp() {
           runtime,
           route: runtime.snapshot.shellRoute,
           demoRecord: runtime.snapshot.demoRecord,
+          diagnostics,
           migrationSummary: runtime.snapshot.migrationSummary,
           databaseName: runtime.snapshot.databaseName,
           sessionController,
+          errorCapture,
           session,
           localOwnership,
           authBusy: false,
@@ -240,6 +248,54 @@ export function TagWiseApp() {
               authBusy: false,
               authMessage:
                 error instanceof Error ? error.message : 'Connected authentication failed.',
+            },
+      );
+    }
+  }
+
+  async function handleCaptureDiagnosticError() {
+    if (status.type !== 'ready') {
+      return;
+    }
+
+    try {
+      const captured = await readyState.errorCapture.captureError(
+        new Error('Forced mobile diagnostics capture'),
+        {
+          session: readyState.session
+            ? {
+                userId: readyState.session.userId,
+                role: readyState.session.role,
+                connectionMode: readyState.session.connectionMode,
+              }
+            : null,
+          shellRoute: readyState.route,
+          apiBaseUrl: getDefaultAuthApiBaseUrl(),
+          context: {
+            source: 'story-1.5-shell-proof',
+            databaseName: readyState.databaseName,
+          },
+        },
+      );
+      const diagnostics = await readyState.errorCapture.getSnapshot();
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              diagnostics,
+              authMessage: `Captured local diagnostic event ${captured.id}.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage:
+                error instanceof Error ? error.message : 'Mobile diagnostics capture failed.',
             },
       );
     }
@@ -443,6 +499,29 @@ export function TagWiseApp() {
 
                 <Text style={styles.helperText}>
                   Existing Story 1.1 proof data remains local-first and persists across restart.
+                </Text>
+
+                <View style={styles.metricGrid}>
+                  <MetricCard
+                    label="Captured errors"
+                    value={String(readyState.diagnostics.capturedErrorCount)}
+                  />
+                  <MetricCard
+                    label="Latest error route"
+                    value={readyState.diagnostics.latestErrorShellRoute ?? 'none'}
+                  />
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void handleCaptureDiagnosticError()}
+                  style={styles.secondaryButton}
+                >
+                  <Text style={styles.secondaryButtonLabel}>Capture diagnostic error</Text>
+                </Pressable>
+
+                <Text style={styles.helperText}>
+                  Latest mobile diagnostic: {readyState.diagnostics.latestErrorMessage ?? 'none'}.
                 </Text>
               </View>
             ) : (

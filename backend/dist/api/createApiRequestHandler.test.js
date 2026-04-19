@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const vitest_1 = require("vitest");
 const pg_mem_1 = require("pg-mem");
 const createApiRequestHandler_1 = require("./createApiRequestHandler");
+const auditEventRepository_1 = require("../modules/audit/auditEventRepository");
+const auditEventService_1 = require("../modules/audit/auditEventService");
 const authRepository_1 = require("../modules/auth/authRepository");
 const authService_1 = require("../modules/auth/authService");
 const serviceRuntime_1 = require("../runtime/serviceRuntime");
@@ -47,7 +49,8 @@ const runtimes = [];
         const adapter = database.adapters.createPg();
         const pool = new adapter.Pool();
         await (0, migrations_1.runPostgresMigrations)(pool);
-        const authService = new authService_1.AuthService(new authRepository_1.AuthRepository(pool), authConfig);
+        const auditRepository = new auditEventRepository_1.AuditEventRepository(pool);
+        const authService = new authService_1.AuthService(new authRepository_1.AuthRepository(pool), authConfig, new auditEventService_1.AuditEventService(auditRepository));
         await authService.ensureSeedUsers();
         const runtime = (0, serviceRuntime_1.createServiceRuntime)({
             serviceName: 'api-service',
@@ -61,13 +64,17 @@ const runtimes = [];
         const { port } = await runtime.start();
         const login = await fetch(`http://127.0.0.1:${port}/auth/login`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+                'content-type': 'application/json',
+                'x-correlation-id': 'corr-api-login',
+            },
             body: JSON.stringify({
                 email: authConfig.seedUsers.supervisor.email,
                 password: authConfig.seedUsers.supervisor.password,
             }),
         });
         (0, vitest_1.expect)(login.status).toBe(200);
+        (0, vitest_1.expect)(login.headers.get('x-correlation-id')).toBe('corr-api-login');
         const loginBody = (await login.json());
         (0, vitest_1.expect)(loginBody.user.role).toBe('supervisor');
         const refresh = await fetch(`http://127.0.0.1:${port}/auth/refresh`, {
@@ -79,6 +86,15 @@ const runtimes = [];
         });
         (0, vitest_1.expect)(refresh.status).toBe(200);
         (0, vitest_1.expect)((await refresh.json()).user.role).toBe('supervisor');
+        const metrics = await fetch(`http://127.0.0.1:${port}/metrics`);
+        const metricsBody = (await metrics.json());
+        (0, vitest_1.expect)(metrics.status).toBe(200);
+        (0, vitest_1.expect)(metricsBody.requestCount).toBeGreaterThanOrEqual(2);
+        (0, vitest_1.expect)(metricsBody.errorRate).toBe(0);
+        const auditEvents = await auditRepository.listEventsByTarget('user-session', loginBody.user.id);
+        (0, vitest_1.expect)(auditEvents).toHaveLength(2);
+        (0, vitest_1.expect)(auditEvents[0]?.correlationId).toBe('corr-api-login');
+        (0, vitest_1.expect)(auditEvents[1]?.correlationId).toBeTruthy();
         await pool.end();
     });
 });

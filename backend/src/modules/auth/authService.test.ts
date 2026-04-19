@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 
 import { runPostgresMigrations } from '../../platform/db/migrations';
+import { AuditEventRepository } from '../audit/auditEventRepository';
+import { AuditEventService } from '../audit/auditEventService';
 import { AuthRepository } from './authRepository';
 import { AuthService } from './authService';
 
@@ -38,17 +40,25 @@ describe('AuthService', () => {
     const pool = new adapter.Pool();
     await runPostgresMigrations(pool);
 
-    const service = new AuthService(new AuthRepository(pool), authConfig);
+    const auditRepository = new AuditEventRepository(pool);
+    const service = new AuthService(
+      new AuthRepository(pool),
+      authConfig,
+      new AuditEventService(auditRepository),
+    );
     await service.ensureSeedUsers();
 
     const session = await service.loginConnected({
       email: authConfig.seedUsers.technician.email,
       password: authConfig.seedUsers.technician.password,
+    }, {
+      correlationId: 'corr-login-test',
     });
 
     expect(session.user.role).toBe('technician');
     expect(session.tokens.accessToken).toContain('.');
     expect(session.tokens.refreshToken).toContain('.');
+    expect(await auditRepository.listEventsByTarget('user-session', session.user.id)).toHaveLength(1);
 
     await pool.end();
   });
@@ -59,17 +69,27 @@ describe('AuthService', () => {
     const pool = new adapter.Pool();
     await runPostgresMigrations(pool);
 
-    const service = new AuthService(new AuthRepository(pool), authConfig);
+    const auditRepository = new AuditEventRepository(pool);
+    const service = new AuthService(
+      new AuthRepository(pool),
+      authConfig,
+      new AuditEventService(auditRepository),
+    );
     await service.ensureSeedUsers();
     const login = await service.loginConnected({
       email: authConfig.seedUsers.supervisor.email,
       password: authConfig.seedUsers.supervisor.password,
+    }, {
+      correlationId: 'corr-refresh-login',
     });
 
-    const refreshed = await service.refreshConnected(login.tokens.refreshToken);
+    const refreshed = await service.refreshConnected(login.tokens.refreshToken, {
+      correlationId: 'corr-refresh',
+    });
 
     expect(refreshed.user.role).toBe('supervisor');
     expect(refreshed.tokens.refreshTokenExpiresAt).toBeTruthy();
+    expect(await auditRepository.listEventsByTarget('user-session', refreshed.user.id)).toHaveLength(2);
 
     await pool.end();
   });

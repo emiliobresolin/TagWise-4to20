@@ -4,6 +4,7 @@ import { AuthSessionCacheRepository } from './repositories/authSessionCacheRepos
 import { AppPreferencesRepository } from './repositories/appPreferencesRepository';
 import { BootstrapDemoRepository } from './repositories/bootstrapDemoRepository';
 import { LocalWorkStateRepository } from './repositories/localWorkStateRepository';
+import { MobileRuntimeErrorRepository } from './repositories/mobileRuntimeErrorRepository';
 import { UserPartitionedLocalStoreFactory } from './repositories/userPartitionedLocalStoreFactory';
 import { runMigrations } from './sqlite/migrations';
 import type { LocalDatabase } from './sqlite/types';
@@ -18,6 +19,7 @@ export interface LocalRuntime {
     bootstrapDemo: BootstrapDemoRepository;
     authSessionCache: AuthSessionCacheRepository;
     localWorkState: LocalWorkStateRepository;
+    mobileRuntimeErrors: MobileRuntimeErrorRepository;
     userPartitions: UserPartitionedLocalStoreFactory;
   };
 }
@@ -34,6 +36,7 @@ export async function bootstrapLocalDatabase(
   const bootstrapDemo = new BootstrapDemoRepository(database);
   const authSessionCache = new AuthSessionCacheRepository(database);
   const localWorkState = new LocalWorkStateRepository(database);
+  const mobileRuntimeErrors = new MobileRuntimeErrorRepository(database);
   const userPartitions = new UserPartitionedLocalStoreFactory(database, sandboxBoundary);
 
   const demoRecord = await bootstrapDemo.recordLaunch();
@@ -52,6 +55,7 @@ export async function bootstrapLocalDatabase(
       bootstrapDemo,
       authSessionCache,
       localWorkState,
+      mobileRuntimeErrors,
       userPartitions,
     },
   };

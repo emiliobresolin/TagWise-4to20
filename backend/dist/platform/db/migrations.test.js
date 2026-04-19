@@ -10,8 +10,12 @@ const migrations_1 = require("./migrations");
         const pool = new adapter.Pool();
         const summary = await (0, migrations_1.runPostgresMigrations)(pool);
         const rows = (await pool.query(`SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'service_bootstrap_checks';`));
-        (0, vitest_1.expect)(summary.appliedMigrationIds).toEqual(['0001_service_foundation', '0002_auth_users']);
-        (0, vitest_1.expect)(summary.currentSchemaVersion).toBe(2);
+        (0, vitest_1.expect)(summary.appliedMigrationIds).toEqual([
+            '0001_service_foundation',
+            '0002_auth_users',
+            '0003_audit_events',
+        ]);
+        (0, vitest_1.expect)(summary.currentSchemaVersion).toBe(3);
         (0, vitest_1.expect)(Number(rows.rows[0]?.count ?? 0)).toBe(1);
         await pool.end();
     });
@@ -23,7 +27,7 @@ const migrations_1 = require("./migrations");
         const summary = await (0, migrations_1.runPostgresMigrations)(pool);
         const rows = (await pool.query('SELECT COUNT(*) AS count FROM schema_migrations;'));
         (0, vitest_1.expect)(summary.appliedMigrationIds).toEqual([]);
-        (0, vitest_1.expect)(Number(rows.rows[0]?.count ?? 0)).toBe(2);
+        (0, vitest_1.expect)(Number(rows.rows[0]?.count ?? 0)).toBe(3);
         await pool.end();
     });
 });

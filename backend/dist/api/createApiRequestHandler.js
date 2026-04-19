@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createApiRequestHandler = createApiRequestHandler;
 const model_1 = require("../modules/auth/model");
 function createApiRequestHandler(dependencies) {
-    return async function handleRequest(request, response) {
+    return async function handleRequest(request, response, context) {
         const method = request.method ?? 'GET';
         const url = request.url ?? '/';
         if (method === 'POST' && url === '/auth/login') {
@@ -16,10 +16,19 @@ function createApiRequestHandler(dependencies) {
                 const session = await dependencies.authService.loginConnected({
                     email: body.email,
                     password: body.password,
+                }, {
+                    correlationId: context.correlationId,
+                });
+                context.logger.info('auth.login.succeeded', {
+                    actorId: session.user.id,
+                    actorRole: session.user.role,
                 });
                 writeJson(response, 200, session);
             }
             catch (error) {
+                context.logger.warn('auth.login.failed', {
+                    statusCode: error instanceof model_1.AuthenticationError ? error.statusCode : 500,
+                });
                 writeAuthError(response, error);
             }
             return true;
@@ -31,10 +40,19 @@ function createApiRequestHandler(dependencies) {
                 return true;
             }
             try {
-                const session = await dependencies.authService.refreshConnected(body.refreshToken);
+                const session = await dependencies.authService.refreshConnected(body.refreshToken, {
+                    correlationId: context.correlationId,
+                });
+                context.logger.info('auth.refresh.succeeded', {
+                    actorId: session.user.id,
+                    actorRole: session.user.role,
+                });
                 writeJson(response, 200, session);
             }
             catch (error) {
+                context.logger.warn('auth.refresh.failed', {
+                    statusCode: error instanceof model_1.AuthenticationError ? error.statusCode : 500,
+                });
                 writeAuthError(response, error);
             }
             return true;

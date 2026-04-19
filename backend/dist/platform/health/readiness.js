@@ -3,14 +3,18 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ReadinessState = void 0;
 class ReadinessState {
     snapshotState;
-    constructor(serviceName, role, checks) {
+    constructor(serviceName, role, checks, metrics) {
         this.snapshotState = {
             serviceName,
             role,
             startedAt: new Date().toISOString(),
             ready: false,
             checks: Object.fromEntries(checks.map((check) => [check, 'pending'])),
+            metrics,
         };
+    }
+    updateMetrics(metrics) {
+        this.snapshotState.metrics = metrics;
     }
     markCheckReady(check) {
         this.snapshotState.checks[check] = 'ready';
@@ -26,6 +30,7 @@ class ReadinessState {
         return {
             ...this.snapshotState,
             checks: { ...this.snapshotState.checks },
+            metrics: { ...this.snapshotState.metrics },
         };
     }
 }

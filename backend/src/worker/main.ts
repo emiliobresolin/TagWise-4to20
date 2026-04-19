@@ -1,11 +1,18 @@
 import { loadServiceEnvironment } from '../config/env';
 import { createPostgresPool, verifyPostgresConnectivity } from '../platform/db/postgres';
+import { generateCorrelationId } from '../platform/diagnostics/correlation';
+import { createStructuredLogger } from '../platform/diagnostics/structuredLogger';
 import { createS3ObjectStorageClient } from '../platform/storage/objectStorage';
 import { createServiceRuntime } from '../runtime/serviceRuntime';
 
 async function main() {
   const environment = loadServiceEnvironment('worker');
   const pool = createPostgresPool(environment);
+  const logger = createStructuredLogger({
+    serviceName: 'worker-service',
+    serviceRole: 'worker',
+    correlationId: generateCorrelationId(),
+  });
 
   // Story 1.2 wires object storage into the worker boundary without starting later media flows yet.
   createS3ObjectStorageClient(environment.objectStorage);
@@ -16,22 +23,14 @@ async function main() {
     host: environment.host,
     port: environment.port,
     verifyDatabaseReadiness: () => verifyPostgresConnectivity(pool),
+    logger,
   });
 
   const { port } = await runtime.start();
-  console.log(
-    JSON.stringify(
-      {
-        level: 'info',
-        event: 'worker.boot.completed',
-        serviceName: 'worker-service',
-        port,
-        readiness: runtime.snapshot(),
-      },
-      null,
-      2,
-    ),
-  );
+  logger.info('worker.boot.completed', {
+    port,
+    readiness: runtime.snapshot(),
+  });
 
   registerShutdown(async () => {
     await runtime.stop();
@@ -57,7 +56,10 @@ function registerShutdown(shutdown: () => Promise<void>) {
 }
 
 void main().catch((error) => {
-  const message = error instanceof Error ? error.message : 'Unknown worker bootstrap error';
-  console.error(JSON.stringify({ level: 'error', event: 'worker.boot.failed', message }, null, 2));
+  createStructuredLogger({
+    serviceName: 'worker-service',
+    serviceRole: 'worker',
+    correlationId: generateCorrelationId(),
+  }).error('worker.boot.failed', error);
   process.exitCode = 1;
 });

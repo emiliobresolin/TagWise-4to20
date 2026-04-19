@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { AuthConfig } from '../../config/env';
 import { AuthenticationError, type AuthSessionPayload } from './model';
 import { AuthRepository } from './authRepository';
+import { AuditEventService } from '../audit/auditEventService';
 import { hashPassword, verifyPassword } from './passwordCodec';
 import { issueTokenPair, verifyRefreshToken } from './tokenCodec';
 
@@ -15,6 +16,7 @@ export class AuthService {
   constructor(
     private readonly repository: AuthRepository,
     private readonly config: AuthConfig,
+    private readonly auditEvents: AuditEventService,
   ) {}
 
   async ensureSeedUsers(): Promise<void> {
@@ -34,7 +36,10 @@ export class AuthService {
     }
   }
 
-  async loginConnected(request: ConnectedLoginRequest): Promise<AuthSessionPayload> {
+  async loginConnected(
+    request: ConnectedLoginRequest,
+    context: { correlationId: string },
+  ): Promise<AuthSessionPayload> {
     const user = await this.repository.findByEmail(request.email);
     if (!user) {
       throw new AuthenticationError('Invalid email or password.');
@@ -49,7 +54,7 @@ export class AuthService {
       throw new AuthenticationError('Invalid email or password.');
     }
 
-    return {
+    const session = {
       user: {
         id: user.id,
         email: user.email,
@@ -58,9 +63,28 @@ export class AuthService {
       },
       tokens: issueTokenPair(user, user.sessionVersion, this.config),
     };
+
+    await this.auditEvents.recordEvent({
+      actorId: user.id,
+      actorRole: user.role,
+      actionType: 'auth.login.connected',
+      targetObjectType: 'user-session',
+      targetObjectId: user.id,
+      correlationId: context.correlationId,
+      priorState: 'signed_out',
+      nextState: 'connected',
+      metadata: {
+        email: user.email,
+      },
+    });
+
+    return session;
   }
 
-  async refreshConnected(refreshToken: string): Promise<AuthSessionPayload> {
+  async refreshConnected(
+    refreshToken: string,
+    context: { correlationId: string },
+  ): Promise<AuthSessionPayload> {
     const claims = verifyRefreshToken(refreshToken, this.config);
     const user = await this.repository.findById(claims.sub);
 
@@ -68,7 +92,7 @@ export class AuthService {
       throw new AuthenticationError('Session is no longer valid.');
     }
 
-    return {
+    const session = {
       user: {
         id: user.id,
         email: user.email,
@@ -77,6 +101,22 @@ export class AuthService {
       },
       tokens: issueTokenPair(user, user.sessionVersion, this.config),
     };
+
+    await this.auditEvents.recordEvent({
+      actorId: user.id,
+      actorRole: user.role,
+      actionType: 'auth.refresh.connected',
+      targetObjectType: 'user-session',
+      targetObjectId: user.id,
+      correlationId: context.correlationId,
+      priorState: 'connected',
+      nextState: 'connected',
+      metadata: {
+        email: user.email,
+      },
+    });
+
+    return session;
   }
 }
 

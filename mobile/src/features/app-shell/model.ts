@@ -34,3 +34,10 @@ export interface LocalOwnershipProofSnapshot {
   queueItemCount: number;
   latestMediaRelativePath: string | null;
 }
+
+export interface MobileDiagnosticsSnapshot {
+  capturedErrorCount: number;
+  latestErrorId: string | null;
+  latestErrorMessage: string | null;
+  latestErrorShellRoute: ShellRoute | null;
+}

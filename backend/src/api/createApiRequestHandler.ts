@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { AuthenticationError } from '../modules/auth/model';
 import type { AuthService } from '../modules/auth/authService';
+import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
 export interface ApiRequestHandlerDependencies {
   authService: AuthService;
@@ -11,6 +12,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
   return async function handleRequest(
     request: IncomingMessage,
     response: ServerResponse,
+    context: HttpRequestContext,
   ): Promise<boolean> {
     const method = request.method ?? 'GET';
     const url = request.url ?? '/';
@@ -26,9 +28,19 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
         const session = await dependencies.authService.loginConnected({
           email: body.email,
           password: body.password,
+        }, {
+          correlationId: context.correlationId,
+        });
+        context.logger.info('auth.login.succeeded', {
+          actorId: session.user.id,
+          actorRole: session.user.role,
         });
         writeJson(response, 200, session);
       } catch (error) {
+        context.logger.warn('auth.login.failed', {
+          statusCode:
+            error instanceof AuthenticationError ? error.statusCode : 500,
+        });
         writeAuthError(response, error);
       }
 
@@ -43,9 +55,19 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       }
 
       try {
-        const session = await dependencies.authService.refreshConnected(body.refreshToken);
+        const session = await dependencies.authService.refreshConnected(body.refreshToken, {
+          correlationId: context.correlationId,
+        });
+        context.logger.info('auth.refresh.succeeded', {
+          actorId: session.user.id,
+          actorRole: session.user.role,
+        });
         writeJson(response, 200, session);
       } catch (error) {
+        context.logger.warn('auth.refresh.failed', {
+          statusCode:
+            error instanceof AuthenticationError ? error.statusCode : 500,
+        });
         writeAuthError(response, error);
       }
 

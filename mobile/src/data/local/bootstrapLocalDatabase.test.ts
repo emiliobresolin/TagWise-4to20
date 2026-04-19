@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createNodeAppSandboxBoundary } from '../../../tests/helpers/createNodeAppSandboxBoundary';
 import { createNodeSqliteDatabase } from '../../../tests/helpers/createNodeSqliteDatabase';
+import { MobileErrorCaptureService } from '../../features/diagnostics/mobileErrorCapture';
 import { bootstrapLocalDatabase } from './bootstrapLocalDatabase';
 
 const createdDirectories: string[] = [];
@@ -37,8 +38,22 @@ describe('bootstrapLocalDatabase', () => {
     expect(firstRuntime.snapshot.demoRecord.manualWriteCount).toBe(0);
     expect(firstRuntime.snapshot.shellRoute).toBe('foundation');
 
+    const diagnostics = new MobileErrorCaptureService(firstRuntime.repositories.mobileRuntimeErrors, () => ({
+      platform: 'test',
+      platformVersion: '1',
+      appEnvironment: 'test',
+    }));
+
     await firstRuntime.repositories.appPreferences.setShellRoute('storage');
     const writtenRecord = await firstRuntime.repositories.bootstrapDemo.recordManualWrite();
+    await diagnostics.captureError(new Error('restart persistence check'), {
+      session: null,
+      shellRoute: 'storage',
+      apiBaseUrl: 'http://127.0.0.1:4100',
+      context: {
+        source: 'bootstrap-runtime-test',
+      },
+    });
 
     expect(writtenRecord.manualWriteCount).toBe(1);
 
@@ -52,6 +67,7 @@ describe('bootstrapLocalDatabase', () => {
     expect(secondRuntime.snapshot.demoRecord.launchCount).toBe(2);
     expect(secondRuntime.snapshot.demoRecord.manualWriteCount).toBe(1);
     expect(secondRuntime.snapshot.shellRoute).toBe('storage');
+    expect(await secondRuntime.repositories.mobileRuntimeErrors.countErrors()).toBe(1);
 
     await secondRuntime.database.closeAsync?.();
   });
