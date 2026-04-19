@@ -22,6 +22,22 @@ const postgresMigrations: PostgresMigration[] = [
       );
     `,
   },
+  {
+    id: '0002_auth_users',
+    sql: `
+      CREATE TABLE IF NOT EXISTS auth_users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('technician', 'supervisor', 'manager')),
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        session_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

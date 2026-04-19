@@ -8,6 +8,7 @@ export interface ServiceRuntimeOptions {
   host: string;
   port: number;
   verifyDatabaseReadiness: () => Promise<void>;
+  handleRequest?: Parameters<typeof createHttpHealthServer>[0]['handleRequest'];
 }
 
 export interface ServiceRuntimeHandle {
@@ -23,6 +24,7 @@ export function createServiceRuntime(options: ServiceRuntimeOptions): ServiceRun
     host: options.host,
     port: options.port,
     getReadinessSnapshot: () => readiness.snapshot(),
+    handleRequest: options.handleRequest,
   });
 
   return {

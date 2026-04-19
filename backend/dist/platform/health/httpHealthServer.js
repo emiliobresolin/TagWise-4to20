@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createHttpHealthServer = createHttpHealthServer;
 const node_http_1 = require("node:http");
 function createHttpHealthServer(options) {
-    const server = (0, node_http_1.createServer)((request, response) => {
+    const server = (0, node_http_1.createServer)(async (request, response) => {
         const url = request.url ?? '/';
         if (url === '/health/live') {
             response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
@@ -17,6 +17,23 @@ function createHttpHealthServer(options) {
             });
             response.end(JSON.stringify(snapshot));
             return;
+        }
+        if (options.handleRequest) {
+            try {
+                const handled = await options.handleRequest(request, response);
+                if (handled) {
+                    return;
+                }
+            }
+            catch (error) {
+                response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+                response.end(JSON.stringify({
+                    serviceName: options.serviceName,
+                    status: 'error',
+                    message: error instanceof Error ? error.message : 'Unknown request handler error',
+                }));
+                return;
+            }
         }
         response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
         response.end(JSON.stringify({ serviceName: options.serviceName, status: 'not-found' }));

@@ -17,6 +17,34 @@ function loadServiceEnvironment(serviceRole, source = process.env) {
             forcePathStyle: parseBoolean(source.TAGWISE_STORAGE_FORCE_PATH_STYLE, false),
             autoCreateBucket: parseBoolean(source.TAGWISE_STORAGE_AUTO_CREATE_BUCKET, false),
         },
+        auth: serviceRole === 'api' ? loadAuthConfig(source) : undefined,
+    };
+}
+function loadAuthConfig(source) {
+    return {
+        tokenSecret: requireValue(source.TAGWISE_AUTH_TOKEN_SECRET, 'TAGWISE_AUTH_TOKEN_SECRET'),
+        accessTokenTtlSeconds: parsePositiveInteger(source.TAGWISE_AUTH_ACCESS_TOKEN_TTL_SECONDS, 900, 'TAGWISE_AUTH_ACCESS_TOKEN_TTL_SECONDS'),
+        refreshTokenTtlSeconds: parsePositiveInteger(source.TAGWISE_AUTH_REFRESH_TOKEN_TTL_SECONDS, 60 * 60 * 24 * 30, 'TAGWISE_AUTH_REFRESH_TOKEN_TTL_SECONDS'),
+        seedUsers: {
+            technician: {
+                email: source.TAGWISE_SEED_TECHNICIAN_EMAIL?.trim() || 'tech@tagwise.local',
+                password: source.TAGWISE_SEED_TECHNICIAN_PASSWORD?.trim() || 'TagWise123!',
+                displayName: source.TAGWISE_SEED_TECHNICIAN_DISPLAY_NAME?.trim() || 'Field Technician',
+                role: 'technician',
+            },
+            supervisor: {
+                email: source.TAGWISE_SEED_SUPERVISOR_EMAIL?.trim() || 'supervisor@tagwise.local',
+                password: source.TAGWISE_SEED_SUPERVISOR_PASSWORD?.trim() || 'TagWise123!',
+                displayName: source.TAGWISE_SEED_SUPERVISOR_DISPLAY_NAME?.trim() || 'Field Supervisor',
+                role: 'supervisor',
+            },
+            manager: {
+                email: source.TAGWISE_SEED_MANAGER_EMAIL?.trim() || 'manager@tagwise.local',
+                password: source.TAGWISE_SEED_MANAGER_PASSWORD?.trim() || 'TagWise123!',
+                displayName: source.TAGWISE_SEED_MANAGER_DISPLAY_NAME?.trim() || 'Operations Manager',
+                role: 'manager',
+            },
+        },
     };
 }
 function requireValue(value, key) {
@@ -46,4 +74,14 @@ function parseBoolean(raw, fallback) {
         return fallback;
     }
     return raw.trim().toLowerCase() === 'true';
+}
+function parsePositiveInteger(raw, fallback, key) {
+    if (!raw || raw.trim().length === 0) {
+        return fallback;
+    }
+    const value = Number.parseInt(raw, 10);
+    if (!Number.isInteger(value) || value <= 0) {
+        throw new Error(`Invalid positive integer for ${key}: ${raw}`);
+    }
+    return value;
 }

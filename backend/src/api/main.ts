@@ -1,16 +1,27 @@
 import { loadServiceEnvironment } from '../config/env';
 import { createPostgresPool, verifyPostgresConnectivity } from '../platform/db/postgres';
 import { createServiceRuntime } from '../runtime/serviceRuntime';
+import { AuthRepository } from '../modules/auth/authRepository';
+import { AuthService } from '../modules/auth/authService';
+import { createApiRequestHandler } from './createApiRequestHandler';
 
 async function main() {
   const environment = loadServiceEnvironment('api');
   const pool = createPostgresPool(environment);
+  if (!environment.auth) {
+    throw new Error('API auth configuration is missing.');
+  }
+
+  const authService = new AuthService(new AuthRepository(pool), environment.auth);
+  await authService.ensureSeedUsers();
+
   const runtime = createServiceRuntime({
     serviceName: 'api-service',
     serviceRole: 'api',
     host: environment.host,
     port: environment.port,
     verifyDatabaseReadiness: () => verifyPostgresConnectivity(pool),
+    handleRequest: createApiRequestHandler({ authService }),
   });
 
   const { port } = await runtime.start();

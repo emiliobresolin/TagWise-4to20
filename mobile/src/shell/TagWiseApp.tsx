@@ -7,6 +7,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -17,6 +18,10 @@ import {
   type DatabaseMigrationSummary,
   type ShellRoute,
 } from '../features/app-shell/model';
+import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/auth/authApiClient';
+import { SessionController } from '../features/auth/sessionController';
+import type { ActiveUserSession } from '../features/auth/model';
+import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
 
 type BootstrapStatus =
@@ -29,6 +34,10 @@ type BootstrapStatus =
       demoRecord: BootstrapDemoRecord;
       migrationSummary: DatabaseMigrationSummary;
       databaseName: string;
+      sessionController: SessionController;
+      session: ActiveUserSession | null;
+      authBusy: boolean;
+      authMessage: string | null;
     };
 
 const placeholderRoutes = [
@@ -38,6 +47,8 @@ const placeholderRoutes = [
 
 export function TagWiseApp() {
   const [status, setStatus] = useState<BootstrapStatus>({ type: 'loading' });
+  const [email, setEmail] = useState('tech@tagwise.local');
+  const [password, setPassword] = useState('TagWise123!');
 
   useEffect(() => {
     let isActive = true;
@@ -52,6 +63,19 @@ export function TagWiseApp() {
           return;
         }
 
+        const sessionController = new SessionController({
+          apiClient: createFetchAuthApiClient(),
+          secureStorage: createSecureStorageBoundary(),
+          authSessionCache: runtime.repositories.authSessionCache,
+          localWorkState: runtime.repositories.localWorkState,
+        });
+        const restoredSession = await sessionController.restoreSession();
+
+        if (!isActive) {
+          await runtime.database.closeAsync?.();
+          return;
+        }
+
         setStatus({
           type: 'ready',
           runtime,
@@ -59,6 +83,13 @@ export function TagWiseApp() {
           demoRecord: runtime.snapshot.demoRecord,
           migrationSummary: runtime.snapshot.migrationSummary,
           databaseName: runtime.snapshot.databaseName,
+          sessionController,
+          session: restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null,
+          authBusy: false,
+          authMessage:
+            restoredSession.state === 'signed_in' && restoredSession.session?.connectionMode === 'offline'
+              ? 'Offline session restored from cached role metadata.'
+              : null,
         });
       } catch (error) {
         if (!isActive) {
@@ -138,109 +169,284 @@ export function TagWiseApp() {
     );
   }
 
+  async function handleSignIn() {
+    if (status.type !== 'ready') {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            authBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const session = await readyState.sessionController.signInConnected({
+        email,
+        password,
+      });
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              session,
+              authBusy: false,
+              authMessage: 'Connected session established and cached for offline restore.',
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authBusy: false,
+              authMessage:
+                error instanceof Error ? error.message : 'Connected authentication failed.',
+            },
+      );
+    }
+  }
+
+  async function handleSwitchUser() {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            authBusy: true,
+            authMessage: null,
+          },
+    );
+
+    const result = await readyState.sessionController.clearForUserSwitch(
+      readyState.session.connectionMode,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            session: result.state === 'cleared' ? null : current.session,
+            authBusy: false,
+            authMessage:
+              result.state === 'cleared'
+                ? 'Session cleared. Connected sign-in is required for the next user.'
+                : result.message ?? 'User switch blocked.',
+          },
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.heroCard}>
-          <Text style={styles.badge}>Signed-out local shell</Text>
-          <Text style={styles.heroTitle}>TagWise mobile foundation</Text>
+          <Text style={styles.badge}>
+            {readyState.session ? 'Authenticated local shell' : 'Connected sign-in required'}
+          </Text>
+          <Text style={styles.heroTitle}>
+            {readyState.session ? readyState.session.displayName : 'TagWise session bootstrap'}
+          </Text>
           <Text style={styles.heroBody}>
-            This story intentionally proves only the local-first mobile shell: no live API,
-            no sync engine, and no auth workflow yet.
+            {readyState.session
+              ? `Role: ${readyState.session.role}. Session mode: ${readyState.session.connectionMode}.`
+              : `Sign in against ${getDefaultAuthApiBaseUrl()} while connected. The app will restore the same role-scoped session offline from secure storage and SQLite cache.`}
           </Text>
         </View>
 
-        <View style={styles.routeRow}>
-          {placeholderRoutes.map((route) => {
-            const selected = route.key === readyState.route;
+        {readyState.authMessage ? (
+          <View style={styles.messageCard}>
+            <Text style={styles.helperText}>{readyState.authMessage}</Text>
+          </View>
+        ) : null}
 
-            return (
-              <Pressable
-                key={route.key}
-                accessibilityRole="button"
-                onPress={() => void handleRouteChange(route.key)}
-                style={[styles.routeButton, selected ? styles.routeButtonActive : null]}
-              >
-                <Text
-                  style={[styles.routeButtonLabel, selected ? styles.routeButtonLabelActive : null]}
-                >
-                  {route.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {readyState.route === DEFAULT_SHELL_ROUTE ? (
+        {!readyState.session ? (
           <View style={styles.panel}>
-            <Text style={styles.panelTitle}>{readyState.demoRecord.title}</Text>
-            <Text style={styles.panelBody}>{readyState.demoRecord.subtitle}</Text>
+            <Text style={styles.panelTitle}>Connected sign-in</Text>
+            <Text style={styles.panelBody}>
+              Only connected login is allowed in v1. After the first successful sign-in, the same
+              device session can reopen offline.
+            </Text>
 
-            <View style={styles.metricGrid}>
-              <MetricCard label="Launch count" value={String(readyState.demoRecord.launchCount)} />
-              <MetricCard
-                label="Manual writes"
-                value={String(readyState.demoRecord.manualWriteCount)}
-              />
-            </View>
-
-            <View style={styles.metricGrid}>
-              <MetricCard
-                label="Last opened"
-                value={formatTimestamp(readyState.demoRecord.lastOpenedAt)}
-              />
-              <MetricCard
-                label="Updated"
-                value={formatTimestamp(readyState.demoRecord.updatedAt)}
-              />
-            </View>
-
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              onChangeText={setEmail}
+              placeholder="Email"
+              style={styles.input}
+              value={email}
+            />
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setPassword}
+              placeholder="Password"
+              secureTextEntry
+              style={styles.input}
+              value={password}
+            />
             <Pressable
               accessibilityRole="button"
-              onPress={() => void handleManualWrite()}
-              style={styles.primaryButton}
+              disabled={readyState.authBusy}
+              onPress={() => void handleSignIn()}
+              style={[styles.primaryButton, readyState.authBusy ? styles.buttonDisabled : null]}
             >
-              <Text style={styles.primaryButtonLabel}>Write local record</Text>
+              <Text style={styles.primaryButtonLabel}>
+                {readyState.authBusy ? 'Signing in...' : 'Sign in'}
+              </Text>
             </Pressable>
 
             <Text style={styles.helperText}>
-              Expected behavior: this counter updates instantly and remains after app restart.
+              Seed accounts come from the backend bootstrap environment. Default local examples use
+              `tech@tagwise.local`, `supervisor@tagwise.local`, and `manager@tagwise.local`.
             </Text>
           </View>
         ) : (
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Local storage diagnostics</Text>
-            <Text style={styles.panelBody}>
-              This placeholder view exists only to validate shell state persistence and the SQLite
-              bootstrap path.
-            </Text>
+          <>
+            <View style={styles.routeRow}>
+              {placeholderRoutes.map((route) => {
+                const selected = route.key === readyState.route;
 
-            <View style={styles.metricGrid}>
-              <MetricCard label="Database" value={readyState.databaseName} />
-              <MetricCard
-                label="Schema version"
-                value={String(readyState.migrationSummary.currentSchemaVersion)}
-              />
+                return (
+                  <Pressable
+                    key={route.key}
+                    accessibilityRole="button"
+                    onPress={() => void handleRouteChange(route.key)}
+                    style={[styles.routeButton, selected ? styles.routeButtonActive : null]}
+                  >
+                    <Text
+                      style={[styles.routeButtonLabel, selected ? styles.routeButtonLabelActive : null]}
+                    >
+                      {route.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
 
-            <View style={styles.metricGrid}>
-              <MetricCard
-                label="Applied this launch"
-                value={
-                  readyState.migrationSummary.appliedMigrationIds.length > 0
-                    ? readyState.migrationSummary.appliedMigrationIds.join(', ')
-                    : 'none'
-                }
-              />
-              <MetricCard label="Shell route" value={readyState.route} />
+            <View style={styles.panel}>
+              <Text style={styles.panelTitle}>Session guardrails</Text>
+              <Text style={styles.panelBody}>
+                Connected login establishes the session. Offline restore uses cached role metadata,
+                but review actions remain server-validated and unavailable offline.
+              </Text>
+
+              <View style={styles.metricGrid}>
+                <MetricCard label="Role" value={readyState.session.role} />
+                <MetricCard label="Session" value={readyState.session.connectionMode} />
+              </View>
+
+              <View style={styles.metricGrid}>
+                <MetricCard
+                  label="Review actions"
+                  value={readyState.session.reviewActionsAvailable ? 'Available' : 'Unavailable'}
+                />
+                <MetricCard
+                  label="Signed in"
+                  value={formatTimestamp(readyState.session.lastAuthenticatedAt)}
+                />
+              </View>
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={readyState.authBusy}
+                onPress={() => void handleSwitchUser()}
+                style={[styles.secondaryButton, readyState.authBusy ? styles.buttonDisabled : null]}
+              >
+                <Text style={styles.secondaryButtonLabel}>
+                  {readyState.authBusy ? 'Checking session...' : 'Switch user'}
+                </Text>
+              </Pressable>
+
+              <Text style={styles.helperText}>
+                Offline user switching stays blocked when unsynced local work exists. Review actions
+                do not become authoritative from cached role state alone.
+              </Text>
             </View>
 
-            <Text style={styles.helperText}>
-              Future stories will add auth/session continuation, work-package preload, tag context,
-              execution/report flows, and sync queueing on top of this local-first shell.
-            </Text>
-          </View>
+            {readyState.route === DEFAULT_SHELL_ROUTE ? (
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>{readyState.demoRecord.title}</Text>
+                <Text style={styles.panelBody}>{readyState.demoRecord.subtitle}</Text>
+
+                <View style={styles.metricGrid}>
+                  <MetricCard label="Launch count" value={String(readyState.demoRecord.launchCount)} />
+                  <MetricCard
+                    label="Manual writes"
+                    value={String(readyState.demoRecord.manualWriteCount)}
+                  />
+                </View>
+
+                <View style={styles.metricGrid}>
+                  <MetricCard
+                    label="Last opened"
+                    value={formatTimestamp(readyState.demoRecord.lastOpenedAt)}
+                  />
+                  <MetricCard
+                    label="Updated"
+                    value={formatTimestamp(readyState.demoRecord.updatedAt)}
+                  />
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void handleManualWrite()}
+                  style={styles.primaryButton}
+                >
+                  <Text style={styles.primaryButtonLabel}>Write local record</Text>
+                </Pressable>
+
+                <Text style={styles.helperText}>
+                  Existing Story 1.1 proof data remains local-first and persists across restart.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>Local storage diagnostics</Text>
+                <Text style={styles.panelBody}>
+                  SQLite now also holds role-scoped session metadata while secure storage owns the
+                  tokens needed for connected refresh.
+                </Text>
+
+                <View style={styles.metricGrid}>
+                  <MetricCard label="Database" value={readyState.databaseName} />
+                  <MetricCard
+                    label="Schema version"
+                    value={String(readyState.migrationSummary.currentSchemaVersion)}
+                  />
+                </View>
+
+                <View style={styles.metricGrid}>
+                  <MetricCard
+                    label="Applied this launch"
+                    value={
+                      readyState.migrationSummary.appliedMigrationIds.length > 0
+                        ? readyState.migrationSummary.appliedMigrationIds.join(', ')
+                        : 'none'
+                    }
+                  />
+                  <MetricCard label="Shell route" value={readyState.route} />
+                </View>
+
+                <Text style={styles.helperText}>
+                  Future stories will partition local work by user, preload packages, and add sync
+                  queues on top of this session baseline.
+                </Text>
+              </View>
+            )}
+          </>
         )}
       </ScrollView>
     </SafeAreaView>
@@ -352,6 +558,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#dce3da',
   },
+  messageCard: {
+    backgroundColor: '#ecfdf5',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    backgroundColor: '#ffffff',
+    color: '#0f172a',
+  },
   panelTitle: {
     fontSize: 20,
     fontWeight: '800',
@@ -393,8 +616,23 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
   },
+  secondaryButton: {
+    backgroundColor: '#e2e8f0',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
   primaryButtonLabel: {
     color: '#f8fafc',
+    textAlign: 'center',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  secondaryButtonLabel: {
+    color: '#0f172a',
     textAlign: 'center',
     fontSize: 15,
     fontWeight: '800',

@@ -33,11 +33,17 @@ describe('runMigrations', () => {
     const route = await database.getFirstAsync<{ count: number }>(
       'SELECT COUNT(*) as count FROM app_preferences;',
     );
+    const sessionTables = await database.getFirstAsync<{ count: number }>(
+      `SELECT COUNT(*) as count
+       FROM sqlite_master
+       WHERE type = 'table' AND name IN ('auth_session_cache', 'local_work_state');`,
+    );
 
-    expect(summary.currentSchemaVersion).toBe(1);
-    expect(summary.appliedMigrationIds).toEqual(['1']);
+    expect(summary.currentSchemaVersion).toBe(2);
+    expect(summary.appliedMigrationIds).toEqual(['1', '2']);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
+    expect(sessionTables?.count).toBe(2);
 
     await database.closeAsync?.();
   });
@@ -59,7 +65,7 @@ describe('runMigrations', () => {
     );
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(applied).toEqual([{ id: 1 }]);
+    expect(applied).toEqual([{ id: 1 }, { id: 2 }]);
     expect(record?.count).toBe(1);
 
     await database.closeAsync?.();

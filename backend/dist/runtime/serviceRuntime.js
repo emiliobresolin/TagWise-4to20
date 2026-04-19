@@ -10,6 +10,7 @@ function createServiceRuntime(options) {
         host: options.host,
         port: options.port,
         getReadinessSnapshot: () => readiness.snapshot(),
+        handleRequest: options.handleRequest,
     });
     return {
         async start() {

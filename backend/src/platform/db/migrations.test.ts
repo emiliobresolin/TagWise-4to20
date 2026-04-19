@@ -14,8 +14,8 @@ describe('runPostgresMigrations', () => {
       `SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'service_bootstrap_checks';`,
     )) as { rows: Array<{ count: string }> };
 
-    expect(summary.appliedMigrationIds).toEqual(['0001_service_foundation']);
-    expect(summary.currentSchemaVersion).toBe(1);
+    expect(summary.appliedMigrationIds).toEqual(['0001_service_foundation', '0002_auth_users']);
+    expect(summary.currentSchemaVersion).toBe(2);
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
 
     await pool.end();
@@ -33,7 +33,7 @@ describe('runPostgresMigrations', () => {
     )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(2);
 
     await pool.end();
   });

@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import type { ReadinessSnapshot } from './readiness';
 
@@ -7,6 +7,10 @@ export interface HealthServerOptions {
   host: string;
   port: number;
   getReadinessSnapshot: () => ReadinessSnapshot;
+  handleRequest?: (
+    request: IncomingMessage,
+    response: ServerResponse<IncomingMessage>,
+  ) => Promise<boolean> | boolean;
 }
 
 export interface HealthServerHandle {
@@ -15,7 +19,7 @@ export interface HealthServerHandle {
 }
 
 export function createHttpHealthServer(options: HealthServerOptions): HealthServerHandle {
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const url = request.url ?? '/';
 
     if (url === '/health/live') {
@@ -31,6 +35,25 @@ export function createHttpHealthServer(options: HealthServerOptions): HealthServ
       });
       response.end(JSON.stringify(snapshot));
       return;
+    }
+
+    if (options.handleRequest) {
+      try {
+        const handled = await options.handleRequest(request, response);
+        if (handled) {
+          return;
+        }
+      } catch (error) {
+        response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(
+          JSON.stringify({
+            serviceName: options.serviceName,
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Unknown request handler error',
+          }),
+        );
+        return;
+      }
     }
 
     response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });

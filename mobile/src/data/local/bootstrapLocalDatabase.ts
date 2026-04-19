@@ -1,6 +1,8 @@
 import type { AppBootstrapSnapshot } from '../../features/app-shell/model';
+import { AuthSessionCacheRepository } from './repositories/authSessionCacheRepository';
 import { AppPreferencesRepository } from './repositories/appPreferencesRepository';
 import { BootstrapDemoRepository } from './repositories/bootstrapDemoRepository';
+import { LocalWorkStateRepository } from './repositories/localWorkStateRepository';
 import { runMigrations } from './sqlite/migrations';
 import type { LocalDatabase } from './sqlite/types';
 
@@ -12,6 +14,8 @@ export interface LocalRuntime {
   repositories: {
     appPreferences: AppPreferencesRepository;
     bootstrapDemo: BootstrapDemoRepository;
+    authSessionCache: AuthSessionCacheRepository;
+    localWorkState: LocalWorkStateRepository;
   };
 }
 
@@ -23,6 +27,8 @@ export async function bootstrapLocalDatabase(
 
   const appPreferences = new AppPreferencesRepository(database);
   const bootstrapDemo = new BootstrapDemoRepository(database);
+  const authSessionCache = new AuthSessionCacheRepository(database);
+  const localWorkState = new LocalWorkStateRepository(database);
 
   const demoRecord = await bootstrapDemo.recordLaunch();
   const shellRoute = await appPreferences.getShellRoute();
@@ -38,6 +44,8 @@ export async function bootstrapLocalDatabase(
     repositories: {
       appPreferences,
       bootstrapDemo,
+      authSessionCache,
+      localWorkState,
     },
   };
 }

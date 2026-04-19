@@ -11,6 +11,7 @@ const baseEnv = {
   TAGWISE_STORAGE_SECRET_ACCESS_KEY: 'minioadmin',
   TAGWISE_STORAGE_FORCE_PATH_STYLE: 'true',
   TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'true',
+  TAGWISE_AUTH_TOKEN_SECRET: 'development-secret',
 } satisfies NodeJS.ProcessEnv;
 
 describe('loadServiceEnvironment', () => {
@@ -21,6 +22,7 @@ describe('loadServiceEnvironment', () => {
     expect(environment.port).toBe(4100);
     expect(environment.objectStorage.forcePathStyle).toBe(true);
     expect(environment.objectStorage.autoCreateBucket).toBe(true);
+    expect(environment.auth?.seedUsers.technician.role).toBe('technician');
   });
 
   it('rejects missing required values', () => {
@@ -30,5 +32,15 @@ describe('loadServiceEnvironment', () => {
         TAGWISE_STORAGE_BUCKET: '',
       }),
     ).toThrow('TAGWISE_STORAGE_BUCKET');
+  });
+
+  it('does not require auth configuration for worker bootstrap', () => {
+    const workerEnvironment = loadServiceEnvironment('worker', {
+      ...baseEnv,
+      TAGWISE_AUTH_TOKEN_SECRET: undefined,
+    });
+
+    expect(workerEnvironment.auth).toBeUndefined();
+    expect(workerEnvironment.port).toBe(4101);
   });
 });

@@ -55,6 +55,44 @@ const migrations: DatabaseMigration[] = [
       );
     },
   },
+  {
+    id: 2,
+    apply: async (database, now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS auth_session_cache (
+          session_key TEXT PRIMARY KEY NOT NULL,
+          user_id TEXT NOT NULL,
+          email TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          role TEXT NOT NULL,
+          last_authenticated_at TEXT NOT NULL,
+          access_token_expires_at TEXT NOT NULL,
+          refresh_token_expires_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS local_work_state (
+          state_key TEXT PRIMARY KEY NOT NULL,
+          unsynced_work_count INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+      `);
+
+      await database.runAsync(
+        `
+          INSERT OR IGNORE INTO local_work_state (
+            state_key,
+            unsynced_work_count,
+            updated_at
+          )
+          VALUES (?, 0, ?);
+        `,
+        ['active', now],
+      );
+    },
+  },
 ];
 
 export async function runMigrations(
