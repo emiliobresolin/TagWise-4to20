@@ -93,6 +93,71 @@ const migrations: DatabaseMigration[] = [
       );
     },
   },
+  {
+    id: 3,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_partitioned_drafts (
+          owner_user_id TEXT NOT NULL,
+          business_object_type TEXT NOT NULL,
+          business_object_id TEXT NOT NULL,
+          summary_text TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, business_object_type, business_object_id)
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_partitioned_evidence_metadata (
+          owner_user_id TEXT NOT NULL,
+          evidence_id TEXT NOT NULL,
+          business_object_type TEXT NOT NULL,
+          business_object_id TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          media_relative_path TEXT NOT NULL,
+          mime_type TEXT,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, evidence_id)
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_user_partitioned_evidence_by_business_object
+        ON user_partitioned_evidence_metadata (
+          owner_user_id,
+          business_object_type,
+          business_object_id
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_partitioned_queue_items (
+          owner_user_id TEXT NOT NULL,
+          queue_item_id TEXT NOT NULL,
+          business_object_type TEXT NOT NULL,
+          business_object_id TEXT NOT NULL,
+          item_kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, queue_item_id)
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_user_partitioned_queue_by_business_object
+        ON user_partitioned_queue_items (
+          owner_user_id,
+          business_object_type,
+          business_object_id
+        );
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

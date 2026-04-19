@@ -24,3 +24,13 @@ export interface AppBootstrapSnapshot {
   migrationSummary: DatabaseMigrationSummary;
   databaseName: string;
 }
+
+export interface LocalOwnershipProofSnapshot {
+  ownerUserId: string;
+  businessObjectType: string;
+  businessObjectId: string;
+  draftCount: number;
+  evidenceCount: number;
+  queueItemCount: number;
+  latestMediaRelativePath: string | null;
+}

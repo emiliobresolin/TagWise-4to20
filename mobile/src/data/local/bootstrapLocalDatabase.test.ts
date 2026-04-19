@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { createNodeAppSandboxBoundary } from '../../../tests/helpers/createNodeAppSandboxBoundary';
 import { createNodeSqliteDatabase } from '../../../tests/helpers/createNodeSqliteDatabase';
 import { bootstrapLocalDatabase } from './bootstrapLocalDatabase';
 
@@ -25,9 +26,11 @@ describe('bootstrapLocalDatabase', () => {
     createdDirectories.push(tempDirectory);
 
     const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
 
     const firstRuntime = await bootstrapLocalDatabase(() =>
       Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
     );
 
     expect(firstRuntime.snapshot.demoRecord.launchCount).toBe(1);
@@ -43,6 +46,7 @@ describe('bootstrapLocalDatabase', () => {
 
     const secondRuntime = await bootstrapLocalDatabase(() =>
       Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
     );
 
     expect(secondRuntime.snapshot.demoRecord.launchCount).toBe(2);

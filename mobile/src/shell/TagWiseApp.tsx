@@ -16,8 +16,13 @@ import {
   DEFAULT_SHELL_ROUTE,
   type BootstrapDemoRecord,
   type DatabaseMigrationSummary,
+  type LocalOwnershipProofSnapshot,
   type ShellRoute,
 } from '../features/app-shell/model';
+import {
+  loadLocalOwnershipProof,
+  writeLocalOwnershipProof,
+} from '../features/app-shell/localOwnershipDemo';
 import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/auth/authApiClient';
 import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
@@ -36,6 +41,7 @@ type BootstrapStatus =
       databaseName: string;
       sessionController: SessionController;
       session: ActiveUserSession | null;
+      localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
       authMessage: string | null;
     };
@@ -70,6 +76,11 @@ export function TagWiseApp() {
           localWorkState: runtime.repositories.localWorkState,
         });
         const restoredSession = await sessionController.restoreSession();
+        const session =
+          restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null;
+        const localOwnership = session
+          ? await loadLocalOwnershipProof(runtime, session)
+          : null;
 
         if (!isActive) {
           await runtime.database.closeAsync?.();
@@ -84,10 +95,11 @@ export function TagWiseApp() {
           migrationSummary: runtime.snapshot.migrationSummary,
           databaseName: runtime.snapshot.databaseName,
           sessionController,
-          session: restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null,
+          session,
+          localOwnership,
           authBusy: false,
           authMessage:
-            restoredSession.state === 'signed_in' && restoredSession.session?.connectionMode === 'offline'
+            restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
               ? 'Offline session restored from cached role metadata.'
               : null,
         });
@@ -169,6 +181,24 @@ export function TagWiseApp() {
     );
   }
 
+  async function handleWriteLocalOwnershipProof() {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    const localOwnership = await writeLocalOwnershipProof(readyState.runtime, readyState.session);
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            localOwnership,
+            authMessage: 'Owned local draft, evidence metadata, queue placeholder, and sandbox file updated.',
+          },
+    );
+  }
+
   async function handleSignIn() {
     if (status.type !== 'ready') {
       return;
@@ -189,12 +219,14 @@ export function TagWiseApp() {
         email,
         password,
       });
+      const localOwnership = await loadLocalOwnershipProof(readyState.runtime, session);
       setStatus((current) =>
         current.type !== 'ready'
           ? current
           : {
               ...current,
               session,
+              localOwnership,
               authBusy: false,
               authMessage: 'Connected session established and cached for offline restore.',
             },
@@ -238,6 +270,7 @@ export function TagWiseApp() {
         : {
             ...current,
             session: result.state === 'cleared' ? null : current.session,
+            localOwnership: result.state === 'cleared' ? null : current.localOwnership,
             authBusy: false,
             authMessage:
               result.state === 'cleared'
@@ -413,14 +446,14 @@ export function TagWiseApp() {
                 </Text>
               </View>
             ) : (
-              <View style={styles.panel}>
-                <Text style={styles.panelTitle}>Local storage diagnostics</Text>
-                <Text style={styles.panelBody}>
-                  SQLite now also holds role-scoped session metadata while secure storage owns the
-                  tokens needed for connected refresh.
-                </Text>
+            <View style={styles.panel}>
+              <Text style={styles.panelTitle}>Local storage diagnostics</Text>
+              <Text style={styles.panelBody}>
+                SQLite now also holds user-partitioned draft, evidence, and queue placeholders while
+                the sandbox boundary isolates future media files under the authenticated user.
+              </Text>
 
-                <View style={styles.metricGrid}>
+              <View style={styles.metricGrid}>
                   <MetricCard label="Database" value={readyState.databaseName} />
                   <MetricCard
                     label="Schema version"
@@ -440,9 +473,49 @@ export function TagWiseApp() {
                   <MetricCard label="Shell route" value={readyState.route} />
                 </View>
 
+                <View style={styles.metricGrid}>
+                  <MetricCard
+                    label="Owned drafts"
+                    value={String(readyState.localOwnership?.draftCount ?? 0)}
+                  />
+                  <MetricCard
+                    label="Owned evidence"
+                    value={String(readyState.localOwnership?.evidenceCount ?? 0)}
+                  />
+                </View>
+
+                <View style={styles.metricGrid}>
+                  <MetricCard
+                    label="Owned queue"
+                    value={String(readyState.localOwnership?.queueItemCount ?? 0)}
+                  />
+                  <MetricCard
+                    label="Owner"
+                    value={readyState.localOwnership?.ownerUserId ?? readyState.session.userId}
+                  />
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void handleWriteLocalOwnershipProof()}
+                  style={styles.primaryButton}
+                >
+                  <Text style={styles.primaryButtonLabel}>Write owned local sample</Text>
+                </Pressable>
+
                 <Text style={styles.helperText}>
-                  Future stories will partition local work by user, preload packages, and add sync
-                  queues on top of this session baseline.
+                  Demo business object: {readyState.localOwnership?.businessObjectType ?? 'tag'}/
+                  {readyState.localOwnership?.businessObjectId ?? 'demo-tag-001'}.
+                </Text>
+
+                <Text style={styles.helperText}>
+                  Latest owned media path:{' '}
+                  {readyState.localOwnership?.latestMediaRelativePath ?? 'not created yet'}.
+                </Text>
+
+                <Text style={styles.helperText}>
+                  Switching users does not reassign local ownership. Another signed-in user will only
+                  query their own partition for these draft, evidence, and queue placeholders.
                 </Text>
               </View>
             )}
