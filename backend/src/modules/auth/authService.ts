@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
 import type { AuthConfig } from '../../config/env';
-import { AuthenticationError, type AuthSessionPayload } from './model';
+import {
+  AuthenticationError,
+  type AuthSessionPayload,
+  type AuthenticatedUser,
+} from './model';
 import { AuthRepository } from './authRepository';
 import { AuditEventService } from '../audit/auditEventService';
 import { hashPassword, verifyPassword } from './passwordCodec';
-import { issueTokenPair, verifyRefreshToken } from './tokenCodec';
+import { issueTokenPair, verifyAccessToken, verifyRefreshToken } from './tokenCodec';
 
 export interface ConnectedLoginRequest {
   email: string;
@@ -117,6 +121,22 @@ export class AuthService {
     });
 
     return session;
+  }
+
+  async authenticateAccessToken(accessToken: string): Promise<AuthenticatedUser> {
+    const claims = verifyAccessToken(accessToken, this.config);
+    const user = await this.repository.findById(claims.sub);
+
+    if (!user || user.sessionVersion !== claims.ver) {
+      throw new AuthenticationError('Session is no longer valid.');
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      role: user.role,
+    };
   }
 }
 

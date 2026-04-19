@@ -55,6 +55,36 @@ const postgresMigrations = [
       ON audit_events (correlation_id);
     `,
     },
+    {
+        id: '0004_assigned_work_packages',
+        sql: `
+      CREATE TABLE IF NOT EXISTS assigned_work_packages (
+        id TEXT PRIMARY KEY,
+        source_reference TEXT NOT NULL,
+        assigned_user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        assigned_team TEXT NOT NULL,
+        priority TEXT NOT NULL CHECK (priority IN ('routine', 'high')),
+        status TEXT NOT NULL CHECK (status IN ('assigned', 'in_progress', 'pending_review', 'completed')),
+        package_version INTEGER NOT NULL,
+        snapshot_contract_version TEXT NOT NULL,
+        tag_count INTEGER NOT NULL,
+        due_starts_at TEXT,
+        due_ends_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_assigned_work_packages_assigned_user
+      ON assigned_work_packages (assigned_user_id, due_ends_at ASC, id ASC);
+
+      CREATE TABLE IF NOT EXISTS assigned_work_package_snapshots (
+        work_package_id TEXT PRIMARY KEY REFERENCES assigned_work_packages(id) ON DELETE CASCADE,
+        snapshot_contract_version TEXT NOT NULL,
+        snapshot_json JSONB NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+    },
 ];
 async function runPostgresMigrations(database) {
     const migrationTableExists = await database.query(`SELECT COUNT(*) AS count

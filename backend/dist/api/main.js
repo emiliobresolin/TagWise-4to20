@@ -9,6 +9,8 @@ const auditEventRepository_1 = require("../modules/audit/auditEventRepository");
 const auditEventService_1 = require("../modules/audit/auditEventService");
 const authRepository_1 = require("../modules/auth/authRepository");
 const authService_1 = require("../modules/auth/authService");
+const assignedWorkPackageRepository_1 = require("../modules/work-packages/assignedWorkPackageRepository");
+const assignedWorkPackageService_1 = require("../modules/work-packages/assignedWorkPackageService");
 const createApiRequestHandler_1 = require("./createApiRequestHandler");
 async function main() {
     const environment = (0, env_1.loadServiceEnvironment)('api');
@@ -21,8 +23,15 @@ async function main() {
     if (!environment.auth) {
         throw new Error('API auth configuration is missing.');
     }
-    const authService = new authService_1.AuthService(new authRepository_1.AuthRepository(pool), environment.auth, new auditEventService_1.AuditEventService(new auditEventRepository_1.AuditEventRepository(pool)));
+    const authRepository = new authRepository_1.AuthRepository(pool);
+    const authService = new authService_1.AuthService(authRepository, environment.auth, new auditEventService_1.AuditEventService(new auditEventRepository_1.AuditEventRepository(pool)));
     await authService.ensureSeedUsers();
+    const technician = await authRepository.findByEmail(environment.auth.seedUsers.technician.email);
+    if (!technician) {
+        throw new Error('Seed technician account is missing after auth bootstrap.');
+    }
+    const assignedWorkPackageService = new assignedWorkPackageService_1.AssignedWorkPackageService(new assignedWorkPackageRepository_1.AssignedWorkPackageRepository(pool));
+    await assignedWorkPackageService.ensureSeedPackages(technician.id);
     const runtime = (0, serviceRuntime_1.createServiceRuntime)({
         serviceName: 'api-service',
         serviceRole: 'api',
@@ -30,7 +39,7 @@ async function main() {
         port: environment.port,
         verifyDatabaseReadiness: () => (0, postgres_1.verifyPostgresConnectivity)(pool),
         logger,
-        handleRequest: (0, createApiRequestHandler_1.createApiRequestHandler)({ authService }),
+        handleRequest: (0, createApiRequestHandler_1.createApiRequestHandler)({ authService, assignedWorkPackageService }),
     });
     const { port } = await runtime.start();
     logger.info('api.boot.completed', {

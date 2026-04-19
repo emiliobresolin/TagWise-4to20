@@ -14,8 +14,9 @@ const migrations_1 = require("./migrations");
             '0001_service_foundation',
             '0002_auth_users',
             '0003_audit_events',
+            '0004_assigned_work_packages',
         ]);
-        (0, vitest_1.expect)(summary.currentSchemaVersion).toBe(3);
+        (0, vitest_1.expect)(summary.currentSchemaVersion).toBe(4);
         (0, vitest_1.expect)(Number(rows.rows[0]?.count ?? 0)).toBe(1);
         await pool.end();
     });
@@ -27,7 +28,7 @@ const migrations_1 = require("./migrations");
         const summary = await (0, migrations_1.runPostgresMigrations)(pool);
         const rows = (await pool.query('SELECT COUNT(*) AS count FROM schema_migrations;'));
         (0, vitest_1.expect)(summary.appliedMigrationIds).toEqual([]);
-        (0, vitest_1.expect)(Number(rows.rows[0]?.count ?? 0)).toBe(3);
+        (0, vitest_1.expect)(Number(rows.rows[0]?.count ?? 0)).toBe(4);
         await pool.end();
     });
 });

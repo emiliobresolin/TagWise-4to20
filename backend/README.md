@@ -16,6 +16,10 @@ Story 1.5 adds:
 - baseline audit-event persistence for auth/session actions
 - a `/metrics` endpoint for uptime, request count, and error rate
 
+Story 2.1 adds:
+- authenticated assigned work package list and bounded snapshot download endpoints
+- seeded package snapshots shaped for offline preload of tags, templates, guidance, and history summary data
+
 ## Commands
 - `npm install`
 - `npm run dev:api`
@@ -63,7 +67,10 @@ Optional seed user overrides:
 - JSON body: `{"email":"tech@tagwise.local","password":"TagWise123!"}`
 9. Optional audit check:
 - query `SELECT action_type, correlation_id FROM audit_events ORDER BY occurred_at DESC LIMIT 2;`
-10. Expected result:
+10. Optional assigned work package check:
+- `GET http://127.0.0.1:4100/work-packages` with `Authorization: Bearer <access-token>`
+- `GET http://127.0.0.1:4100/work-packages/wp-seed-1001/download` with the same header
+11. Expected result:
 - both processes boot from the same codebase
 - readiness returns `200` after PostgreSQL is reachable
 - metrics returns uptime plus request/error counters as JSON
@@ -71,3 +78,5 @@ Optional seed user overrides:
 - connected login returns a user payload plus access and refresh tokens
 - the login response echoes the correlation id header
 - the audit query shows auth/session events with stored correlation ids
+- the assigned work package list returns bounded technician-scoped package summaries
+- the download endpoint returns a versioned snapshot with tags, templates, guidance, and history summaries

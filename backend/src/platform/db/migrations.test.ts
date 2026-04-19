@@ -18,8 +18,9 @@ describe('runPostgresMigrations', () => {
       '0001_service_foundation',
       '0002_auth_users',
       '0003_audit_events',
+      '0004_assigned_work_packages',
     ]);
-    expect(summary.currentSchemaVersion).toBe(3);
+    expect(summary.currentSchemaVersion).toBe(4);
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
 
     await pool.end();
@@ -37,7 +38,7 @@ describe('runPostgresMigrations', () => {
     )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(Number(rows.rows[0]?.count ?? 0)).toBe(3);
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(4);
 
     await pool.end();
   });

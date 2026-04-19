@@ -28,6 +28,9 @@ import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/
 import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
+import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
+import type { LocalAssignedWorkPackageSummary } from '../features/work-packages/model';
+import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
 
@@ -40,18 +43,22 @@ type BootstrapStatus =
       route: ShellRoute;
       demoRecord: BootstrapDemoRecord;
       diagnostics: MobileDiagnosticsSnapshot;
+      workPackages: LocalAssignedWorkPackageSummary[];
       migrationSummary: DatabaseMigrationSummary;
       databaseName: string;
       sessionController: SessionController;
       errorCapture: MobileErrorCaptureService;
+      workPackageCatalog: AssignedWorkPackageCatalogService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
+      packageBusy: boolean;
       authMessage: string | null;
     };
 
 const placeholderRoutes = [
   { key: 'foundation' as const, label: 'Foundation' },
+  { key: 'packages' as const, label: 'Packages' },
   { key: 'storage' as const, label: 'Storage' },
 ];
 
@@ -73,13 +80,21 @@ export function TagWiseApp() {
           return;
         }
 
+        const secureStorage = createSecureStorageBoundary();
         const sessionController = new SessionController({
           apiClient: createFetchAuthApiClient(),
-          secureStorage: createSecureStorageBoundary(),
+          secureStorage,
           authSessionCache: runtime.repositories.authSessionCache,
           localWorkState: runtime.repositories.localWorkState,
         });
         const errorCapture = new MobileErrorCaptureService(runtime.repositories.mobileRuntimeErrors);
+        const workPackageCatalog = new AssignedWorkPackageCatalogService({
+          apiClient: createFetchAssignedWorkPackageApiClient({
+            baseUrl: getDefaultAuthApiBaseUrl(),
+            secureStorage,
+          }),
+          userPartitions: runtime.repositories.userPartitions,
+        });
         const restoredSession = await sessionController.restoreSession();
         const session =
           restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null;
@@ -87,6 +102,7 @@ export function TagWiseApp() {
           ? await loadLocalOwnershipProof(runtime, session)
           : null;
         const diagnostics = await errorCapture.getSnapshot();
+        const workPackages = session ? await workPackageCatalog.loadLocalCatalog(session) : [];
 
         if (!isActive) {
           await runtime.database.closeAsync?.();
@@ -99,13 +115,16 @@ export function TagWiseApp() {
           route: runtime.snapshot.shellRoute,
           demoRecord: runtime.snapshot.demoRecord,
           diagnostics,
+          workPackages,
           migrationSummary: runtime.snapshot.migrationSummary,
           databaseName: runtime.snapshot.databaseName,
           sessionController,
           errorCapture,
+          workPackageCatalog,
           session,
           localOwnership,
           authBusy: false,
+          packageBusy: false,
           authMessage:
             restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
               ? 'Offline session restored from cached role metadata.'
@@ -228,6 +247,18 @@ export function TagWiseApp() {
         password,
       });
       const localOwnership = await loadLocalOwnershipProof(readyState.runtime, session);
+      let workPackages = await readyState.workPackageCatalog.loadLocalCatalog(session);
+      let authMessage = 'Connected session established and cached for offline restore.';
+
+      try {
+        workPackages = await readyState.workPackageCatalog.refreshConnectedCatalog(session);
+        authMessage = `Connected session established and ${workPackages.length} assigned package(s) loaded.`;
+      } catch (packageError) {
+        authMessage = `${authMessage} Assigned packages could not be refreshed: ${
+          packageError instanceof Error ? packageError.message : 'Unknown package refresh error.'
+        }`;
+      }
+
       setStatus((current) =>
         current.type !== 'ready'
           ? current
@@ -235,8 +266,9 @@ export function TagWiseApp() {
               ...current,
               session,
               localOwnership,
+              workPackages,
               authBusy: false,
-              authMessage: 'Connected session established and cached for offline restore.',
+              authMessage,
             },
       );
     } catch (error) {
@@ -248,6 +280,97 @@ export function TagWiseApp() {
               authBusy: false,
               authMessage:
                 error instanceof Error ? error.message : 'Connected authentication failed.',
+            },
+      );
+    }
+  }
+
+  async function handleRefreshAssignedPackages() {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            packageBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const workPackages = await readyState.workPackageCatalog.refreshConnectedCatalog(
+        readyState.session,
+      );
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              workPackages,
+              packageBusy: false,
+              authMessage: `${workPackages.length} assigned package(s) refreshed for offline use.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              packageBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Assigned package refresh failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  async function handleDownloadAssignedPackage(workPackageId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            packageBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const result = await readyState.workPackageCatalog.downloadAssignedPackage(
+        readyState.session,
+        workPackageId,
+      );
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              workPackages: result.summaries,
+              packageBusy: false,
+              authMessage: `Assigned package ${result.snapshot.summary.id} downloaded to local SQLite.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              packageBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Assigned package download failed without a detailed message.',
             },
       );
     }
@@ -328,6 +451,7 @@ export function TagWiseApp() {
             session: result.state === 'cleared' ? null : current.session,
             localOwnership: result.state === 'cleared' ? null : current.localOwnership,
             authBusy: false,
+            workPackages: result.state === 'cleared' ? [] : current.workPackages,
             authMessage:
               result.state === 'cleared'
                 ? 'Session cleared. Connected sign-in is required for the next user.'
@@ -524,15 +648,109 @@ export function TagWiseApp() {
                   Latest mobile diagnostic: {readyState.diagnostics.latestErrorMessage ?? 'none'}.
                 </Text>
               </View>
-            ) : (
-            <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Local storage diagnostics</Text>
-              <Text style={styles.panelBody}>
-                SQLite now also holds user-partitioned draft, evidence, and queue placeholders while
-                the sandbox boundary isolates future media files under the authenticated user.
-              </Text>
+            ) : readyState.route === 'packages' ? (
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>Assigned work packages</Text>
+                <Text style={styles.panelBody}>
+                  Download bounded package snapshots before entering the field. Downloaded
+                  snapshots stay local-first and remain available after reconnect-free reopen.
+                </Text>
 
-              <View style={styles.metricGrid}>
+                <View style={styles.metricGrid}>
+                  <MetricCard label="Packages" value={String(readyState.workPackages.length)} />
+                  <MetricCard
+                    label="Downloaded"
+                    value={String(readyState.workPackages.filter((item) => item.hasSnapshot).length)}
+                  />
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={
+                    readyState.packageBusy || readyState.session.connectionMode !== 'connected'
+                  }
+                  onPress={() => void handleRefreshAssignedPackages()}
+                  style={[
+                    styles.primaryButton,
+                    readyState.packageBusy || readyState.session.connectionMode !== 'connected'
+                      ? styles.buttonDisabled
+                      : null,
+                  ]}
+                >
+                  <Text style={styles.primaryButtonLabel}>
+                    {readyState.packageBusy ? 'Refreshing packages...' : 'Refresh assigned packages'}
+                  </Text>
+                </Pressable>
+
+                <Text style={styles.helperText}>
+                  {readyState.session.connectionMode === 'connected'
+                    ? 'Connected mode can refresh the assigned package list and download snapshots.'
+                    : 'Offline mode can open downloaded packages later, but refresh/download remains unavailable until reconnection.'}
+                </Text>
+
+                {readyState.workPackages.length === 0 ? (
+                  <Text style={styles.helperText}>
+                    No assigned packages are cached on this device yet. Refresh while connected to
+                    load your bounded working set.
+                  </Text>
+                ) : null}
+
+                {readyState.workPackages.map((workPackage) => (
+                  <View key={workPackage.id} style={styles.listCard}>
+                    <Text style={styles.listCardTitle}>{workPackage.title}</Text>
+                    <Text style={styles.helperText}>
+                      {workPackage.id} · {workPackage.sourceReference}
+                    </Text>
+
+                    <View style={styles.metricGrid}>
+                      <MetricCard label="Priority" value={workPackage.priority} />
+                      <MetricCard label="Tags" value={String(workPackage.tagCount)} />
+                    </View>
+
+                    <View style={styles.metricGrid}>
+                      <MetricCard
+                        label="Due"
+                        value={formatDueWindow(workPackage.dueWindow.endsAt)}
+                      />
+                      <MetricCard
+                        label="Downloaded"
+                        value={
+                          workPackage.downloadedAt
+                            ? formatTimestamp(workPackage.downloadedAt)
+                            : 'Not yet'
+                        }
+                      />
+                    </View>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={
+                        readyState.packageBusy || readyState.session?.connectionMode !== 'connected'
+                      }
+                      onPress={() => void handleDownloadAssignedPackage(workPackage.id)}
+                      style={[
+                        styles.secondaryButton,
+                        readyState.packageBusy || readyState.session?.connectionMode !== 'connected'
+                          ? styles.buttonDisabled
+                          : null,
+                      ]}
+                    >
+                      <Text style={styles.secondaryButtonLabel}>
+                        {workPackage.hasSnapshot ? 'Redownload snapshot' : 'Download snapshot'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.panel}>
+                <Text style={styles.panelTitle}>Local storage diagnostics</Text>
+                <Text style={styles.panelBody}>
+                  SQLite now also holds user-partitioned draft, evidence, and queue placeholders while
+                  the sandbox boundary isolates future media files under the authenticated user.
+                </Text>
+
+                <View style={styles.metricGrid}>
                   <MetricCard label="Database" value={readyState.databaseName} />
                   <MetricCard
                     label="Schema version"
@@ -616,6 +834,14 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 
 function formatTimestamp(value: string) {
   return new Date(value).toLocaleString();
+}
+
+function formatDueWindow(value: string | null) {
+  if (!value) {
+    return 'Not set';
+  }
+
+  return formatTimestamp(value);
 }
 
 const styles = StyleSheet.create({
@@ -793,5 +1019,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     color: '#64748b',
+  },
+  listCard: {
+    backgroundColor: '#f8faf9',
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#e5ece8',
+  },
+  listCardTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '800',
+    color: '#0f172a',
   },
 });

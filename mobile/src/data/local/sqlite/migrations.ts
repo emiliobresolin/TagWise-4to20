@@ -187,6 +187,49 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 5,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS assigned_work_package_summaries (
+          owner_user_id TEXT NOT NULL,
+          work_package_id TEXT NOT NULL,
+          source_reference TEXT NOT NULL,
+          title TEXT NOT NULL,
+          assigned_team TEXT NOT NULL,
+          priority TEXT NOT NULL,
+          status TEXT NOT NULL,
+          package_version INTEGER NOT NULL,
+          snapshot_contract_version TEXT NOT NULL,
+          tag_count INTEGER NOT NULL,
+          due_starts_at TEXT,
+          due_ends_at TEXT,
+          updated_at TEXT NOT NULL,
+          last_downloaded_at TEXT,
+          local_updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, work_package_id)
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_assigned_work_package_summaries_owner
+        ON assigned_work_package_summaries (owner_user_id, due_ends_at ASC, work_package_id ASC);
+      `);
+
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS assigned_work_package_snapshots (
+          owner_user_id TEXT NOT NULL,
+          work_package_id TEXT NOT NULL,
+          package_version INTEGER NOT NULL,
+          snapshot_contract_version TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL,
+          downloaded_at TEXT NOT NULL,
+          server_updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, work_package_id)
+        );
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

@@ -68,6 +68,25 @@ describe('UserPartitionedLocalStoreFactory', () => {
       payloadJson: '{"queued":true}',
     });
 
+    await technicianStore.workPackages.upsertCatalog([
+      {
+        id: 'wp-101',
+        sourceReference: 'seed-cmms-101',
+        title: 'Technician owned package',
+        assignedTeam: 'Instrumentation Alpha',
+        priority: 'high',
+        status: 'assigned',
+        packageVersion: 1,
+        snapshotContractVersion: '2026-04-v1',
+        tagCount: 1,
+        dueWindow: {
+          startsAt: '2026-04-20T08:00:00.000Z',
+          endsAt: '2026-04-20T17:00:00.000Z',
+        },
+        updatedAt: '2026-04-19T10:00:00.000Z',
+      },
+    ]);
+
     expect(await supervisorStore.drafts.getDraft({ businessObjectType: 'tag', businessObjectId: 'tag-101' })).toBeNull();
     expect(
       await supervisorStore.evidenceMetadata.listEvidenceByBusinessObject({
@@ -81,6 +100,7 @@ describe('UserPartitionedLocalStoreFactory', () => {
         businessObjectId: 'tag-101',
       }),
     ).toEqual([]);
+    expect(await supervisorStore.workPackages.listSummaries()).toEqual([]);
 
     expect(
       await technicianStore.drafts.getDraft({ businessObjectType: 'tag', businessObjectId: 'tag-101' }),
@@ -97,6 +117,7 @@ describe('UserPartitionedLocalStoreFactory', () => {
         businessObjectId: 'tag-101',
       }),
     ).toHaveLength(1);
+    expect(await technicianStore.workPackages.listSummaries()).toHaveLength(1);
 
     expect(sandboxFile.relativePath).toContain('evidence/users/user-technician/tag/tag-101');
     expect(readFileSync(sandboxFile.uri, 'utf-8')).toBe('owned by technician');

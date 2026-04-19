@@ -73,6 +73,24 @@ export function verifyRefreshToken(
   return claims;
 }
 
+export function verifyAccessToken(
+  token: string,
+  config: AuthConfig,
+  now: Date = new Date(),
+): AccessTokenClaims {
+  const claims = verifyToken(token, config.tokenSecret);
+
+  if (claims.typ !== 'access') {
+    throw new AuthenticationError('Invalid access token type.');
+  }
+
+  if (claims.exp <= toEpochSeconds(now)) {
+    throw new AuthenticationError('Access token expired.');
+  }
+
+  return claims;
+}
+
 function signToken(claims: TokenClaims, secret: string): string {
   const header: TokenHeader = {
     alg: 'HS256',

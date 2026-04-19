@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.issueTokenPair = issueTokenPair;
 exports.verifyRefreshToken = verifyRefreshToken;
+exports.verifyAccessToken = verifyAccessToken;
 const node_crypto_1 = require("node:crypto");
 const model_1 = require("./model");
 function issueTokenPair(user, sessionVersion, config, now = new Date()) {
@@ -36,6 +37,16 @@ function verifyRefreshToken(token, config, now = new Date()) {
     }
     if (claims.exp <= toEpochSeconds(now)) {
         throw new model_1.AuthenticationError('Refresh token expired.');
+    }
+    return claims;
+}
+function verifyAccessToken(token, config, now = new Date()) {
+    const claims = verifyToken(token, config.tokenSecret);
+    if (claims.typ !== 'access') {
+        throw new model_1.AuthenticationError('Invalid access token type.');
+    }
+    if (claims.exp <= toEpochSeconds(now)) {
+        throw new model_1.AuthenticationError('Access token expired.');
     }
     return claims;
 }

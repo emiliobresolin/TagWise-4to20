@@ -43,15 +43,17 @@ describe('runMigrations', () => {
           'user_partitioned_drafts',
           'user_partitioned_evidence_metadata',
           'user_partitioned_queue_items',
-          'mobile_runtime_error_events'
+          'mobile_runtime_error_events',
+          'assigned_work_package_summaries',
+          'assigned_work_package_snapshots'
          );`,
     );
 
-    expect(summary.currentSchemaVersion).toBe(4);
-    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4']);
+    expect(summary.currentSchemaVersion).toBe(5);
+    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5']);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
-    expect(partitionTables?.count).toBe(6);
+    expect(partitionTables?.count).toBe(8);
 
     await database.closeAsync?.();
   });
@@ -73,7 +75,7 @@ describe('runMigrations', () => {
     );
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(applied).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
+    expect(applied).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]);
     expect(record?.count).toBe(1);
 
     await database.closeAsync?.();

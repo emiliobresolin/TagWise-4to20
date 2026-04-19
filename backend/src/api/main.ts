@@ -7,6 +7,8 @@ import { AuditEventRepository } from '../modules/audit/auditEventRepository';
 import { AuditEventService } from '../modules/audit/auditEventService';
 import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
+import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
+import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createApiRequestHandler } from './createApiRequestHandler';
 
 async function main() {
@@ -21,12 +23,21 @@ async function main() {
     throw new Error('API auth configuration is missing.');
   }
 
+  const authRepository = new AuthRepository(pool);
   const authService = new AuthService(
-    new AuthRepository(pool),
+    authRepository,
     environment.auth,
     new AuditEventService(new AuditEventRepository(pool)),
   );
   await authService.ensureSeedUsers();
+  const technician = await authRepository.findByEmail(environment.auth.seedUsers.technician.email);
+  if (!technician) {
+    throw new Error('Seed technician account is missing after auth bootstrap.');
+  }
+  const assignedWorkPackageService = new AssignedWorkPackageService(
+    new AssignedWorkPackageRepository(pool),
+  );
+  await assignedWorkPackageService.ensureSeedPackages(technician.id);
 
   const runtime = createServiceRuntime({
     serviceName: 'api-service',
@@ -35,7 +46,7 @@ async function main() {
     port: environment.port,
     verifyDatabaseReadiness: () => verifyPostgresConnectivity(pool),
     logger,
-    handleRequest: createApiRequestHandler({ authService }),
+    handleRequest: createApiRequestHandler({ authService, assignedWorkPackageService }),
   });
 
   const { port } = await runtime.start();

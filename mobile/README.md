@@ -8,6 +8,8 @@ Story 1.4 adds user-partitioned local draft, evidence metadata, and queue placeh
 
 Story 1.5 adds baseline mobile diagnostics capture backed by SQLite so forced runtime errors can be stored with device and session context.
 
+Story 2.1 adds a connected package refresh/download flow plus local SQLite persistence for bounded assigned work package snapshots.
+
 ## Commands
 - `npm start`
 - `npm run android`
@@ -45,3 +47,12 @@ Optional environment:
 - `Captured errors` increments
 - `Latest mobile diagnostic` shows `Forced mobile diagnostics capture`
 - the stored diagnostic remains available after fully closing and reopening the app
+14. Return to the `Packages` route and tap `Refresh assigned packages`.
+15. Expected result after package refresh:
+- at least one assigned package card appears
+- each card shows package id, priority, tag count, and due window
+16. Tap `Download snapshot` on one assigned package.
+17. Expected result after package download:
+- the package card shows a non-empty `Downloaded` timestamp
+- fully closing and reopening the app keeps the downloaded package visible on the `Packages` route
+- if the backend API is stopped, the app still shows the cached downloaded package while refresh/download controls stay unavailable offline

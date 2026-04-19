@@ -57,8 +57,63 @@ function createApiRequestHandler(dependencies) {
             }
             return true;
         }
+        if (method === 'GET' && url === '/work-packages') {
+            try {
+                const user = await authenticateRequest(request, dependencies.authService);
+                const items = await dependencies.assignedWorkPackageService.listAssignedPackages(user);
+                context.logger.info('work-packages.list.succeeded', {
+                    actorId: user.id,
+                    actorRole: user.role,
+                    packageCount: items.length,
+                });
+                writeJson(response, 200, { items });
+            }
+            catch (error) {
+                context.logger.warn('work-packages.list.failed', {
+                    statusCode: error instanceof model_1.AuthenticationError ? error.statusCode : 500,
+                });
+                writeAuthError(response, error);
+            }
+            return true;
+        }
+        const downloadMatch = method === 'GET' ? url.match(/^\/work-packages\/([^/]+)\/download$/) : null;
+        if (downloadMatch) {
+            try {
+                const user = await authenticateRequest(request, dependencies.authService);
+                const snapshot = await dependencies.assignedWorkPackageService.downloadAssignedPackage(user, decodeURIComponent(downloadMatch[1] ?? ''));
+                if (!snapshot) {
+                    writeJson(response, 404, { message: 'Assigned work package was not found in scope.' });
+                    return true;
+                }
+                context.logger.info('work-packages.download.succeeded', {
+                    actorId: user.id,
+                    actorRole: user.role,
+                    workPackageId: snapshot.summary.id,
+                    tagCount: snapshot.summary.tagCount,
+                });
+                writeJson(response, 200, snapshot);
+            }
+            catch (error) {
+                context.logger.warn('work-packages.download.failed', {
+                    statusCode: error instanceof model_1.AuthenticationError ? error.statusCode : 500,
+                });
+                writeAuthError(response, error);
+            }
+            return true;
+        }
         return false;
     };
+}
+async function authenticateRequest(request, authService) {
+    const authorizationHeader = request.headers.authorization;
+    if (!authorizationHeader) {
+        throw new model_1.AuthenticationError('Authorization header is required.');
+    }
+    const [scheme, token] = authorizationHeader.split(/\s+/);
+    if (scheme?.toLowerCase() !== 'bearer' || !token) {
+        throw new model_1.AuthenticationError('Bearer access token is required.');
+    }
+    return authService.authenticateAccessToken(token);
 }
 async function readJsonBody(request) {
     const chunks = [];
