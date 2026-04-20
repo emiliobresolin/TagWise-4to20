@@ -239,6 +239,36 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 7,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_partitioned_execution_progress (
+          owner_user_id TEXT NOT NULL,
+          work_package_id TEXT NOT NULL,
+          tag_id TEXT NOT NULL,
+          template_id TEXT NOT NULL,
+          template_version TEXT NOT NULL,
+          instrument_family TEXT NOT NULL,
+          test_pattern TEXT NOT NULL,
+          current_step_id TEXT NOT NULL,
+          visited_step_ids_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, work_package_id, tag_id, template_id)
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_user_partitioned_execution_progress_owner
+        ON user_partitioned_execution_progress (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          updated_at DESC
+        );
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

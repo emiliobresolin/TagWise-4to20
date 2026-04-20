@@ -68,6 +68,18 @@ describe('UserPartitionedLocalStoreFactory', () => {
       payloadJson: '{"queued":true}',
     });
 
+    await technicianStore.executionProgress.saveProgress({
+      workPackageId: 'wp-101',
+      tagId: 'tag-101',
+      templateId: 'tpl-pressure',
+      templateVersion: '2026-04-v1',
+      instrumentFamily: 'pressure transmitter',
+      testPattern: 'as-found calibration check',
+      currentStepId: 'history',
+      visitedStepIds: ['context', 'history'],
+      updatedAt: '2026-04-20T10:15:00.000Z',
+    });
+
     await technicianStore.workPackages.upsertCatalog([
       {
         id: 'wp-101',
@@ -100,6 +112,9 @@ describe('UserPartitionedLocalStoreFactory', () => {
         businessObjectId: 'tag-101',
       }),
     ).toEqual([]);
+    expect(
+      await supervisorStore.executionProgress.getProgress('wp-101', 'tag-101', 'tpl-pressure'),
+    ).toBeNull();
     expect(await supervisorStore.workPackages.listSummaries()).toEqual([]);
 
     expect(
@@ -117,6 +132,12 @@ describe('UserPartitionedLocalStoreFactory', () => {
         businessObjectId: 'tag-101',
       }),
     ).toHaveLength(1);
+    expect(
+      await technicianStore.executionProgress.getProgress('wp-101', 'tag-101', 'tpl-pressure'),
+    ).toMatchObject({
+      currentStepId: 'history',
+      visitedStepIds: ['context', 'history'],
+    });
     expect(await technicianStore.workPackages.listSummaries()).toHaveLength(1);
 
     expect(sandboxFile.relativePath).toContain('evidence/users/user-technician/tag/tag-101');

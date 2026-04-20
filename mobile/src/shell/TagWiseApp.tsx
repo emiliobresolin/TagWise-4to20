@@ -29,6 +29,8 @@ import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/
 import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
+import { SharedExecutionShellService } from '../features/execution/sharedExecutionShellService';
+import type { SharedExecutionField, SharedExecutionShell } from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
 import { LocalTagContextService } from '../features/work-packages/localTagContextService';
 import { LocalTagEntryService } from '../features/work-packages/localTagEntryService';
@@ -66,6 +68,7 @@ type BootstrapStatus =
       workPackageCatalog: AssignedWorkPackageCatalogService;
       localTagEntryService: LocalTagEntryService;
       localTagContextService: LocalTagContextService;
+      executionShellService: SharedExecutionShellService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
@@ -76,7 +79,7 @@ type BootstrapStatus =
       visibleTags: LocalAssignedTagEntry[];
       selectedTag: LocalAssignedTagEntry | null;
       selectedTagContext: LocalTagContext | null;
-      executionHandoffVisible: boolean;
+      executionShell: SharedExecutionShell | null;
       qrScannerVisible: boolean;
       qrManualPayload: string;
       qrScanResult: LocalQrScanResult | null;
@@ -129,6 +132,10 @@ export function TagWiseApp() {
         const localTagContextService = new LocalTagContextService({
           userPartitions: runtime.repositories.userPartitions,
         });
+        const executionShellService = new SharedExecutionShellService({
+          userPartitions: runtime.repositories.userPartitions,
+          tagContextService: localTagContextService,
+        });
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
@@ -160,6 +167,7 @@ export function TagWiseApp() {
           workPackageCatalog,
           localTagEntryService,
           localTagContextService,
+          executionShellService,
           session,
           localOwnership,
           authBusy: false,
@@ -173,7 +181,7 @@ export function TagWiseApp() {
           visibleTags: [],
           selectedTag: null,
           selectedTagContext: null,
-          executionHandoffVisible: false,
+          executionShell: null,
           qrScannerVisible: false,
           qrManualPayload: '',
           qrScanResult: null,
@@ -323,7 +331,7 @@ export function TagWiseApp() {
               visibleTags: [],
               selectedTag: null,
               selectedTagContext: null,
-              executionHandoffVisible: false,
+              executionShell: null,
               qrScannerVisible: false,
               qrManualPayload: '',
               qrScanResult: null,
@@ -375,7 +383,7 @@ export function TagWiseApp() {
               visibleTags: [],
               selectedTag: null,
               selectedTagContext: null,
-              executionHandoffVisible: false,
+              executionShell: null,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -429,7 +437,7 @@ export function TagWiseApp() {
               visibleTags: [],
               selectedTag: null,
               selectedTagContext: null,
-              executionHandoffVisible: false,
+              executionShell: null,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -470,7 +478,7 @@ export function TagWiseApp() {
             visibleTags,
             selectedTag: null,
             selectedTagContext: null,
-            executionHandoffVisible: false,
+            executionShell: null,
             qrScanResult: null,
             authMessage:
               visibleTags.length > 0
@@ -507,11 +515,11 @@ export function TagWiseApp() {
               visibleTags.some((tag) => tag.tagId === current.selectedTagContext?.tagId)
                 ? current.selectedTagContext
                 : null,
-            executionHandoffVisible:
-              current.selectedTagContext &&
-              visibleTags.some((tag) => tag.tagId === current.selectedTagContext?.tagId)
-                ? current.executionHandoffVisible
-                : false,
+            executionShell:
+              current.executionShell &&
+              visibleTags.some((tag) => tag.tagId === current.executionShell?.tagId)
+                ? current.executionShell
+                : null,
           },
     );
   }
@@ -535,7 +543,7 @@ export function TagWiseApp() {
             activeTagPackageId: entry.workPackageId,
             selectedTag: entry,
             selectedTagContext,
-            executionHandoffVisible: false,
+            executionShell: null,
             authMessage: selectedTagContext
               ? `Tag context loaded locally for ${entry.tagCode}.`
               : 'Selected tag context is not available in local storage.',
@@ -562,7 +570,7 @@ export function TagWiseApp() {
               ...current,
               selectedTag: null,
               selectedTagContext: null,
-              executionHandoffVisible: false,
+              executionShell: null,
               authMessage: 'Selected tag is no longer available in local package scope.',
             },
       );
@@ -572,16 +580,26 @@ export function TagWiseApp() {
     await openTagContext(selectedTag);
   }
 
-  function handleProceedToExecutionShell() {
+  async function handleProceedToExecutionShell() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.selectedTag) {
+      return;
+    }
+
+    const executionShell = await readyState.executionShellService.loadShell(
+      readyState.session,
+      readyState.selectedTag.workPackageId,
+      readyState.selectedTag.tagId,
+    );
+
     setStatus((current) =>
       current.type !== 'ready'
         ? current
         : {
             ...current,
-            executionHandoffVisible: true,
-            authMessage: current.selectedTagContext
-              ? `Execution shell handoff prepared for ${current.selectedTagContext.tagCode}.`
-              : current.authMessage,
+            executionShell,
+            authMessage: executionShell
+              ? `Shared execution shell loaded for ${executionShell.tagCode}.`
+              : 'No local template contract is available for this tag.',
           },
     );
   }
@@ -592,9 +610,52 @@ export function TagWiseApp() {
         ? current
         : {
             ...current,
-            executionHandoffVisible: false,
+            executionShell: null,
           },
     );
+  }
+
+  async function handleOpenExecutionStep(stepId: string) {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    const executionShell = await readyState.executionShellService.selectStep(
+      readyState.session,
+      readyState.executionShell,
+      stepId,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+          },
+    );
+  }
+
+  async function handleMoveExecutionStep(direction: 'previous' | 'next') {
+    if (status.type !== 'ready' || !readyState.executionShell) {
+      return;
+    }
+
+    const currentIndex = readyState.executionShell.steps.findIndex(
+      (step) => step.id === readyState.executionShell?.progress.currentStepId,
+    );
+
+    if (currentIndex < 0) {
+      return;
+    }
+
+    const nextIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
+    const nextStep = readyState.executionShell.steps[nextIndex];
+    if (!nextStep) {
+      return;
+    }
+
+    await handleOpenExecutionStep(nextStep.id);
   }
 
   async function handleStartQrScanner() {
@@ -677,7 +738,7 @@ export function TagWiseApp() {
               visibleTags,
               selectedTag: qrScanResult.tag,
               selectedTagContext,
-              executionHandoffVisible: false,
+              executionShell: null,
               authMessage: selectedTagContext
                 ? qrScanResult.message
                 : 'Selected tag context is not available in local storage.',
@@ -698,7 +759,7 @@ export function TagWiseApp() {
             visibleTags: [],
             selectedTag: null,
             selectedTagContext: null,
-            executionHandoffVisible: false,
+            executionShell: null,
             authMessage: null,
           },
     );
@@ -762,7 +823,7 @@ export function TagWiseApp() {
             visibleTags: [],
             selectedTag: null,
             selectedTagContext: null,
-            executionHandoffVisible: false,
+            executionShell: null,
             qrScanResult: null,
           },
     );
@@ -849,8 +910,7 @@ export function TagWiseApp() {
             visibleTags: result.state === 'cleared' ? [] : current.visibleTags,
             selectedTag: result.state === 'cleared' ? null : current.selectedTag,
             selectedTagContext: result.state === 'cleared' ? null : current.selectedTagContext,
-            executionHandoffVisible:
-              result.state === 'cleared' ? false : current.executionHandoffVisible,
+            executionShell: result.state === 'cleared' ? null : current.executionShell,
             qrScannerVisible: result.state === 'cleared' ? false : current.qrScannerVisible,
             qrManualPayload: result.state === 'cleared' ? '' : current.qrManualPayload,
             qrScanResult: result.state === 'cleared' ? null : current.qrScanResult,
@@ -859,8 +919,17 @@ export function TagWiseApp() {
                 ? 'Session cleared. Connected sign-in is required for the next user.'
                 : result.message ?? 'User switch blocked.',
           },
-    );
+      );
   }
+
+  const selectedExecutionStep =
+    readyState.executionShell?.steps.find(
+      (step) => step.id === readyState.executionShell?.progress.currentStepId,
+    ) ?? null;
+  const selectedExecutionStepIndex =
+    readyState.executionShell && selectedExecutionStep
+      ? readyState.executionShell.steps.findIndex((step) => step.id === selectedExecutionStep.id)
+      : -1;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -1182,7 +1251,7 @@ export function TagWiseApp() {
                       Results never imply access to uncached tags outside the local snapshot.
                     </Text>
 
-                    {readyState.selectedTagContext && !readyState.executionHandoffVisible ? (
+                    {readyState.selectedTagContext && !readyState.executionShell ? (
                       <View style={styles.listCard}>
                         <Text style={styles.listCardTitle}>Tag context</Text>
                         <Text style={styles.metricValue}>{readyState.selectedTagContext.tagCode}</Text>
@@ -1278,7 +1347,7 @@ export function TagWiseApp() {
 
                         <Pressable
                           accessibilityRole="button"
-                          onPress={handleProceedToExecutionShell}
+                          onPress={() => void handleProceedToExecutionShell()}
                           style={styles.primaryButton}
                         >
                           <Text style={styles.primaryButtonLabel}>Proceed to execution shell</Text>
@@ -1286,17 +1355,100 @@ export function TagWiseApp() {
                       </View>
                     ) : null}
 
-                    {readyState.selectedTagContext && readyState.executionHandoffVisible ? (
+                    {readyState.executionShell && selectedExecutionStep ? (
                       <View style={styles.listCard}>
-                        <Text style={styles.listCardTitle}>Execution shell handoff</Text>
-                        <Text style={styles.metricValue}>
-                          {readyState.selectedTagContext.tagCode}
-                        </Text>
+                        <Text style={styles.listCardTitle}>Shared execution shell</Text>
+                        <Text style={styles.metricValue}>{readyState.executionShell.tagCode}</Text>
                         <Text style={styles.helperText}>
-                          Shared execution starts from this selected tag context. Local template hint:{' '}
-                          {readyState.selectedTagContext.referencePointers.executionTemplateLabel ??
-                            'No local template pointer available yet.'}
+                          {readyState.executionShell.template.title} /{' '}
+                          {readyState.executionShell.template.instrumentFamily} /{' '}
+                          {readyState.executionShell.template.testPattern}
                         </Text>
+
+                        <View style={styles.metricGrid}>
+                          <MetricCard
+                            label="Template version"
+                            value={readyState.executionShell.template.version}
+                          />
+                          <MetricCard
+                            label="Step"
+                            value={`${selectedExecutionStepIndex + 1} of ${readyState.executionShell.steps.length}`}
+                          />
+                        </View>
+
+                        <View style={styles.listCard}>
+                          <Text style={styles.metricLabel}>Execution steps</Text>
+                          {readyState.executionShell.steps.map((step) => {
+                            const isCurrent =
+                              step.id === readyState.executionShell?.progress.currentStepId;
+                            const isVisited = readyState.executionShell?.progress.visitedStepIds.includes(
+                              step.id,
+                            );
+
+                            return (
+                              <Pressable
+                                key={step.id}
+                                accessibilityRole="button"
+                                onPress={() => void handleOpenExecutionStep(step.id)}
+                                style={[
+                                  styles.secondaryButton,
+                                  isCurrent ? styles.routeButtonActive : null,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.secondaryButtonLabel,
+                                    isCurrent ? styles.routeButtonLabelActive : null,
+                                  ]}
+                                >
+                                  {step.title} {isCurrent ? '(Current)' : isVisited ? '(Visited)' : '(Upcoming)'}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+
+                        <View style={styles.metricCard}>
+                          <Text style={styles.metricLabel}>{selectedExecutionStep.title}</Text>
+                          <Text style={styles.metricValue}>{selectedExecutionStep.summary}</Text>
+                          <Text style={styles.helperText}>{selectedExecutionStep.detail}</Text>
+                        </View>
+
+                        {selectedExecutionStep.fields.map((field) => (
+                          <ExecutionFieldCard key={field.label} field={field} />
+                        ))}
+
+                        <View style={styles.metricGrid}>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={selectedExecutionStepIndex <= 0}
+                            onPress={() => void handleMoveExecutionStep('previous')}
+                            style={[
+                              styles.secondaryButton,
+                              selectedExecutionStepIndex <= 0 ? styles.buttonDisabled : null,
+                            ]}
+                          >
+                            <Text style={styles.secondaryButtonLabel}>Previous step</Text>
+                          </Pressable>
+                          <Pressable
+                            accessibilityRole="button"
+                            disabled={
+                              selectedExecutionStepIndex < 0 ||
+                              selectedExecutionStepIndex >= readyState.executionShell.steps.length - 1
+                            }
+                            onPress={() => void handleMoveExecutionStep('next')}
+                            style={[
+                              styles.primaryButton,
+                              selectedExecutionStepIndex < 0 ||
+                              selectedExecutionStepIndex >= readyState.executionShell.steps.length - 1
+                                ? styles.buttonDisabled
+                                : null,
+                            ]}
+                          >
+                            <Text style={styles.primaryButtonLabel}>Next step</Text>
+                          </Pressable>
+                        </View>
+
                         <Pressable
                           accessibilityRole="button"
                           onPress={handleReturnToTagContext}
@@ -1513,6 +1665,31 @@ function ContextFieldCard({
     <View style={[styles.metricCard, field.state === 'missing' ? styles.missingMetricCard : null]}>
       <Text style={styles.metricLabel}>{field.label}</Text>
       <Text style={[styles.metricValue, field.state === 'missing' ? styles.missingMetricValue : null]}>
+        {field.value}
+      </Text>
+    </View>
+  );
+}
+
+function ExecutionFieldCard({
+  field,
+}: {
+  field: SharedExecutionField;
+}) {
+  return (
+    <View
+      style={[
+        styles.metricCard,
+        field.state === 'available' ? null : styles.missingMetricCard,
+      ]}
+    >
+      <Text style={styles.metricLabel}>{field.label}</Text>
+      <Text
+        style={[
+          styles.metricValue,
+          field.state === 'available' ? null : styles.missingMetricValue,
+        ]}
+      >
         {field.value}
       </Text>
     </View>

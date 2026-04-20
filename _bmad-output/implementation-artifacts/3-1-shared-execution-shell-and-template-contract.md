@@ -1,6 +1,6 @@
 ﻿# Story 3.1: Shared Execution Shell and Template Contract
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 3-1-shared-execution-shell-and-template-contract
@@ -41,3 +41,35 @@ use a data-driven template contract that can render family/test-pattern variatio
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a shared local execution-shell contract and template registry that resolve template identity, family, test pattern, and ordered shell steps directly from downloaded package snapshots.
+- Added user-partitioned execution-progress persistence in SQLite so the current execution step and visited steps survive restart-like reopen cycles without any remote dependency.
+- Replaced the old tag-context handoff stub with a real shared execution shell that reuses the selected-tag path from Epic 2 and supports ordered offline step navigation across context, calculation setup, history comparison, and checklist/guidance.
+- Kept Story 3.1 narrow: no calculation engine, no family-specific forms, no evidence/report flow, and no sync or approval behavior were introduced.
+
+### Tests Run
+- `cd mobile && npm test`
+- `cd mobile && npm run typecheck`
+- `cd mobile && npx expo export --platform android`
+- `cd backend && npm test`
+- `cd backend && npm run typecheck`
+- `cd backend && npm run build`
+
+### File List
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/localExecutionTemplateRegistry.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/data/local/repositories/userPartitionedExecutionProgressRepository.ts`
+- `mobile/src/data/local/repositories/userPartitionedLocalStoreFactory.ts`
+- `mobile/src/data/local/repositories/userPartitionedLocalStoreFactory.test.ts`
+- `mobile/src/data/local/sqlite/migrations.ts`
+- `mobile/src/data/local/sqlite/bootstrap.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/3-1-shared-execution-shell-and-template-contract.md`
