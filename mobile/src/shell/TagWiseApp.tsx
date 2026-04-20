@@ -29,11 +29,15 @@ import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
+import { LocalTagEntryService } from '../features/work-packages/localTagEntryService';
 import {
   evaluateAssignedWorkPackageReadiness,
   formatAssignedWorkPackageFreshness,
 } from '../features/work-packages/assignedWorkPackageReadiness';
-import type { LocalAssignedWorkPackageSummary } from '../features/work-packages/model';
+import type {
+  LocalAssignedTagEntry,
+  LocalAssignedWorkPackageSummary,
+} from '../features/work-packages/model';
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
@@ -53,11 +57,16 @@ type BootstrapStatus =
       sessionController: SessionController;
       errorCapture: MobileErrorCaptureService;
       workPackageCatalog: AssignedWorkPackageCatalogService;
+      localTagEntryService: LocalTagEntryService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
       packageBusy: boolean;
       authMessage: string | null;
+      activeTagPackageId: string | null;
+      tagSearchQuery: string;
+      visibleTags: LocalAssignedTagEntry[];
+      selectedTag: LocalAssignedTagEntry | null;
     };
 
 const placeholderRoutes = [
@@ -99,6 +108,9 @@ export function TagWiseApp() {
           }),
           userPartitions: runtime.repositories.userPartitions,
         });
+        const localTagEntryService = new LocalTagEntryService({
+          userPartitions: runtime.repositories.userPartitions,
+        });
         const restoredSession = await sessionController.restoreSession();
         const session =
           restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null;
@@ -125,6 +137,7 @@ export function TagWiseApp() {
           sessionController,
           errorCapture,
           workPackageCatalog,
+          localTagEntryService,
           session,
           localOwnership,
           authBusy: false,
@@ -133,6 +146,10 @@ export function TagWiseApp() {
             restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
               ? 'Offline session restored from cached role metadata.'
               : null,
+          activeTagPackageId: null,
+          tagSearchQuery: '',
+          visibleTags: [],
+          selectedTag: null,
         });
       } catch (error) {
         if (!isActive) {
@@ -273,6 +290,10 @@ export function TagWiseApp() {
               workPackages,
               authBusy: false,
               authMessage,
+              activeTagPackageId: null,
+              tagSearchQuery: '',
+              visibleTags: [],
+              selectedTag: null,
             },
       );
     } catch (error) {
@@ -316,6 +337,10 @@ export function TagWiseApp() {
               workPackages,
               packageBusy: false,
               authMessage: `${workPackages.length} assigned package(s) refreshed for offline use.`,
+              activeTagPackageId: null,
+              tagSearchQuery: '',
+              visibleTags: [],
+              selectedTag: null,
             },
       );
     } catch (error) {
@@ -362,6 +387,10 @@ export function TagWiseApp() {
               workPackages: result.summaries,
               packageBusy: false,
               authMessage: `Assigned package ${result.snapshot.summary.id} snapshot stored locally and freshness updated.`,
+              activeTagPackageId: null,
+              tagSearchQuery: '',
+              visibleTags: [],
+              selectedTag: null,
             },
       );
     } catch (error) {
@@ -378,6 +407,97 @@ export function TagWiseApp() {
             },
       );
     }
+  }
+
+  async function handleBrowsePackageTags(workPackageId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    const visibleTags = await readyState.localTagEntryService.listPackageTags(
+      readyState.session,
+      workPackageId,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            activeTagPackageId: workPackageId,
+            tagSearchQuery: '',
+            visibleTags,
+            selectedTag: null,
+            authMessage:
+              visibleTags.length > 0
+                ? `Loaded ${visibleTags.length} cached tag(s) from package ${workPackageId}.`
+                : `No cached tags are available in package ${workPackageId}. Download the snapshot first.`,
+          },
+    );
+  }
+
+  async function handleTagSearchChange(query: string) {
+    if (status.type !== 'ready' || !readyState.session || !readyState.activeTagPackageId) {
+      return;
+    }
+
+    const visibleTags = await readyState.localTagEntryService.searchPackageTags(
+      readyState.session,
+      readyState.activeTagPackageId,
+      query,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            tagSearchQuery: query,
+            visibleTags,
+            selectedTag:
+              current.selectedTag && visibleTags.some((tag) => tag.tagId === current.selectedTag?.tagId)
+                ? current.selectedTag
+                : null,
+          },
+    );
+  }
+
+  async function handleOpenTag(tagId: string) {
+    if (status.type !== 'ready' || !readyState.session || !readyState.activeTagPackageId) {
+      return;
+    }
+
+    const selectedTag = await readyState.localTagEntryService.selectPackageTag(
+      readyState.session,
+      readyState.activeTagPackageId,
+      tagId,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            selectedTag,
+            authMessage: selectedTag
+              ? `Selected tag ${selectedTag.tagCode} from local package scope.`
+              : 'Selected tag is no longer available in local package scope.',
+          },
+    );
+  }
+
+  function handleCloseTagBrowser() {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            activeTagPackageId: null,
+            tagSearchQuery: '',
+            visibleTags: [],
+            selectedTag: null,
+          },
+    );
   }
 
   async function handleCaptureDiagnosticError() {
@@ -456,6 +576,10 @@ export function TagWiseApp() {
             localOwnership: result.state === 'cleared' ? null : current.localOwnership,
             authBusy: false,
             workPackages: result.state === 'cleared' ? [] : current.workPackages,
+            activeTagPackageId: result.state === 'cleared' ? null : current.activeTagPackageId,
+            tagSearchQuery: result.state === 'cleared' ? '' : current.tagSearchQuery,
+            visibleTags: result.state === 'cleared' ? [] : current.visibleTags,
+            selectedTag: result.state === 'cleared' ? null : current.selectedTag,
             authMessage:
               result.state === 'cleared'
                 ? 'Session cleared. Connected sign-in is required for the next user.'
@@ -699,6 +823,72 @@ export function TagWiseApp() {
                   </Text>
                 ) : null}
 
+                {readyState.activeTagPackageId ? (
+                  <View style={styles.listCard}>
+                    <Text style={styles.listCardTitle}>Local tag entry</Text>
+                    <Text style={styles.helperText}>
+                      Package {readyState.visibleTags[0]?.workPackageTitle ?? readyState.activeTagPackageId}.
+                      Search stays inside this downloaded package only.
+                    </Text>
+
+                    <TextInput
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      onChangeText={(value) => void handleTagSearchChange(value)}
+                      placeholder="Search tag code or short description"
+                      style={styles.input}
+                      value={readyState.tagSearchQuery}
+                    />
+
+                    <Text style={styles.helperText}>
+                      Results never imply access to uncached tags outside the local snapshot.
+                    </Text>
+
+                    {readyState.selectedTag ? (
+                      <View style={styles.metricCard}>
+                        <Text style={styles.metricLabel}>Selected tag</Text>
+                        <Text style={styles.metricValue}>{readyState.selectedTag.tagCode}</Text>
+                        <Text style={styles.helperText}>{readyState.selectedTag.shortDescription}</Text>
+                        <Text style={styles.helperText}>
+                          {readyState.selectedTag.area} · {readyState.selectedTag.instrumentFamily}
+                        </Text>
+                        <Text style={styles.helperText}>
+                          Asset reference: {readyState.selectedTag.parentAssetReference}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    {readyState.visibleTags.length === 0 ? (
+                      <Text style={styles.helperText}>No cached tags matched this local search.</Text>
+                    ) : (
+                      readyState.visibleTags.map((tag) => (
+                        <View key={tag.tagId} style={styles.metricCard}>
+                          <Text style={styles.metricValue}>{tag.tagCode}</Text>
+                          <Text style={styles.helperText}>{tag.shortDescription}</Text>
+                          <Text style={styles.helperText}>
+                            {tag.area} · {tag.instrumentFamily}
+                          </Text>
+                          <Pressable
+                            accessibilityRole="button"
+                            onPress={() => void handleOpenTag(tag.tagId)}
+                            style={styles.secondaryButton}
+                          >
+                            <Text style={styles.secondaryButtonLabel}>Open tag</Text>
+                          </Pressable>
+                        </View>
+                      ))
+                    )}
+
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={handleCloseTagBrowser}
+                      style={styles.secondaryButton}
+                    >
+                      <Text style={styles.secondaryButtonLabel}>Back to package list</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+
                 {readyState.workPackages.map((workPackage) => {
                   const readiness = evaluateAssignedWorkPackageReadiness(workPackage);
 
@@ -758,6 +948,18 @@ export function TagWiseApp() {
                       <Text style={styles.secondaryButtonLabel}>
                         {workPackage.hasSnapshot ? 'Refresh snapshot' : 'Download snapshot'}
                       </Text>
+                    </Pressable>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={!workPackage.hasSnapshot}
+                      onPress={() => void handleBrowsePackageTags(workPackage.id)}
+                      style={[
+                        styles.secondaryButton,
+                        !workPackage.hasSnapshot ? styles.buttonDisabled : null,
+                      ]}
+                    >
+                      <Text style={styles.secondaryButtonLabel}>Browse cached tags</Text>
                     </Pressable>
                     </View>
                   );

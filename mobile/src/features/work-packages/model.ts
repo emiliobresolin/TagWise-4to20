@@ -92,3 +92,15 @@ export interface AssignedWorkPackageSnapshot {
   guidance: AssignedWorkPackageGuidanceSnapshot[];
   historySummaries: AssignedWorkPackageHistorySummarySnapshot[];
 }
+
+export interface LocalAssignedTagEntry {
+  workPackageId: string;
+  workPackageTitle: string;
+  tagId: string;
+  tagCode: string;
+  shortDescription: string;
+  area: string;
+  instrumentFamily: string;
+  instrumentSubtype: string;
+  parentAssetReference: string;
+}
