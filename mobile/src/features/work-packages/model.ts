@@ -104,3 +104,56 @@ export interface LocalAssignedTagEntry {
   instrumentSubtype: string;
   parentAssetReference: string;
 }
+
+export type LocalTagContextFieldState = 'available' | 'missing';
+export type LocalTagHistoryPreviewState = 'available' | 'missing' | 'unavailable';
+export type LocalTagReferencePointersState = 'available' | 'missing' | 'unavailable';
+
+export interface LocalTagContextField {
+  label: string;
+  value: string;
+  state: LocalTagContextFieldState;
+}
+
+export interface LocalTagHistoryPreview {
+  state: LocalTagHistoryPreviewState;
+  title: string;
+  summary: string;
+  detail: string;
+  lastObservedAt: string | null;
+}
+
+export interface LocalTagReferencePointers {
+  state: LocalTagReferencePointersState;
+  templates: string[];
+  guidance: string[];
+  detail: string;
+  executionTemplateLabel: string | null;
+}
+
+export interface LocalTagDueIndicator {
+  label: string;
+  value: string;
+  state: LocalTagContextFieldState;
+  overdue: boolean;
+}
+
+export interface LocalTagContext {
+  workPackageId: string;
+  workPackageTitle: string;
+  tagId: string;
+  tagCode: string;
+  shortDescription: string;
+  area: LocalTagContextField;
+  parentAssetReference: LocalTagContextField;
+  instrumentFamily: LocalTagContextField;
+  instrumentSubtype: LocalTagContextField;
+  measuredVariable: LocalTagContextField;
+  signalType: LocalTagContextField;
+  range: LocalTagContextField;
+  tolerance: LocalTagContextField;
+  criticality: LocalTagContextField;
+  dueIndicator: LocalTagDueIndicator;
+  historyPreview: LocalTagHistoryPreview;
+  referencePointers: LocalTagReferencePointers;
+}

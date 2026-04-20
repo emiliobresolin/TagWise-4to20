@@ -1,6 +1,6 @@
 ﻿# Story 2.5: Tag Context Screen
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 2-5-tag-context-screen
@@ -41,3 +41,26 @@ render only field-critical context first; visually distinguish missing context f
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a local tag context service that resolves field-critical tag context entirely from downloaded package snapshots in SQLite-backed local storage.
+- Extended the `Packages` route so opening a tag now renders a dedicated local tag context view with range/unit/tolerance, criticality, due status, history preview, local reference pointers, and explicit missing-context markers.
+- Added a minimal execution-shell handoff stub so technicians can proceed from tag context without prematurely implementing the full shared execution shell from Epic 3.
+- Kept the implementation narrow: no live lookup, no report flow, no approval logic, and no sync behavior were introduced.
+
+### Tests Run
+- `cd mobile && npm test`
+- `cd mobile && npm run typecheck`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/src/features/work-packages/model.ts`
+- `mobile/src/features/work-packages/localTagContextService.ts`
+- `mobile/src/features/work-packages/localTagContextService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/2-5-tag-context-screen.md`

@@ -30,6 +30,7 @@ import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
+import { LocalTagContextService } from '../features/work-packages/localTagContextService';
 import { LocalTagEntryService } from '../features/work-packages/localTagEntryService';
 import {
   LocalQrScanService,
@@ -41,6 +42,7 @@ import {
 } from '../features/work-packages/assignedWorkPackageReadiness';
 import type {
   LocalAssignedTagEntry,
+  LocalTagContext,
   LocalAssignedWorkPackageSummary,
 } from '../features/work-packages/model';
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
@@ -63,6 +65,7 @@ type BootstrapStatus =
       errorCapture: MobileErrorCaptureService;
       workPackageCatalog: AssignedWorkPackageCatalogService;
       localTagEntryService: LocalTagEntryService;
+      localTagContextService: LocalTagContextService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
@@ -72,6 +75,8 @@ type BootstrapStatus =
       tagSearchQuery: string;
       visibleTags: LocalAssignedTagEntry[];
       selectedTag: LocalAssignedTagEntry | null;
+      selectedTagContext: LocalTagContext | null;
+      executionHandoffVisible: boolean;
       qrScannerVisible: boolean;
       qrManualPayload: string;
       qrScanResult: LocalQrScanResult | null;
@@ -121,6 +126,9 @@ export function TagWiseApp() {
         const localTagEntryService = new LocalTagEntryService({
           userPartitions: runtime.repositories.userPartitions,
         });
+        const localTagContextService = new LocalTagContextService({
+          userPartitions: runtime.repositories.userPartitions,
+        });
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
@@ -151,6 +159,7 @@ export function TagWiseApp() {
           errorCapture,
           workPackageCatalog,
           localTagEntryService,
+          localTagContextService,
           session,
           localOwnership,
           authBusy: false,
@@ -163,6 +172,8 @@ export function TagWiseApp() {
           tagSearchQuery: '',
           visibleTags: [],
           selectedTag: null,
+          selectedTagContext: null,
+          executionHandoffVisible: false,
           qrScannerVisible: false,
           qrManualPayload: '',
           qrScanResult: null,
@@ -311,6 +322,8 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
+              selectedTagContext: null,
+              executionHandoffVisible: false,
               qrScannerVisible: false,
               qrManualPayload: '',
               qrScanResult: null,
@@ -361,6 +374,8 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
+              selectedTagContext: null,
+              executionHandoffVisible: false,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -413,6 +428,8 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
+              selectedTagContext: null,
+              executionHandoffVisible: false,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -452,6 +469,8 @@ export function TagWiseApp() {
             tagSearchQuery: '',
             visibleTags,
             selectedTag: null,
+            selectedTagContext: null,
+            executionHandoffVisible: false,
             qrScanResult: null,
             authMessage:
               visibleTags.length > 0
@@ -483,6 +502,43 @@ export function TagWiseApp() {
               current.selectedTag && visibleTags.some((tag) => tag.tagId === current.selectedTag?.tagId)
                 ? current.selectedTag
                 : null,
+            selectedTagContext:
+              current.selectedTagContext &&
+              visibleTags.some((tag) => tag.tagId === current.selectedTagContext?.tagId)
+                ? current.selectedTagContext
+                : null,
+            executionHandoffVisible:
+              current.selectedTagContext &&
+              visibleTags.some((tag) => tag.tagId === current.selectedTagContext?.tagId)
+                ? current.executionHandoffVisible
+                : false,
+          },
+    );
+  }
+
+  async function openTagContext(entry: LocalAssignedTagEntry) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    const selectedTagContext = await readyState.localTagContextService.getTagContext(
+      readyState.session,
+      entry.workPackageId,
+      entry.tagId,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            activeTagPackageId: entry.workPackageId,
+            selectedTag: entry,
+            selectedTagContext,
+            executionHandoffVisible: false,
+            authMessage: selectedTagContext
+              ? `Tag context loaded locally for ${entry.tagCode}.`
+              : 'Selected tag context is not available in local storage.',
           },
     );
   }
@@ -498,15 +554,45 @@ export function TagWiseApp() {
       tagId,
     );
 
+    if (!selectedTag) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              selectedTag: null,
+              selectedTagContext: null,
+              executionHandoffVisible: false,
+              authMessage: 'Selected tag is no longer available in local package scope.',
+            },
+      );
+      return;
+    }
+
+    await openTagContext(selectedTag);
+  }
+
+  function handleProceedToExecutionShell() {
     setStatus((current) =>
       current.type !== 'ready'
         ? current
         : {
             ...current,
-            selectedTag,
-            authMessage: selectedTag
-              ? `Selected tag ${selectedTag.tagCode} from local package scope.`
-              : 'Selected tag is no longer available in local package scope.',
+            executionHandoffVisible: true,
+            authMessage: current.selectedTagContext
+              ? `Execution shell handoff prepared for ${current.selectedTagContext.tagCode}.`
+              : current.authMessage,
+          },
+    );
+  }
+
+  function handleReturnToTagContext() {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionHandoffVisible: false,
           },
     );
   }
@@ -572,6 +658,11 @@ export function TagWiseApp() {
         readyState.session,
         qrScanResult.tag.workPackageId,
       );
+      const selectedTagContext = await readyState.localTagContextService.getTagContext(
+        readyState.session,
+        qrScanResult.tag.workPackageId,
+        qrScanResult.tag.tagId,
+      );
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -585,7 +676,11 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags,
               selectedTag: qrScanResult.tag,
-              authMessage: qrScanResult.message,
+              selectedTagContext,
+              executionHandoffVisible: false,
+              authMessage: selectedTagContext
+                ? qrScanResult.message
+                : 'Selected tag context is not available in local storage.',
             },
       );
       return;
@@ -602,6 +697,8 @@ export function TagWiseApp() {
             tagSearchQuery: '',
             visibleTags: [],
             selectedTag: null,
+            selectedTagContext: null,
+            executionHandoffVisible: false,
             authMessage: null,
           },
     );
@@ -664,6 +761,8 @@ export function TagWiseApp() {
             tagSearchQuery: '',
             visibleTags: [],
             selectedTag: null,
+            selectedTagContext: null,
+            executionHandoffVisible: false,
             qrScanResult: null,
           },
     );
@@ -749,6 +848,9 @@ export function TagWiseApp() {
             tagSearchQuery: result.state === 'cleared' ? '' : current.tagSearchQuery,
             visibleTags: result.state === 'cleared' ? [] : current.visibleTags,
             selectedTag: result.state === 'cleared' ? null : current.selectedTag,
+            selectedTagContext: result.state === 'cleared' ? null : current.selectedTagContext,
+            executionHandoffVisible:
+              result.state === 'cleared' ? false : current.executionHandoffVisible,
             qrScannerVisible: result.state === 'cleared' ? false : current.qrScannerVisible,
             qrManualPayload: result.state === 'cleared' ? '' : current.qrManualPayload,
             qrScanResult: result.state === 'cleared' ? null : current.qrScanResult,
@@ -1080,17 +1182,128 @@ export function TagWiseApp() {
                       Results never imply access to uncached tags outside the local snapshot.
                     </Text>
 
-                    {readyState.selectedTag ? (
-                      <View style={styles.metricCard}>
-                        <Text style={styles.metricLabel}>Selected tag</Text>
-                        <Text style={styles.metricValue}>{readyState.selectedTag.tagCode}</Text>
-                        <Text style={styles.helperText}>{readyState.selectedTag.shortDescription}</Text>
+                    {readyState.selectedTagContext && !readyState.executionHandoffVisible ? (
+                      <View style={styles.listCard}>
+                        <Text style={styles.listCardTitle}>Tag context</Text>
+                        <Text style={styles.metricValue}>{readyState.selectedTagContext.tagCode}</Text>
                         <Text style={styles.helperText}>
-                          {readyState.selectedTag.area} · {readyState.selectedTag.instrumentFamily}
+                          {readyState.selectedTagContext.shortDescription}
+                        </Text>
+
+                        <View style={styles.metricGrid}>
+                          <ContextFieldCard field={readyState.selectedTagContext.area} />
+                          <ContextFieldCard
+                            field={readyState.selectedTagContext.parentAssetReference}
+                          />
+                        </View>
+
+                        <View style={styles.metricGrid}>
+                          <ContextFieldCard field={readyState.selectedTagContext.instrumentFamily} />
+                          <ContextFieldCard field={readyState.selectedTagContext.instrumentSubtype} />
+                        </View>
+
+                        <View style={styles.metricGrid}>
+                          <ContextFieldCard field={readyState.selectedTagContext.measuredVariable} />
+                          <ContextFieldCard field={readyState.selectedTagContext.signalType} />
+                        </View>
+
+                        <View style={styles.metricGrid}>
+                          <ContextFieldCard field={readyState.selectedTagContext.range} />
+                          <ContextFieldCard field={readyState.selectedTagContext.tolerance} />
+                        </View>
+
+                        <View style={styles.metricGrid}>
+                          <ContextFieldCard field={readyState.selectedTagContext.criticality} />
+                          <ContextFieldCard
+                            field={{
+                              label: readyState.selectedTagContext.dueIndicator.label,
+                              value: readyState.selectedTagContext.dueIndicator.value,
+                              state: readyState.selectedTagContext.dueIndicator.state,
+                            }}
+                          />
+                        </View>
+
+                        <View
+                          style={[
+                            styles.metricCard,
+                            readyState.selectedTagContext.historyPreview.state === 'missing'
+                              ? styles.missingMetricCard
+                              : null,
+                          ]}
+                        >
+                          <Text style={styles.metricLabel}>
+                            {readyState.selectedTagContext.historyPreview.title}
+                          </Text>
+                          <Text style={styles.metricValue}>
+                            {readyState.selectedTagContext.historyPreview.summary}
+                          </Text>
+                          <Text style={styles.helperText}>
+                            {readyState.selectedTagContext.historyPreview.detail}
+                          </Text>
+                          <Text style={styles.helperText}>
+                            Last observed:{' '}
+                            {readyState.selectedTagContext.historyPreview.lastObservedAt
+                              ? formatTimestamp(readyState.selectedTagContext.historyPreview.lastObservedAt)
+                              : readyState.selectedTagContext.historyPreview.state === 'unavailable'
+                                ? 'Not included in this package'
+                                : 'Missing'}
+                          </Text>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.metricCard,
+                            readyState.selectedTagContext.referencePointers.state === 'missing'
+                              ? styles.missingMetricCard
+                              : null,
+                          ]}
+                        >
+                          <Text style={styles.metricLabel}>Local references</Text>
+                          <Text style={styles.helperText}>
+                            {readyState.selectedTagContext.referencePointers.detail}
+                          </Text>
+                          <Text style={styles.helperText}>
+                            Templates:{' '}
+                            {readyState.selectedTagContext.referencePointers.templates.length > 0
+                              ? readyState.selectedTagContext.referencePointers.templates.join(', ')
+                              : 'None attached'}
+                          </Text>
+                          <Text style={styles.helperText}>
+                            Guidance:{' '}
+                            {readyState.selectedTagContext.referencePointers.guidance.length > 0
+                              ? readyState.selectedTagContext.referencePointers.guidance.join(', ')
+                              : 'None attached'}
+                          </Text>
+                        </View>
+
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={handleProceedToExecutionShell}
+                          style={styles.primaryButton}
+                        >
+                          <Text style={styles.primaryButtonLabel}>Proceed to execution shell</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+
+                    {readyState.selectedTagContext && readyState.executionHandoffVisible ? (
+                      <View style={styles.listCard}>
+                        <Text style={styles.listCardTitle}>Execution shell handoff</Text>
+                        <Text style={styles.metricValue}>
+                          {readyState.selectedTagContext.tagCode}
                         </Text>
                         <Text style={styles.helperText}>
-                          Asset reference: {readyState.selectedTag.parentAssetReference}
+                          Shared execution starts from this selected tag context. Local template hint:{' '}
+                          {readyState.selectedTagContext.referencePointers.executionTemplateLabel ??
+                            'No local template pointer available yet.'}
                         </Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={handleReturnToTagContext}
+                          style={styles.secondaryButton}
+                        >
+                          <Text style={styles.secondaryButtonLabel}>Back to tag context</Text>
+                        </Pressable>
                       </View>
                     ) : null}
 
@@ -1102,7 +1315,7 @@ export function TagWiseApp() {
                           <Text style={styles.metricValue}>{tag.tagCode}</Text>
                           <Text style={styles.helperText}>{tag.shortDescription}</Text>
                           <Text style={styles.helperText}>
-                            {tag.area} · {tag.instrumentFamily}
+                            {tag.area} / {tag.instrumentFamily}
                           </Text>
                           <Pressable
                             accessibilityRole="button"
@@ -1132,7 +1345,7 @@ export function TagWiseApp() {
                     <View key={workPackage.id} style={styles.listCard}>
                     <Text style={styles.listCardTitle}>{workPackage.title}</Text>
                     <Text style={styles.helperText}>
-                      {workPackage.id} · {workPackage.sourceReference}
+                      {workPackage.id} / {workPackage.sourceReference}
                     </Text>
 
                     <View style={styles.metricGrid}>
@@ -1291,6 +1504,21 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ContextFieldCard({
+  field,
+}: {
+  field: { label: string; value: string; state: 'available' | 'missing' };
+}) {
+  return (
+    <View style={[styles.metricCard, field.state === 'missing' ? styles.missingMetricCard : null]}>
+      <Text style={styles.metricLabel}>{field.label}</Text>
+      <Text style={[styles.metricValue, field.state === 'missing' ? styles.missingMetricValue : null]}>
+        {field.value}
+      </Text>
+    </View>
+  );
+}
+
 function formatTimestamp(value: string) {
   return new Date(value).toLocaleString();
 }
@@ -1435,6 +1663,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e5ece8',
   },
+  missingMetricCard: {
+    borderColor: '#fca5a5',
+    backgroundColor: '#fff7f7',
+  },
   metricLabel: {
     fontSize: 12,
     fontWeight: '700',
@@ -1446,6 +1678,9 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: '700',
     color: '#0f172a',
+  },
+  missingMetricValue: {
+    color: '#b91c1c',
   },
   primaryButton: {
     backgroundColor: '#0f766e',
