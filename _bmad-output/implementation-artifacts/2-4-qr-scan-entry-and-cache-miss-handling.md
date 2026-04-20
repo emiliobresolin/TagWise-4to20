@@ -1,6 +1,6 @@
 ﻿# Story 2.4: QR Scan Entry and Cache-Miss Handling
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 2-4-qr-scan-entry-and-cache-miss-handling
@@ -41,3 +41,28 @@ resolve scan locally first; do not hide uncached tags behind silent failure; avo
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a local QR scan resolver that parses supported QR payloads, resolves cached tags only from downloaded local package snapshots, and returns explicit hit, miss, or invalid outcomes without any live lookup dependency.
+- Extended the mobile `Packages` route with a narrow QR entry flow: real camera-based QR scanning via Expo Camera plus a pasted-payload fallback for simulator/manual testing.
+- Reused the existing selected-tag path from Story 2.3 so cached QR hits open the same tag-centered local identity view instead of introducing a parallel tag flow.
+- Added explicit cache-miss and invalid-scan guidance so the technician knows whether the tag is unavailable offline or the payload itself is unsupported.
+
+### Tests Run
+- `cd mobile && npm test`
+- `cd mobile && npm run typecheck`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/app.json`
+- `mobile/package.json`
+- `mobile/package-lock.json`
+- `mobile/src/features/work-packages/localQrScanService.ts`
+- `mobile/src/features/work-packages/localQrScanService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/2-4-qr-scan-entry-and-cache-miss-handling.md`

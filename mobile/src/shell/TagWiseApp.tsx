@@ -1,3 +1,4 @@
+import { CameraView, type BarcodeScanningResult, useCameraPermissions } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import {
@@ -30,6 +31,10 @@ import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
 import { LocalTagEntryService } from '../features/work-packages/localTagEntryService';
+import {
+  LocalQrScanService,
+  type LocalQrScanResult,
+} from '../features/work-packages/localQrScanService';
 import {
   evaluateAssignedWorkPackageReadiness,
   formatAssignedWorkPackageFreshness,
@@ -67,6 +72,10 @@ type BootstrapStatus =
       tagSearchQuery: string;
       visibleTags: LocalAssignedTagEntry[];
       selectedTag: LocalAssignedTagEntry | null;
+      qrScannerVisible: boolean;
+      qrManualPayload: string;
+      qrScanResult: LocalQrScanResult | null;
+      qrScanService: LocalQrScanService;
     };
 
 const placeholderRoutes = [
@@ -79,6 +88,7 @@ export function TagWiseApp() {
   const [status, setStatus] = useState<BootstrapStatus>({ type: 'loading' });
   const [email, setEmail] = useState('tech@tagwise.local');
   const [password, setPassword] = useState('TagWise123!');
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   useEffect(() => {
     let isActive = true;
@@ -109,6 +119,9 @@ export function TagWiseApp() {
           userPartitions: runtime.repositories.userPartitions,
         });
         const localTagEntryService = new LocalTagEntryService({
+          userPartitions: runtime.repositories.userPartitions,
+        });
+        const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
         const restoredSession = await sessionController.restoreSession();
@@ -150,6 +163,10 @@ export function TagWiseApp() {
           tagSearchQuery: '',
           visibleTags: [],
           selectedTag: null,
+          qrScannerVisible: false,
+          qrManualPayload: '',
+          qrScanResult: null,
+          qrScanService,
         });
       } catch (error) {
         if (!isActive) {
@@ -294,6 +311,9 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
+              qrScannerVisible: false,
+              qrManualPayload: '',
+              qrScanResult: null,
             },
       );
     } catch (error) {
@@ -341,6 +361,8 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
+              qrScannerVisible: false,
+              qrScanResult: null,
             },
       );
     } catch (error) {
@@ -391,6 +413,8 @@ export function TagWiseApp() {
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
+              qrScannerVisible: false,
+              qrScanResult: null,
             },
       );
     } catch (error) {
@@ -428,6 +452,7 @@ export function TagWiseApp() {
             tagSearchQuery: '',
             visibleTags,
             selectedTag: null,
+            qrScanResult: null,
             authMessage:
               visibleTags.length > 0
                 ? `Loaded ${visibleTags.length} cached tag(s) from package ${workPackageId}.`
@@ -486,6 +511,149 @@ export function TagWiseApp() {
     );
   }
 
+  async function handleStartQrScanner() {
+    if (status.type !== 'ready') {
+      return;
+    }
+
+    if (cameraPermission?.granted) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              qrScannerVisible: true,
+              qrScanResult: null,
+            },
+      );
+      return;
+    }
+
+    const requestedPermission = await requestCameraPermission();
+    if (requestedPermission.granted) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              qrScannerVisible: true,
+              qrScanResult: null,
+            },
+      );
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            qrScannerVisible: false,
+            qrScanResult: {
+              state: 'invalid',
+              rawPayload: '',
+              message: 'Camera permission is required to scan a tag QR code on this device.',
+              guidance:
+                'Grant camera access or paste the QR payload below to resolve it locally.',
+            },
+          },
+    );
+  }
+
+  async function handleResolveQrPayload(rawPayload: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    const qrScanResult = await readyState.qrScanService.resolveScan(readyState.session, rawPayload);
+
+    if (qrScanResult.state === 'hit') {
+      const visibleTags = await readyState.localTagEntryService.listPackageTags(
+        readyState.session,
+        qrScanResult.tag.workPackageId,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              qrScannerVisible: false,
+              qrManualPayload: '',
+              qrScanResult,
+              activeTagPackageId: qrScanResult.tag.workPackageId,
+              tagSearchQuery: '',
+              visibleTags,
+              selectedTag: qrScanResult.tag,
+              authMessage: qrScanResult.message,
+            },
+      );
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            qrScannerVisible: false,
+            qrScanResult,
+            activeTagPackageId: null,
+            tagSearchQuery: '',
+            visibleTags: [],
+            selectedTag: null,
+            authMessage: null,
+          },
+    );
+  }
+
+  async function handleBarcodeScanned(event: BarcodeScanningResult) {
+    if (status.type !== 'ready' || !readyState.qrScannerVisible) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            qrScannerVisible: false,
+          },
+    );
+
+    await handleResolveQrPayload(event.data);
+  }
+
+  function handleQrPayloadChange(value: string) {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            qrManualPayload: value,
+          },
+    );
+  }
+
+  async function handleResolveManualQrPayload() {
+    if (status.type !== 'ready') {
+      return;
+    }
+
+    await handleResolveQrPayload(readyState.qrManualPayload);
+  }
+
+  function handleCancelQrScanner() {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            qrScannerVisible: false,
+          },
+    );
+  }
+
   function handleCloseTagBrowser() {
     setStatus((current) =>
       current.type !== 'ready'
@@ -496,6 +664,7 @@ export function TagWiseApp() {
             tagSearchQuery: '',
             visibleTags: [],
             selectedTag: null,
+            qrScanResult: null,
           },
     );
   }
@@ -580,6 +749,9 @@ export function TagWiseApp() {
             tagSearchQuery: result.state === 'cleared' ? '' : current.tagSearchQuery,
             visibleTags: result.state === 'cleared' ? [] : current.visibleTags,
             selectedTag: result.state === 'cleared' ? null : current.selectedTag,
+            qrScannerVisible: result.state === 'cleared' ? false : current.qrScannerVisible,
+            qrManualPayload: result.state === 'cleared' ? '' : current.qrManualPayload,
+            qrScanResult: result.state === 'cleared' ? null : current.qrScanResult,
             authMessage:
               result.state === 'cleared'
                 ? 'Session cleared. Connected sign-in is required for the next user.'
@@ -815,6 +987,70 @@ export function TagWiseApp() {
                     ? 'Connected mode can refresh the assigned package list and download snapshots.'
                     : 'Offline mode can open downloaded packages later, but refresh/download remains unavailable until reconnection.'}
                 </Text>
+
+                <View style={styles.listCard}>
+                  <Text style={styles.listCardTitle}>QR scan entry</Text>
+                  <Text style={styles.helperText}>
+                    Scan a tag QR code or paste the payload below. Resolution always happens against
+                    the already-downloaded local package scope first.
+                  </Text>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void handleStartQrScanner()}
+                    style={styles.secondaryButton}
+                  >
+                    <Text style={styles.secondaryButtonLabel}>Scan tag QR code</Text>
+                  </Pressable>
+
+                  <TextInput
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    onChangeText={handleQrPayloadChange}
+                    placeholder="Paste QR payload for simulator/manual test"
+                    style={styles.input}
+                    value={readyState.qrManualPayload}
+                  />
+
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void handleResolveManualQrPayload()}
+                    style={styles.secondaryButton}
+                  >
+                    <Text style={styles.secondaryButtonLabel}>Resolve pasted QR payload</Text>
+                  </Pressable>
+
+                  {readyState.qrScannerVisible ? (
+                    <View style={styles.cameraCard}>
+                      <CameraView
+                        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                        onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
+                        style={styles.cameraViewport}
+                      />
+                      <Text style={styles.helperText}>
+                        Point the camera at a TagWise tag QR code. Cached hits open locally without
+                        requiring a network call.
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={handleCancelQrScanner}
+                        style={styles.secondaryButton}
+                      >
+                        <Text style={styles.secondaryButtonLabel}>Cancel scan</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+
+                  {readyState.qrScanResult && readyState.qrScanResult.state !== 'hit' ? (
+                    <View style={styles.metricCard}>
+                      <Text style={styles.metricLabel}>
+                        {readyState.qrScanResult.state === 'miss' ? 'Not cached offline' : 'Invalid scan'}
+                      </Text>
+                      <Text style={styles.metricValue}>{readyState.qrScanResult.message}</Text>
+                      <Text style={styles.helperText}>{readyState.qrScanResult.guidance}</Text>
+                    </View>
+                  ) : null}
+                </View>
 
                 {readyState.workPackages.length === 0 ? (
                   <Text style={styles.helperText}>
@@ -1256,5 +1492,14 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: '800',
     color: '#0f172a',
+  },
+  cameraCard: {
+    gap: 10,
+  },
+  cameraViewport: {
+    width: '100%',
+    height: 240,
+    borderRadius: 16,
+    overflow: 'hidden',
   },
 });
