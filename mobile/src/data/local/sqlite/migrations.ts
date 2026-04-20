@@ -230,6 +230,15 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 6,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        ALTER TABLE assigned_work_package_snapshots
+        ADD COLUMN generated_at TEXT;
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

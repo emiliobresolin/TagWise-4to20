@@ -53,6 +53,7 @@ GPT-5 Codex
 - Added user-partitioned SQLite storage for assigned package summaries and downloaded snapshots so local package data remains tied to the authenticated user.
 - Added a mobile package catalog service and `Packages` route that can refresh while connected, download snapshots, and still render cached packages after offline reopen.
 - Kept this story narrow: no package freshness state machine, no tag context screen, no QR entry, and no execution/report flow were implemented here.
+- Applied the Story 2.1 QA corrections: connected refresh now reconciles the assigned package catalog against the latest server scope, and non-auth package endpoint failures now return package-specific actionable messages instead of auth-labeled errors.
 
 ### Tests Run
 - `cd backend && npm test`

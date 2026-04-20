@@ -29,7 +29,7 @@ export class AssignedWorkPackageCatalogService {
     assertConnectedSession(session);
     const remoteSummaries = await this.dependencies.apiClient.listAssignedPackages();
     const workPackages = this.dependencies.userPartitions.forUser(session.userId).workPackages;
-    await workPackages.upsertCatalog(remoteSummaries);
+    await workPackages.replaceCatalog(remoteSummaries);
     return workPackages.listSummaries();
   }
 

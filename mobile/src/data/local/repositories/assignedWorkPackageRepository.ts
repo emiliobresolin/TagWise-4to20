@@ -20,6 +20,7 @@ interface AssignedWorkPackageSummaryRow {
   updated_at: string;
   last_downloaded_at: string | null;
   has_snapshot: number;
+  snapshot_generated_at: string | null;
 }
 
 interface AssignedWorkPackageSnapshotRow {
@@ -93,6 +94,50 @@ export class AssignedWorkPackageRepository {
     }
   }
 
+  async replaceCatalog(summaries: AssignedWorkPackageSummary[]): Promise<void> {
+    const keptWorkPackageIds = summaries.map((summary) => summary.id);
+
+    if (keptWorkPackageIds.length === 0) {
+      await this.database.runAsync(
+        `
+          DELETE FROM assigned_work_package_snapshots
+          WHERE owner_user_id = ?;
+        `,
+        [this.ownerUserId],
+      );
+      await this.database.runAsync(
+        `
+          DELETE FROM assigned_work_package_summaries
+          WHERE owner_user_id = ?;
+        `,
+        [this.ownerUserId],
+      );
+      return;
+    }
+
+    await this.upsertCatalog(summaries);
+
+    const placeholders = keptWorkPackageIds.map(() => '?').join(', ');
+    const params = [this.ownerUserId, ...keptWorkPackageIds];
+
+    await this.database.runAsync(
+      `
+        DELETE FROM assigned_work_package_snapshots
+        WHERE owner_user_id = ?
+          AND work_package_id NOT IN (${placeholders});
+      `,
+      params,
+    );
+    await this.database.runAsync(
+      `
+        DELETE FROM assigned_work_package_summaries
+        WHERE owner_user_id = ?
+          AND work_package_id NOT IN (${placeholders});
+      `,
+      params,
+    );
+  }
+
   async saveDownloadedSnapshot(
     snapshot: AssignedWorkPackageSnapshot,
     downloadedAt: string,
@@ -160,15 +205,17 @@ export class AssignedWorkPackageRepository {
           snapshot_contract_version,
           snapshot_json,
           downloaded_at,
-          server_updated_at
+          server_updated_at,
+          generated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(owner_user_id, work_package_id) DO UPDATE SET
           package_version = excluded.package_version,
           snapshot_contract_version = excluded.snapshot_contract_version,
           snapshot_json = excluded.snapshot_json,
           downloaded_at = excluded.downloaded_at,
-          server_updated_at = excluded.server_updated_at;
+          server_updated_at = excluded.server_updated_at,
+          generated_at = excluded.generated_at;
       `,
       [
         this.ownerUserId,
@@ -178,6 +225,7 @@ export class AssignedWorkPackageRepository {
         JSON.stringify(snapshot),
         downloadedAt,
         snapshot.summary.updatedAt,
+        snapshot.generatedAt,
       ],
     );
   }
@@ -199,7 +247,8 @@ export class AssignedWorkPackageRepository {
           summary.due_ends_at,
           summary.updated_at,
           summary.last_downloaded_at,
-          CASE WHEN snapshot.work_package_id IS NULL THEN 0 ELSE 1 END as has_snapshot
+          CASE WHEN snapshot.work_package_id IS NULL THEN 0 ELSE 1 END as has_snapshot,
+          snapshot.generated_at as snapshot_generated_at
         FROM assigned_work_package_summaries summary
         LEFT JOIN assigned_work_package_snapshots snapshot
           ON snapshot.owner_user_id = summary.owner_user_id
@@ -254,5 +303,6 @@ function mapAssignedWorkPackageSummaryRow(
     updatedAt: row.updated_at,
     downloadedAt: row.last_downloaded_at,
     hasSnapshot: row.has_snapshot === 1,
+    snapshotGeneratedAt: row.snapshot_generated_at,
   };
 }

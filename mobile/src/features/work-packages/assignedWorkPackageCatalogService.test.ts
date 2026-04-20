@@ -97,6 +97,23 @@ const seedSnapshot: AssignedWorkPackageSnapshot = {
   ],
 };
 
+const replacementSummary: AssignedWorkPackageSummary = {
+  id: 'wp-local-002',
+  sourceReference: 'seed-cmms-002',
+  title: 'Replacement assigned package',
+  assignedTeam: 'Instrumentation Alpha',
+  priority: 'routine',
+  status: 'assigned',
+  packageVersion: 2,
+  snapshotContractVersion: '2026-04-v1',
+  tagCount: 2,
+  dueWindow: {
+    startsAt: '2026-04-21T08:00:00.000Z',
+    endsAt: '2026-04-21T17:00:00.000Z',
+  },
+  updatedAt: '2026-04-20T08:00:00.000Z',
+};
+
 describe('AssignedWorkPackageCatalogService', () => {
   it('downloads an assigned package and reloads it from local storage after reopen', async () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-'));
@@ -138,6 +155,7 @@ describe('AssignedWorkPackageCatalogService', () => {
       id: seedSummary.id,
       hasSnapshot: true,
       downloadedAt: '2026-04-19T10:15:00.000Z',
+      snapshotGeneratedAt: seedSnapshot.generatedAt,
     });
 
     await firstRuntime.database.closeAsync?.();
@@ -167,6 +185,7 @@ describe('AssignedWorkPackageCatalogService', () => {
     expect(reopenedCatalog[0]).toMatchObject({
       id: seedSummary.id,
       hasSnapshot: true,
+      snapshotGeneratedAt: seedSnapshot.generatedAt,
     });
     expect(reopenedSnapshot?.summary.id).toBe(seedSummary.id);
 
@@ -217,6 +236,7 @@ describe('AssignedWorkPackageCatalogService', () => {
         id: seedSummary.id,
         hasSnapshot: false,
         downloadedAt: null,
+        snapshotGeneratedAt: null,
       },
     ]);
     expect(
@@ -224,6 +244,139 @@ describe('AssignedWorkPackageCatalogService', () => {
         seedSummary.id,
       ),
     ).toBeNull();
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('removes packages that are no longer assigned after a successful connected refresh', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-refresh-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const session: ActiveUserSession = {
+      userId: 'user-technician',
+      email: 'tech@tagwise.local',
+      displayName: 'Field Technician',
+      role: 'technician',
+      lastAuthenticatedAt: '2026-04-19T09:00:00.000Z',
+      accessTokenExpiresAt: '2026-04-19T10:00:00.000Z',
+      refreshTokenExpiresAt: '2026-04-20T10:00:00.000Z',
+      connectionMode: 'connected',
+      reviewActionsAvailable: false,
+    };
+
+    const initialService = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [seedSummary],
+        downloadAssignedPackage: async () => seedSnapshot,
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-19T10:15:00.000Z'),
+    });
+    await initialService.refreshConnectedCatalog(session);
+    await initialService.downloadAssignedPackage(session, seedSummary.id);
+
+    const refreshedService = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [replacementSummary],
+        downloadAssignedPackage: async () => {
+          throw new Error('not used');
+        },
+      },
+      userPartitions: runtime.repositories.userPartitions,
+    });
+
+    const refreshedCatalog = await refreshedService.refreshConnectedCatalog(session);
+
+    expect(refreshedCatalog).toHaveLength(1);
+    expect(refreshedCatalog[0]).toMatchObject({
+      id: replacementSummary.id,
+      hasSnapshot: false,
+    });
+    expect(await runtime.repositories.userPartitions.forUser(session.userId).workPackages.getSnapshot(seedSummary.id))
+      .toBeNull();
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('updates freshness metadata on package refresh without losing local drafts', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-freshness-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const session: ActiveUserSession = {
+      userId: 'user-technician',
+      email: 'tech@tagwise.local',
+      displayName: 'Field Technician',
+      role: 'technician',
+      lastAuthenticatedAt: '2026-04-19T09:00:00.000Z',
+      accessTokenExpiresAt: '2026-04-19T10:00:00.000Z',
+      refreshTokenExpiresAt: '2026-04-20T10:00:00.000Z',
+      connectionMode: 'connected',
+      reviewActionsAvailable: false,
+    };
+
+    const refreshedSnapshot: AssignedWorkPackageSnapshot = {
+      ...seedSnapshot,
+      generatedAt: '2026-04-20T08:30:00.000Z',
+      summary: {
+        ...seedSnapshot.summary,
+        packageVersion: 2,
+        updatedAt: '2026-04-20T08:30:00.000Z',
+      },
+    };
+
+    const service = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [seedSummary],
+        downloadAssignedPackage: async () => seedSnapshot,
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-19T10:15:00.000Z'),
+    });
+    await service.refreshConnectedCatalog(session);
+    await service.downloadAssignedPackage(session, seedSummary.id);
+
+    await runtime.repositories.userPartitions.forUser(session.userId).drafts.saveDraft({
+      businessObjectType: 'work-package-report',
+      businessObjectId: seedSummary.id,
+      summaryText: 'Keep this draft',
+      payloadJson: '{"draft":true}',
+    });
+
+    const refreshedService = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [refreshedSnapshot.summary],
+        downloadAssignedPackage: async () => refreshedSnapshot,
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-20T08:45:00.000Z'),
+    });
+    await refreshedService.refreshConnectedCatalog(session);
+    const refreshResult = await refreshedService.downloadAssignedPackage(session, seedSummary.id);
+
+    expect(refreshResult.summaries).toMatchObject([
+      {
+        id: seedSummary.id,
+        downloadedAt: '2026-04-20T08:45:00.000Z',
+        snapshotGeneratedAt: '2026-04-20T08:30:00.000Z',
+      },
+    ]);
+    expect(
+      await runtime.repositories.userPartitions.forUser(session.userId).drafts.getDraft({
+        businessObjectType: 'work-package-report',
+        businessObjectId: seedSummary.id,
+      }),
+    ).toMatchObject({
+      summaryText: 'Keep this draft',
+      payloadJson: '{"draft":true}',
+    });
 
     await runtime.database.closeAsync?.();
   });

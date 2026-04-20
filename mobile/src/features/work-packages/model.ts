@@ -23,7 +23,14 @@ export interface AssignedWorkPackageSummary {
 export interface LocalAssignedWorkPackageSummary extends AssignedWorkPackageSummary {
   downloadedAt: string | null;
   hasSnapshot: boolean;
+  snapshotGeneratedAt: string | null;
 }
+
+export type AssignedWorkPackageReadinessState =
+  | 'offline-ready'
+  | 'incomplete'
+  | 'stale'
+  | 'age-unknown';
 
 export interface AssignedWorkPackageTagSnapshot {
   id: string;

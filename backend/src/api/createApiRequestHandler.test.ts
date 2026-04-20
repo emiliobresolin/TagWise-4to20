@@ -219,4 +219,73 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('returns actionable non-auth failure messages for work package endpoints', async () => {
+    const database = newDb();
+    const adapter = database.adapters.createPg();
+    const pool = new adapter.Pool();
+    await runPostgresMigrations(pool);
+
+    const authRepository = new AuthRepository(pool);
+    const authService = new AuthService(
+      authRepository,
+      authConfig,
+      new AuditEventService(new AuditEventRepository(pool)),
+    );
+    await authService.ensureSeedUsers();
+
+    const runtime = createServiceRuntime({
+      serviceName: 'api-service',
+      serviceRole: 'api',
+      host: '127.0.0.1',
+      port: 0,
+      verifyDatabaseReadiness: async () => undefined,
+      handleRequest: createApiRequestHandler({
+        authService,
+        assignedWorkPackageService: {
+          listAssignedPackages: async () => {
+            throw new Error('database unavailable');
+          },
+          downloadAssignedPackage: async () => {
+            throw new Error('storage unavailable');
+          },
+          ensureSeedPackages: async () => undefined,
+        } as unknown as AssignedWorkPackageService,
+      }),
+    });
+    runtimes.push(runtime);
+
+    const { port } = await runtime.start();
+    const login = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-work-package-error-login',
+      },
+    );
+
+    const listResponse = await fetch(`http://127.0.0.1:${port}/work-packages`, {
+      headers: {
+        authorization: `Bearer ${login.tokens.accessToken}`,
+      },
+    });
+    expect(listResponse.status).toBe(500);
+    expect(await listResponse.json()).toEqual({
+      message: 'Assigned work package list failed. Please retry while connected.',
+    });
+
+    const downloadResponse = await fetch(`http://127.0.0.1:${port}/work-packages/wp-seed-1001/download`, {
+      headers: {
+        authorization: `Bearer ${login.tokens.accessToken}`,
+      },
+    });
+    expect(downloadResponse.status).toBe(500);
+    expect(await downloadResponse.json()).toEqual({
+      message: 'Assigned work package download failed. Please retry while connected.',
+    });
+
+    await pool.end();
+  });
 });

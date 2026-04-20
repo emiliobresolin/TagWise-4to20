@@ -29,6 +29,10 @@ import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
+import {
+  evaluateAssignedWorkPackageReadiness,
+  formatAssignedWorkPackageFreshness,
+} from '../features/work-packages/assignedWorkPackageReadiness';
 import type { LocalAssignedWorkPackageSummary } from '../features/work-packages/model';
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
@@ -357,7 +361,7 @@ export function TagWiseApp() {
               ...current,
               workPackages: result.summaries,
               packageBusy: false,
-              authMessage: `Assigned package ${result.snapshot.summary.id} downloaded to local SQLite.`,
+              authMessage: `Assigned package ${result.snapshot.summary.id} snapshot stored locally and freshness updated.`,
             },
       );
     } catch (error) {
@@ -695,8 +699,11 @@ export function TagWiseApp() {
                   </Text>
                 ) : null}
 
-                {readyState.workPackages.map((workPackage) => (
-                  <View key={workPackage.id} style={styles.listCard}>
+                {readyState.workPackages.map((workPackage) => {
+                  const readiness = evaluateAssignedWorkPackageReadiness(workPackage);
+
+                  return (
+                    <View key={workPackage.id} style={styles.listCard}>
                     <Text style={styles.listCardTitle}>{workPackage.title}</Text>
                     <Text style={styles.helperText}>
                       {workPackage.id} · {workPackage.sourceReference}
@@ -709,18 +716,31 @@ export function TagWiseApp() {
 
                     <View style={styles.metricGrid}>
                       <MetricCard
+                        label="Readiness"
+                        value={readiness.label}
+                      />
+                      <MetricCard
                         label="Due"
                         value={formatDueWindow(workPackage.dueWindow.endsAt)}
                       />
+                    </View>
+
+                    <View style={styles.metricGrid}>
                       <MetricCard
-                        label="Downloaded"
+                        label="Refreshed"
                         value={
                           workPackage.downloadedAt
                             ? formatTimestamp(workPackage.downloadedAt)
                             : 'Not yet'
                         }
                       />
+                      <MetricCard
+                        label="Source freshness"
+                        value={formatAssignedWorkPackageFreshness(workPackage.snapshotGeneratedAt)}
+                      />
                     </View>
+
+                    <Text style={styles.helperText}>{readiness.detail}</Text>
 
                     <Pressable
                       accessibilityRole="button"
@@ -736,11 +756,12 @@ export function TagWiseApp() {
                       ]}
                     >
                       <Text style={styles.secondaryButtonLabel}>
-                        {workPackage.hasSnapshot ? 'Redownload snapshot' : 'Download snapshot'}
+                        {workPackage.hasSnapshot ? 'Refresh snapshot' : 'Download snapshot'}
                       </Text>
                     </Pressable>
-                  </View>
-                ))}
+                    </View>
+                  );
+                })}
               </View>
             ) : (
               <View style={styles.panel}>

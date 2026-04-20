@@ -90,7 +90,11 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
         context.logger.warn('work-packages.list.failed', {
           statusCode: error instanceof AuthenticationError ? error.statusCode : 500,
         });
-        writeAuthError(response, error);
+        writeWorkPackageError(
+          response,
+          error,
+          'Assigned work package list failed. Please retry while connected.',
+        );
       }
 
       return true;
@@ -122,7 +126,11 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
         context.logger.warn('work-packages.download.failed', {
           statusCode: error instanceof AuthenticationError ? error.statusCode : 500,
         });
-        writeAuthError(response, error);
+        writeWorkPackageError(
+          response,
+          error,
+          'Assigned work package download failed. Please retry while connected.',
+        );
       }
 
       return true;
@@ -164,6 +172,15 @@ function writeAuthError(response: ServerResponse, error: unknown) {
   }
 
   writeJson(response, 500, { message: 'Unexpected authentication error.' });
+}
+
+function writeWorkPackageError(response: ServerResponse, error: unknown, fallbackMessage: string) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  writeJson(response, 500, { message: fallbackMessage });
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {

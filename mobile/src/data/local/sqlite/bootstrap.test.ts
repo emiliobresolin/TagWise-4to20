@@ -49,8 +49,8 @@ describe('runMigrations', () => {
          );`,
     );
 
-    expect(summary.currentSchemaVersion).toBe(5);
-    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5']);
+    expect(summary.currentSchemaVersion).toBe(6);
+    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5', '6']);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
     expect(partitionTables?.count).toBe(8);
@@ -75,7 +75,7 @@ describe('runMigrations', () => {
     );
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(applied).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]);
+    expect(applied).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }, { id: 6 }]);
     expect(record?.count).toBe(1);
 
     await database.closeAsync?.();

@@ -1,6 +1,6 @@
 ﻿# Story 2.2: Offline Readiness and Package Freshness States
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 2-2-offline-readiness-and-package-freshness-states
@@ -41,3 +41,31 @@ compute readiness from local snapshot completeness; store refresh metadata and a
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added package readiness evaluation with four technician-visible states: `Offline ready`, `Incomplete`, `Stale`, and `Age unknown`.
+- Persisted snapshot freshness metadata locally by storing the upstream snapshot generation timestamp alongside the existing local download timestamp.
+- Updated the `Packages` route to show readiness, refresh/source freshness timestamps, and a connected-only `Refresh snapshot` action for already downloaded packages.
+- Preserved local-first behavior and kept this story narrow: no tag context, execution flow, sync behavior, or approval behavior was added.
+- Grounded story decision: because the approved artifacts did not define a numeric stale threshold, v1 treats package snapshots refreshed more than `24` hours ago as `Stale`, with the threshold encapsulated in one helper constant for later adjustment if product rules change.
+- QA correction applied: readiness now treats upstream snapshot freshness as authoritative, so a recently downloaded package with stale upstream data is still marked `Stale`.
+
+### Tests Run
+- `cd mobile && npm test`
+- `cd mobile && npm run typecheck`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/src/data/local/repositories/assignedWorkPackageRepository.ts`
+- `mobile/src/data/local/sqlite/bootstrap.test.ts`
+- `mobile/src/data/local/sqlite/migrations.ts`
+- `mobile/src/features/work-packages/assignedWorkPackageCatalogService.test.ts`
+- `mobile/src/features/work-packages/assignedWorkPackageReadiness.test.ts`
+- `mobile/src/features/work-packages/assignedWorkPackageReadiness.ts`
+- `mobile/src/features/work-packages/model.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
