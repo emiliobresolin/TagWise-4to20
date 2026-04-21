@@ -218,4 +218,140 @@ describe('SharedExecutionShellService', () => {
 
     await secondRuntime.database.closeAsync?.();
   });
+
+  it('persists raw observations and calculated results across restart-like reopen cycles', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-calculation-'));
+    createdDirectories.push(tempDirectory);
+
+    const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
+
+    const firstRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+    await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const firstService = new SharedExecutionShellService({
+      userPartitions: firstRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: firstRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const firstShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+    expect(firstShell?.calculation).not.toBeNull();
+
+    const calculatedShell = await firstService.saveCalculation(session, firstShell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    expect(calculatedShell.calculation).toMatchObject({
+      rawInputs: {
+        expectedValue: '5',
+        observedValue: '5.02',
+      },
+      result: {
+        acceptance: 'pass',
+      },
+    });
+
+    await firstRuntime.database.closeAsync?.();
+
+    const secondRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+    const secondService = new SharedExecutionShellService({
+      userPartitions: secondRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: secondRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:10:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:10:00.000Z'),
+    });
+
+    await expect(secondService.loadShell(session, baseSnapshot.summary.id, 'tag-001')).resolves.toMatchObject({
+      calculation: {
+        rawInputs: {
+          expectedValue: '5',
+          observedValue: '5.02',
+        },
+        result: {
+          acceptance: 'pass',
+        },
+      },
+    });
+
+    await secondRuntime.database.closeAsync?.();
+  });
+
+  it('does not load a persisted calculation when the template contract version changes', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-calculation-version-'));
+    createdDirectories.push(tempDirectory);
+
+    const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
+
+    const firstRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+    await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const firstService = new SharedExecutionShellService({
+      userPartitions: firstRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: firstRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const firstShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+    expect(firstShell?.calculation).not.toBeNull();
+
+    await firstService.saveCalculation(session, firstShell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    await firstRuntime.repositories.userPartitions.forUser(session.userId).workPackages.saveDownloadedSnapshot(
+      {
+        ...baseSnapshot,
+        contractVersion: '2026-05-v2',
+        summary: {
+          ...baseSnapshot.summary,
+          packageVersion: 2,
+          snapshotContractVersion: '2026-05-v2',
+        },
+      },
+      '2026-04-20T09:00:00.000Z',
+    );
+
+    const reloadedShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+
+    expect(reloadedShell).toMatchObject({
+      template: {
+        version: '2026-05-v2',
+      },
+      calculation: {
+        rawInputs: {
+          expectedValue: '',
+          observedValue: '',
+        },
+        result: null,
+        updatedAt: null,
+      },
+    });
+
+    await firstRuntime.database.closeAsync?.();
+  });
 });

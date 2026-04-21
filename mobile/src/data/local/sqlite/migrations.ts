@@ -269,6 +269,100 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 8,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_partitioned_execution_calculations (
+          owner_user_id TEXT NOT NULL,
+          work_package_id TEXT NOT NULL,
+          tag_id TEXT NOT NULL,
+          template_id TEXT NOT NULL,
+          template_version TEXT NOT NULL,
+          calculation_mode TEXT NOT NULL,
+          acceptance_style TEXT NOT NULL,
+          raw_inputs_json TEXT NOT NULL,
+          result_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, work_package_id, tag_id, template_id)
+        );
+      `);
+
+      await database.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_user_partitioned_execution_calculations_owner
+        ON user_partitioned_execution_calculations (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          updated_at DESC
+        );
+      `);
+    },
+  },
+  {
+    id: 9,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_partitioned_execution_calculations_v9 (
+          owner_user_id TEXT NOT NULL,
+          work_package_id TEXT NOT NULL,
+          tag_id TEXT NOT NULL,
+          template_id TEXT NOT NULL,
+          template_version TEXT NOT NULL,
+          calculation_mode TEXT NOT NULL,
+          acceptance_style TEXT NOT NULL,
+          raw_inputs_json TEXT NOT NULL,
+          result_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (
+            owner_user_id,
+            work_package_id,
+            tag_id,
+            template_id,
+            template_version
+          )
+        );
+
+        INSERT INTO user_partitioned_execution_calculations_v9 (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          calculation_mode,
+          acceptance_style,
+          raw_inputs_json,
+          result_json,
+          updated_at
+        )
+        SELECT
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          calculation_mode,
+          acceptance_style,
+          raw_inputs_json,
+          result_json,
+          updated_at
+        FROM user_partitioned_execution_calculations;
+
+        DROP TABLE user_partitioned_execution_calculations;
+
+        ALTER TABLE user_partitioned_execution_calculations_v9
+        RENAME TO user_partitioned_execution_calculations;
+
+        CREATE INDEX IF NOT EXISTS idx_user_partitioned_execution_calculations_owner
+        ON user_partitioned_execution_calculations (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          updated_at DESC
+        );
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

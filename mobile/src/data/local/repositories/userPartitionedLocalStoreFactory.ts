@@ -2,6 +2,7 @@ import type { AppSandboxBoundary, UserOwnedMediaSandbox } from '../../../platfor
 import { createUserOwnedMediaSandbox } from '../../../platform/files/appSandboxBoundary';
 import type { LocalDatabase } from '../sqlite/types';
 import { AssignedWorkPackageRepository } from './assignedWorkPackageRepository';
+import { UserPartitionedExecutionCalculationRepository } from './userPartitionedExecutionCalculationRepository';
 import { UserPartitionedDraftRepository } from './userPartitionedDraftRepository';
 import { UserPartitionedEvidenceMetadataRepository } from './userPartitionedEvidenceMetadataRepository';
 import { UserPartitionedExecutionProgressRepository } from './userPartitionedExecutionProgressRepository';
@@ -10,6 +11,7 @@ import { UserPartitionedQueueItemRepository } from './userPartitionedQueueItemRe
 export interface UserPartitionedLocalStore {
   ownerUserId: string;
   workPackages: AssignedWorkPackageRepository;
+  executionCalculations: UserPartitionedExecutionCalculationRepository;
   executionProgress: UserPartitionedExecutionProgressRepository;
   drafts: UserPartitionedDraftRepository;
   evidenceMetadata: UserPartitionedEvidenceMetadataRepository;
@@ -27,6 +29,10 @@ export class UserPartitionedLocalStoreFactory {
     return {
       ownerUserId,
       workPackages: new AssignedWorkPackageRepository(this.database, ownerUserId),
+      executionCalculations: new UserPartitionedExecutionCalculationRepository(
+        this.database,
+        ownerUserId,
+      ),
       executionProgress: new UserPartitionedExecutionProgressRepository(this.database, ownerUserId),
       drafts: new UserPartitionedDraftRepository(this.database, ownerUserId),
       evidenceMetadata: new UserPartitionedEvidenceMetadataRepository(this.database, ownerUserId),

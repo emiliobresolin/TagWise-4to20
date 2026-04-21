@@ -80,6 +80,27 @@ describe('UserPartitionedLocalStoreFactory', () => {
       updatedAt: '2026-04-20T10:15:00.000Z',
     });
 
+    await technicianStore.executionCalculations.saveCalculation({
+      workPackageId: 'wp-101',
+      tagId: 'tag-101',
+      templateId: 'tpl-pressure',
+      templateVersion: '2026-04-v1',
+      calculationMode: 'point deviation by span',
+      acceptanceStyle: 'within tolerance by point and overall span',
+      rawInputs: {
+        expectedValue: '5',
+        observedValue: '5.1',
+      },
+      result: {
+        signedDeviation: 0.1,
+        absoluteDeviation: 0.1,
+        percentOfSpan: 1,
+        acceptance: 'fail',
+        acceptanceReason: 'Tolerance is 0.25% of span.',
+      },
+      updatedAt: '2026-04-20T10:16:00.000Z',
+    });
+
     await technicianStore.workPackages.upsertCatalog([
       {
         id: 'wp-101',
@@ -115,6 +136,14 @@ describe('UserPartitionedLocalStoreFactory', () => {
     expect(
       await supervisorStore.executionProgress.getProgress('wp-101', 'tag-101', 'tpl-pressure'),
     ).toBeNull();
+    expect(
+      await supervisorStore.executionCalculations.getCalculation(
+        'wp-101',
+        'tag-101',
+        'tpl-pressure',
+        '2026-04-v1',
+      ),
+    ).toBeNull();
     expect(await supervisorStore.workPackages.listSummaries()).toEqual([]);
 
     expect(
@@ -137,6 +166,22 @@ describe('UserPartitionedLocalStoreFactory', () => {
     ).toMatchObject({
       currentStepId: 'history',
       visitedStepIds: ['context', 'history'],
+    });
+    expect(
+      await technicianStore.executionCalculations.getCalculation(
+        'wp-101',
+        'tag-101',
+        'tpl-pressure',
+        '2026-04-v1',
+      ),
+    ).toMatchObject({
+      rawInputs: {
+        expectedValue: '5',
+        observedValue: '5.1',
+      },
+      result: {
+        acceptance: 'fail',
+      },
     });
     expect(await technicianStore.workPackages.listSummaries()).toHaveLength(1);
 

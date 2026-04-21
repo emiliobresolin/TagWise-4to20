@@ -7,11 +7,18 @@ import type {
 } from '../work-packages/model';
 import { LocalExecutionTemplateRegistry } from './localExecutionTemplateRegistry';
 import type {
+  SharedExecutionCalculationState,
   SharedExecutionField,
   SharedExecutionShell,
+  SharedExecutionCalculationRawInputs,
+  StoredExecutionCalculationRecord,
   StoredExecutionProgressRecord,
 } from './model';
 import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
+import {
+  computeDeterministicCalculation,
+  resolveDeterministicCalculationDefinition,
+} from './deterministicCalculationEngine';
 
 interface SharedExecutionShellServiceDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
@@ -60,6 +67,12 @@ export class SharedExecutionShellService {
 
     const store = this.dependencies.userPartitions.forUser(session.userId);
     let progress = await store.executionProgress.getProgress(workPackageId, tagId, template.id);
+    const storedCalculation = await store.executionCalculations.getCalculation(
+      workPackageId,
+      tagId,
+      template.id,
+      template.version,
+    );
 
     if (!progress) {
       progress = {
@@ -77,7 +90,7 @@ export class SharedExecutionShellService {
       await store.executionProgress.saveProgress(progress);
     }
 
-    return buildExecutionShell(snapshot, tag, tagContext, template, progress);
+    return buildExecutionShell(snapshot, tag, tagContext, template, progress, storedCalculation);
   }
 
   async selectStep(
@@ -110,6 +123,44 @@ export class SharedExecutionShellService {
       progress,
     };
   }
+
+  async saveCalculation(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+    rawInputs: SharedExecutionCalculationRawInputs,
+  ): Promise<SharedExecutionShell> {
+    if (!shell.calculation) {
+      return shell;
+    }
+
+    const result = computeDeterministicCalculation(shell.calculation.definition, rawInputs);
+    const updatedAt = this.now().toISOString();
+    const record: StoredExecutionCalculationRecord = {
+      workPackageId: shell.workPackageId,
+      tagId: shell.tagId,
+      templateId: shell.template.id,
+      templateVersion: shell.template.version,
+      calculationMode: shell.template.calculationMode,
+      acceptanceStyle: shell.template.acceptanceStyle,
+      rawInputs,
+      result,
+      updatedAt,
+    };
+
+    await this.dependencies.userPartitions
+      .forUser(session.userId)
+      .executionCalculations.saveCalculation(record);
+
+    return {
+      ...shell,
+      calculation: {
+        ...shell.calculation,
+        rawInputs,
+        result,
+        updatedAt,
+      },
+    };
+  }
 }
 
 function buildExecutionShell(
@@ -118,13 +169,17 @@ function buildExecutionShell(
   tagContext: LocalTagContext,
   template: SharedExecutionShell['template'],
   progress: StoredExecutionProgressRecord,
+  storedCalculation: StoredExecutionCalculationRecord | null,
 ): SharedExecutionShell {
+  const calculation = buildCalculationState(tag, template, storedCalculation);
+
   return {
     workPackageId: snapshot.summary.id,
     workPackageTitle: snapshot.summary.title,
     tagId: tag.id,
     tagCode: tag.tagCode,
     template,
+    calculation,
     steps: [
       {
         id: 'context',
@@ -152,6 +207,7 @@ function buildExecutionShell(
           availableField('Template version', template.version),
           availableField('Calculation mode', template.calculationMode),
           availableField('Acceptance style', template.acceptanceStyle),
+          availableField('Tolerance basis', calculation.definition.toleranceSource),
           availableField(
             'Minimum evidence',
             template.minimumSubmissionEvidence.length > 0
@@ -223,6 +279,28 @@ function buildExecutionShell(
       },
     ],
     progress: normalizeProgress(progress, template.steps.map((step) => step.id)),
+  };
+}
+
+function buildCalculationState(
+  tag: AssignedWorkPackageTagSnapshot,
+  template: SharedExecutionShell['template'],
+  storedCalculation: StoredExecutionCalculationRecord | null,
+): SharedExecutionCalculationState {
+  const definition = resolveDeterministicCalculationDefinition(
+    tag,
+    template.calculationMode,
+    template.acceptanceStyle,
+  );
+
+  return {
+    definition,
+    rawInputs: storedCalculation?.rawInputs ?? {
+      expectedValue: '',
+      observedValue: '',
+    },
+    result: storedCalculation?.result ?? null,
+    updatedAt: storedCalculation?.updatedAt ?? null,
   };
 }
 

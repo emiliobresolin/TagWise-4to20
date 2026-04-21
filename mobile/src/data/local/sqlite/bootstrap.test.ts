@@ -44,17 +44,18 @@ describe('runMigrations', () => {
           'user_partitioned_evidence_metadata',
           'user_partitioned_queue_items',
           'user_partitioned_execution_progress',
+          'user_partitioned_execution_calculations',
           'mobile_runtime_error_events',
           'assigned_work_package_summaries',
           'assigned_work_package_snapshots'
          );`,
     );
 
-    expect(summary.currentSchemaVersion).toBe(7);
-    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5', '6', '7']);
+    expect(summary.currentSchemaVersion).toBe(9);
+    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
-    expect(partitionTables?.count).toBe(9);
+    expect(partitionTables?.count).toBe(10);
 
     await database.closeAsync?.();
   });
@@ -84,8 +85,163 @@ describe('runMigrations', () => {
       { id: 5 },
       { id: 6 },
       { id: 7 },
+      { id: 8 },
+      { id: 9 },
     ]);
     expect(record?.count).toBe(1);
+
+    await database.closeAsync?.();
+  });
+
+  it('migrates populated pre-v9 execution calculation rows without loss or corruption', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-migrations-legacy-v8-'));
+    createdDirectories.push(tempDirectory);
+
+    const database = createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'));
+
+    await database.execAsync(`
+      CREATE TABLE schema_migrations (
+        id INTEGER PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+
+      INSERT INTO schema_migrations (id, applied_at) VALUES
+        (1, '2026-04-01T00:00:00.000Z'),
+        (2, '2026-04-01T00:00:00.000Z'),
+        (3, '2026-04-01T00:00:00.000Z'),
+        (4, '2026-04-01T00:00:00.000Z'),
+        (5, '2026-04-01T00:00:00.000Z'),
+        (6, '2026-04-01T00:00:00.000Z'),
+        (7, '2026-04-01T00:00:00.000Z'),
+        (8, '2026-04-01T00:00:00.000Z');
+
+      CREATE TABLE user_partitioned_execution_calculations (
+        owner_user_id TEXT NOT NULL,
+        work_package_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_version TEXT NOT NULL,
+        calculation_mode TEXT NOT NULL,
+        acceptance_style TEXT NOT NULL,
+        raw_inputs_json TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_user_id, work_package_id, tag_id, template_id)
+      );
+
+      CREATE INDEX idx_user_partitioned_execution_calculations_owner
+      ON user_partitioned_execution_calculations (
+        owner_user_id,
+        work_package_id,
+        tag_id,
+        updated_at DESC
+      );
+    `);
+
+    await database.runAsync(
+      `
+        INSERT INTO user_partitioned_execution_calculations (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          calculation_mode,
+          acceptance_style,
+          raw_inputs_json,
+          result_json,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+      [
+        'user-technician',
+        'wp-legacy-001',
+        'tag-legacy-001',
+        'tpl-pressure',
+        '2026-04-v1',
+        'point deviation by span',
+        'within tolerance by point and overall span',
+        '{"expectedValue":"5","observedValue":"5.02"}',
+        '{"signedDeviation":0.02,"absoluteDeviation":0.02,"percentOfSpan":0.2,"acceptance":"pass","acceptanceReason":"Tolerance is 0.25% of span."}',
+        '2026-04-19T11:05:00.000Z',
+      ],
+    );
+
+    const summary = await runMigrations(database);
+    const migratedRows = await database.getAllAsync<{
+      template_version: string;
+      raw_inputs_json: string;
+      result_json: string;
+      updated_at: string;
+    }>(
+      `
+        SELECT template_version, raw_inputs_json, result_json, updated_at
+        FROM user_partitioned_execution_calculations
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?
+        ORDER BY template_version ASC;
+      `,
+      ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
+    );
+
+    expect(summary.currentSchemaVersion).toBe(9);
+    expect(summary.appliedMigrationIds).toEqual(['9']);
+    expect(migratedRows).toEqual([
+      {
+        template_version: '2026-04-v1',
+        raw_inputs_json: '{"expectedValue":"5","observedValue":"5.02"}',
+        result_json:
+          '{"signedDeviation":0.02,"absoluteDeviation":0.02,"percentOfSpan":0.2,"acceptance":"pass","acceptanceReason":"Tolerance is 0.25% of span."}',
+        updated_at: '2026-04-19T11:05:00.000Z',
+      },
+    ]);
+
+    const insertSecondVersion = await database.runAsync(
+      `
+        INSERT INTO user_partitioned_execution_calculations (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          calculation_mode,
+          acceptance_style,
+          raw_inputs_json,
+          result_json,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+      [
+        'user-technician',
+        'wp-legacy-001',
+        'tag-legacy-001',
+        'tpl-pressure',
+        '2026-05-v2',
+        'point deviation by span',
+        'within tolerance by point and overall span',
+        '{"expectedValue":"5","observedValue":"5.05"}',
+        '{"signedDeviation":0.05,"absoluteDeviation":0.05,"percentOfSpan":0.5,"acceptance":"fail","acceptanceReason":"Tolerance is 0.25% of span."}',
+        '2026-04-20T09:00:00.000Z',
+      ],
+    );
+    const rowCount = await database.getFirstAsync<{ count: number }>(
+      `
+        SELECT COUNT(*) as count
+        FROM user_partitioned_execution_calculations
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?;
+      `,
+      ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
+    );
+
+    expect(insertSecondVersion.changes).toBe(1);
+    expect(rowCount?.count).toBe(2);
 
     await database.closeAsync?.();
   });

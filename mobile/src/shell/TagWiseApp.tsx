@@ -29,6 +29,7 @@ import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/
 import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
+import { DeterministicCalculationInputError } from '../features/execution/deterministicCalculationEngine';
 import { SharedExecutionShellService } from '../features/execution/sharedExecutionShellService';
 import type { SharedExecutionField, SharedExecutionShell } from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
@@ -656,6 +657,67 @@ export function TagWiseApp() {
     }
 
     await handleOpenExecutionStep(nextStep.id);
+  }
+
+  function handleExecutionCalculationInputChange(
+    key: 'expectedValue' | 'observedValue',
+    value: string,
+  ) {
+    setStatus((current) =>
+      current.type !== 'ready' || !current.executionShell || !current.executionShell.calculation
+        ? current
+        : {
+            ...current,
+            executionShell: {
+              ...current.executionShell,
+              calculation: {
+                ...current.executionShell.calculation,
+                rawInputs: {
+                  ...current.executionShell.calculation.rawInputs,
+                  [key]: value,
+                },
+              },
+            },
+          },
+    );
+  }
+
+  async function handleSaveExecutionCalculation() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell?.calculation) {
+      return;
+    }
+
+    try {
+      const executionShell = await readyState.executionShellService.saveCalculation(
+        readyState.session,
+        readyState.executionShell,
+        readyState.executionShell.calculation.rawInputs,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              executionShell,
+              authMessage: executionShell.calculation?.result
+                ? `Deterministic calculation saved locally for ${executionShell.tagCode}.`
+                : current.authMessage,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage:
+                error instanceof DeterministicCalculationInputError || error instanceof Error
+                  ? error.message
+                  : 'Deterministic calculation failed without a detailed message.',
+            },
+      );
+    }
   }
 
   async function handleStartQrScanner() {
@@ -1418,6 +1480,107 @@ export function TagWiseApp() {
                           <ExecutionFieldCard key={field.label} field={field} />
                         ))}
 
+                        {selectedExecutionStep.kind === 'calculation' &&
+                        readyState.executionShell.calculation ? (
+                          <View style={styles.listCard}>
+                            <Text style={styles.metricLabel}>Deterministic calculation</Text>
+                            <TextInput
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                              keyboardType="decimal-pad"
+                              onChangeText={(value) =>
+                                handleExecutionCalculationInputChange('expectedValue', value)
+                              }
+                              placeholder={readyState.executionShell.calculation.definition.expectedLabel}
+                              style={styles.input}
+                              value={readyState.executionShell.calculation.rawInputs.expectedValue}
+                            />
+                            <TextInput
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                              keyboardType="decimal-pad"
+                              onChangeText={(value) =>
+                                handleExecutionCalculationInputChange('observedValue', value)
+                              }
+                              placeholder={readyState.executionShell.calculation.definition.observedLabel}
+                              style={styles.input}
+                              value={readyState.executionShell.calculation.rawInputs.observedValue}
+                            />
+                            <Pressable
+                              accessibilityRole="button"
+                              onPress={() => void handleSaveExecutionCalculation()}
+                              style={styles.primaryButton}
+                            >
+                              <Text style={styles.primaryButtonLabel}>
+                                Run deterministic calculation
+                              </Text>
+                            </Pressable>
+
+                            {readyState.executionShell.calculation.result ? (
+                              <>
+                                <View style={styles.metricGrid}>
+                                  <MetricCard
+                                    label="Acceptance"
+                                    value={toAcceptanceLabel(
+                                      readyState.executionShell.calculation.result.acceptance,
+                                    )}
+                                  />
+                                  <MetricCard
+                                    label="Updated"
+                                    value={
+                                      readyState.executionShell.calculation.updatedAt
+                                        ? formatTimestamp(
+                                            readyState.executionShell.calculation.updatedAt,
+                                          )
+                                        : 'Not saved yet'
+                                    }
+                                  />
+                                </View>
+
+                                <View style={styles.metricGrid}>
+                                  <MetricCard
+                                    label="Signed deviation"
+                                    value={formatDeviation(
+                                      readyState.executionShell.calculation.result.signedDeviation,
+                                      readyState.executionShell.calculation.definition.unit,
+                                    )}
+                                  />
+                                  <MetricCard
+                                    label="Absolute deviation"
+                                    value={formatDeviation(
+                                      readyState.executionShell.calculation.result
+                                        .absoluteDeviation,
+                                      readyState.executionShell.calculation.definition.unit,
+                                    )}
+                                  />
+                                </View>
+
+                                <View style={styles.metricGrid}>
+                                  <MetricCard
+                                    label="Percent of span"
+                                    value={
+                                      readyState.executionShell.calculation.result.percentOfSpan !==
+                                      null
+                                        ? `${readyState.executionShell.calculation.result.percentOfSpan.toFixed(3)}%`
+                                        : 'Not available'
+                                    }
+                                  />
+                                  <MetricCard
+                                    label="Tolerance source"
+                                    value={
+                                      readyState.executionShell.calculation.definition.toleranceSource
+                                    }
+                                  />
+                                </View>
+
+                                <Text style={styles.helperText}>
+                                  {readyState.executionShell.calculation.result.acceptanceReason}
+                                </Text>
+                              </>
+                            ) : null}
+                          </View>
+                        ) : null}
+
                         <View style={styles.metricGrid}>
                           <Pressable
                             accessibilityRole="button"
@@ -1706,6 +1869,22 @@ function formatDueWindow(value: string | null) {
   }
 
   return formatTimestamp(value);
+}
+
+function formatDeviation(value: number, unit: string | null) {
+  const formatted = value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function toAcceptanceLabel(value: 'pass' | 'fail' | 'unavailable') {
+  switch (value) {
+    case 'pass':
+      return 'Pass';
+    case 'fail':
+      return 'Fail';
+    default:
+      return 'Unavailable';
+  }
 }
 
 const styles = StyleSheet.create({
