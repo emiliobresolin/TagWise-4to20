@@ -30,6 +30,10 @@ import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
 import { DeterministicCalculationInputError } from '../features/execution/deterministicCalculationEngine';
+import {
+  canProceedToExecutionShell,
+  resolveExplicitExecutionTemplateSelection,
+} from '../features/execution/executionTemplateSelection';
 import { SharedExecutionShellService } from '../features/execution/sharedExecutionShellService';
 import type { SharedExecutionField, SharedExecutionShell } from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
@@ -76,6 +80,7 @@ type BootstrapStatus =
       packageBusy: boolean;
       authMessage: string | null;
       activeTagPackageId: string | null;
+      selectedExecutionTemplateId: string | null;
       tagSearchQuery: string;
       visibleTags: LocalAssignedTagEntry[];
       selectedTag: LocalAssignedTagEntry | null;
@@ -178,6 +183,7 @@ export function TagWiseApp() {
               ? 'Offline session restored from cached role metadata.'
               : null,
           activeTagPackageId: null,
+          selectedExecutionTemplateId: null,
           tagSearchQuery: '',
           visibleTags: [],
           selectedTag: null,
@@ -328,6 +334,7 @@ export function TagWiseApp() {
               authBusy: false,
               authMessage,
               activeTagPackageId: null,
+              selectedExecutionTemplateId: null,
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
@@ -380,6 +387,7 @@ export function TagWiseApp() {
               packageBusy: false,
               authMessage: `${workPackages.length} assigned package(s) refreshed for offline use.`,
               activeTagPackageId: null,
+              selectedExecutionTemplateId: null,
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
@@ -434,6 +442,7 @@ export function TagWiseApp() {
               packageBusy: false,
               authMessage: `Assigned package ${result.snapshot.summary.id} snapshot stored locally and freshness updated.`,
               activeTagPackageId: null,
+              selectedExecutionTemplateId: null,
               tagSearchQuery: '',
               visibleTags: [],
               selectedTag: null,
@@ -475,6 +484,7 @@ export function TagWiseApp() {
         : {
             ...current,
             activeTagPackageId: workPackageId,
+            selectedExecutionTemplateId: null,
             tagSearchQuery: '',
             visibleTags,
             selectedTag: null,
@@ -516,6 +526,11 @@ export function TagWiseApp() {
               visibleTags.some((tag) => tag.tagId === current.selectedTagContext?.tagId)
                 ? current.selectedTagContext
                 : null,
+            selectedExecutionTemplateId:
+              current.selectedTagContext &&
+              visibleTags.some((tag) => tag.tagId === current.selectedTagContext?.tagId)
+                ? current.selectedExecutionTemplateId
+                : null,
             executionShell:
               current.executionShell &&
               visibleTags.some((tag) => tag.tagId === current.executionShell?.tagId)
@@ -542,6 +557,7 @@ export function TagWiseApp() {
         : {
             ...current,
             activeTagPackageId: entry.workPackageId,
+            selectedExecutionTemplateId: null,
             selectedTag: entry,
             selectedTagContext,
             executionShell: null,
@@ -571,6 +587,7 @@ export function TagWiseApp() {
               ...current,
               selectedTag: null,
               selectedTagContext: null,
+              selectedExecutionTemplateId: null,
               executionShell: null,
               authMessage: 'Selected tag is no longer available in local package scope.',
             },
@@ -582,7 +599,19 @@ export function TagWiseApp() {
   }
 
   async function handleProceedToExecutionShell() {
-    if (status.type !== 'ready' || !readyState.session || !readyState.selectedTag) {
+    const selectedTemplateId = readyState.selectedExecutionTemplateId;
+
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.selectedTag ||
+      !readyState.selectedTagContext ||
+      !selectedTemplateId ||
+      !canProceedToExecutionShell(
+        readyState.selectedTagContext.referencePointers.executionTemplates,
+        selectedTemplateId,
+      )
+    ) {
       return;
     }
 
@@ -590,17 +619,30 @@ export function TagWiseApp() {
       readyState.session,
       readyState.selectedTag.workPackageId,
       readyState.selectedTag.tagId,
+      selectedTemplateId,
     );
 
     setStatus((current) =>
       current.type !== 'ready'
         ? current
+          : {
+              ...current,
+              executionShell,
+              authMessage: executionShell
+                ? `Shared execution shell loaded for ${executionShell.tagCode} using ${executionShell.template.testPattern}.`
+                : 'No local template contract is available for this tag.',
+          },
+    );
+  }
+
+  function handleSelectExecutionTemplate(templateId: string) {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
         : {
             ...current,
-            executionShell,
-            authMessage: executionShell
-              ? `Shared execution shell loaded for ${executionShell.tagCode}.`
-              : 'No local template contract is available for this tag.',
+            selectedExecutionTemplateId: templateId,
+            executionShell: null,
           },
     );
   }
@@ -796,6 +838,7 @@ export function TagWiseApp() {
               qrManualPayload: '',
               qrScanResult,
               activeTagPackageId: qrScanResult.tag.workPackageId,
+              selectedExecutionTemplateId: null,
               tagSearchQuery: '',
               visibleTags,
               selectedTag: qrScanResult.tag,
@@ -817,6 +860,7 @@ export function TagWiseApp() {
             qrScannerVisible: false,
             qrScanResult,
             activeTagPackageId: null,
+            selectedExecutionTemplateId: null,
             tagSearchQuery: '',
             visibleTags: [],
             selectedTag: null,
@@ -881,6 +925,7 @@ export function TagWiseApp() {
         : {
             ...current,
             activeTagPackageId: null,
+            selectedExecutionTemplateId: null,
             tagSearchQuery: '',
             visibleTags: [],
             selectedTag: null,
@@ -968,6 +1013,8 @@ export function TagWiseApp() {
             authBusy: false,
             workPackages: result.state === 'cleared' ? [] : current.workPackages,
             activeTagPackageId: result.state === 'cleared' ? null : current.activeTagPackageId,
+            selectedExecutionTemplateId:
+              result.state === 'cleared' ? null : current.selectedExecutionTemplateId,
             tagSearchQuery: result.state === 'cleared' ? '' : current.tagSearchQuery,
             visibleTags: result.state === 'cleared' ? [] : current.visibleTags,
             selectedTag: result.state === 'cleared' ? null : current.selectedTag,
@@ -992,6 +1039,13 @@ export function TagWiseApp() {
     readyState.executionShell && selectedExecutionStep
       ? readyState.executionShell.steps.findIndex((step) => step.id === selectedExecutionStep.id)
       : -1;
+  const selectedExecutionTemplate =
+    readyState.selectedTagContext
+      ? resolveExplicitExecutionTemplateSelection(
+          readyState.selectedTagContext.referencePointers.executionTemplates,
+          readyState.selectedExecutionTemplateId,
+        )
+      : null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -1407,10 +1461,76 @@ export function TagWiseApp() {
                           </Text>
                         </View>
 
+                        {readyState.selectedTagContext.referencePointers.executionTemplates.length > 0 ? (
+                          <View style={styles.listCard}>
+                            <Text style={styles.listCardTitle}>Execution templates</Text>
+                            <Text style={styles.helperText}>
+                              Choose the approved local transmitter pattern before opening the shared shell.
+                            </Text>
+
+                            {readyState.selectedTagContext.referencePointers.executionTemplates.map(
+                              (template) => {
+                                const isSelected =
+                                  template.id === readyState.selectedExecutionTemplateId;
+
+                                return (
+                                  <Pressable
+                                    key={template.id}
+                                    accessibilityRole="button"
+                                    onPress={() => handleSelectExecutionTemplate(template.id)}
+                                    style={[
+                                      styles.secondaryButton,
+                                      isSelected ? styles.routeButtonActive : null,
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.secondaryButtonLabel,
+                                        isSelected ? styles.routeButtonLabelActive : null,
+                                      ]}
+                                    >
+                                      {template.title} ({template.testPattern})
+                                    </Text>
+                                  </Pressable>
+                                );
+                              },
+                            )}
+
+                            {selectedExecutionTemplate ? (
+                              <>
+                                <Text style={styles.metricValue}>
+                                  {selectedExecutionTemplate.instrumentFamily}
+                                </Text>
+                                <Text style={styles.helperText}>
+                                  {selectedExecutionTemplate.captureSummary}
+                                </Text>
+                                <Text style={styles.helperText}>
+                                  Minimum evidence:{' '}
+                                  {selectedExecutionTemplate.minimumSubmissionEvidence.join(', ')}
+                                </Text>
+                                <Text style={styles.helperText}>
+                                  Expected evidence:{' '}
+                                  {selectedExecutionTemplate.expectedEvidence.length > 0
+                                    ? selectedExecutionTemplate.expectedEvidence.join(', ')
+                                    : 'None declared'}
+                                </Text>
+                              </>
+                            ) : null}
+                          </View>
+                        ) : (
+                          <Text style={styles.helperText}>
+                            No approved local execution template is attached to this tag yet.
+                          </Text>
+                        )}
+
                         <Pressable
                           accessibilityRole="button"
+                          disabled={!selectedExecutionTemplate}
                           onPress={() => void handleProceedToExecutionShell()}
-                          style={styles.primaryButton}
+                          style={[
+                            styles.primaryButton,
+                            !selectedExecutionTemplate ? styles.buttonDisabled : null,
+                          ]}
                         >
                           <Text style={styles.primaryButtonLabel}>Proceed to execution shell</Text>
                         </Pressable>
@@ -1484,6 +1604,12 @@ export function TagWiseApp() {
                         readyState.executionShell.calculation ? (
                           <View style={styles.listCard}>
                             <Text style={styles.metricLabel}>Deterministic calculation</Text>
+                            <Text style={styles.helperText}>
+                              {readyState.executionShell.template.captureSummary}
+                            </Text>
+                            <Text style={styles.metricLabel}>
+                              {readyState.executionShell.calculation.definition.expectedLabel}
+                            </Text>
                             <TextInput
                               autoCapitalize="none"
                               autoCorrect={false}
@@ -1495,6 +1621,9 @@ export function TagWiseApp() {
                               style={styles.input}
                               value={readyState.executionShell.calculation.rawInputs.expectedValue}
                             />
+                            <Text style={styles.metricLabel}>
+                              {readyState.executionShell.calculation.definition.observedLabel}
+                            </Text>
                             <TextInput
                               autoCapitalize="none"
                               autoCorrect={false}

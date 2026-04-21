@@ -8,6 +8,7 @@ import type {
 import { LocalExecutionTemplateRegistry } from './localExecutionTemplateRegistry';
 import type {
   SharedExecutionCalculationState,
+  SharedExecutionCaptureFieldId,
   SharedExecutionField,
   SharedExecutionShell,
   SharedExecutionCalculationRawInputs,
@@ -41,6 +42,7 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     workPackageId: string,
     tagId: string,
+    templateId: string,
   ): Promise<SharedExecutionShell | null> {
     const snapshot = await this.dependencies.userPartitions
       .forUser(session.userId)
@@ -55,7 +57,7 @@ export class SharedExecutionShellService {
       return null;
     }
 
-    const template = this.templateRegistry.resolveTemplate(snapshot, tag);
+    const template = this.templateRegistry.resolveTemplate(snapshot, tag, templateId);
     if (!template) {
       return null;
     }
@@ -199,19 +201,28 @@ function buildExecutionShell(
         id: 'calculation',
         title: 'Calculation setup',
         kind: 'calculation',
-        summary: `${template.calculationMode} using ${template.acceptanceStyle}.`,
-        detail:
-          'This shared shell keeps calculation identity visible now so later family packs can reuse the same execution frame.',
+        summary: template.captureSummary,
+        detail: `${template.calculationMode} using ${template.acceptanceStyle}.`,
         fields: [
           availableField('Template', template.title),
           availableField('Template version', template.version),
           availableField('Calculation mode', template.calculationMode),
           availableField('Acceptance style', template.acceptanceStyle),
+          availableField(
+            'Capture fields',
+            template.captureFields.map((field) => field.label).join(', '),
+          ),
           availableField('Tolerance basis', calculation.definition.toleranceSource),
           availableField(
             'Minimum evidence',
             template.minimumSubmissionEvidence.length > 0
               ? template.minimumSubmissionEvidence.join(', ')
+              : 'None declared',
+          ),
+          availableField(
+            'Expected evidence',
+            template.expectedEvidence.length > 0
+              ? template.expectedEvidence.join(', ')
               : 'None declared',
           ),
         ],
@@ -291,6 +302,7 @@ function buildCalculationState(
     tag,
     template.calculationMode,
     template.acceptanceStyle,
+    mapTemplateInputLabelOverrides(template.captureFields),
   );
 
   return {
@@ -302,6 +314,18 @@ function buildCalculationState(
     result: storedCalculation?.result ?? null,
     updatedAt: storedCalculation?.updatedAt ?? null,
   };
+}
+
+function mapTemplateInputLabelOverrides(
+  captureFields: SharedExecutionShell['template']['captureFields'],
+): Partial<Record<SharedExecutionCaptureFieldId, string>> {
+  const labels: Partial<Record<SharedExecutionCaptureFieldId, string>> = {};
+
+  for (const field of captureFields) {
+    labels[field.id] = field.label;
+  }
+
+  return labels;
 }
 
 function normalizeProgress(

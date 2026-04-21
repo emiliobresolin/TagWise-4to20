@@ -6,6 +6,7 @@ import type {
   AssignedWorkPackageSnapshot,
   AssignedWorkPackageTagSnapshot,
   AssignedWorkPackageTemplateSnapshot,
+  LocalExecutionTemplateOption,
   LocalTagContext,
   LocalTagContextField,
   LocalTagHistoryPreview,
@@ -177,9 +178,9 @@ function mapReferencePointers(
     return {
       state: 'unavailable',
       templates: [],
+      executionTemplates: [],
       guidance: [],
       detail: 'No local procedure or guidance references were attached.',
-      executionTemplateLabel: null,
     };
   }
 
@@ -193,29 +194,38 @@ function mapReferencePointers(
   if (missingTemplateIds.length > 0 || missingGuidanceIds.length > 0) {
     return {
       state: 'missing',
-      templates: matchedTemplates,
+      templates: matchedTemplates.map(formatTemplateOptionLabel),
+      executionTemplates: matchedTemplates,
       guidance: matchedGuidance,
       detail: buildMissingReferenceDetail(missingTemplateIds, missingGuidanceIds),
-      executionTemplateLabel: matchedTemplates[0] ?? null,
     };
   }
 
   return {
     state: 'available',
-    templates: matchedTemplates,
+    templates: matchedTemplates.map(formatTemplateOptionLabel),
+    executionTemplates: matchedTemplates,
     guidance: matchedGuidance,
     detail: 'Local procedure and guidance references are ready for execution handoff.',
-    executionTemplateLabel: matchedTemplates[0] ?? null,
   };
 }
 
 function matchTemplates(
   templates: AssignedWorkPackageTemplateSnapshot[],
   templateIds: string[],
-): string[] {
-  return templates
-    .filter((template) => templateIds.includes(template.id))
-    .map((template) => `${template.title} (${template.testPattern})`);
+): LocalExecutionTemplateOption[] {
+  return templateIds
+    .map((templateId) => templates.find((template) => template.id === templateId))
+    .filter((template): template is AssignedWorkPackageTemplateSnapshot => Boolean(template))
+    .map((template) => ({
+      id: template.id,
+      title: template.title,
+      instrumentFamily: template.instrumentFamily,
+      testPattern: template.testPattern,
+      captureSummary: normalizeCaptureSummary(template.captureSummary, template.testPattern),
+      minimumSubmissionEvidence: template.minimumSubmissionEvidence,
+      expectedEvidence: Array.isArray(template.expectedEvidence) ? template.expectedEvidence : [],
+    }));
 }
 
 function matchGuidance(
@@ -244,12 +254,25 @@ function buildMissingReferenceDetail(
   return parts.join('. ');
 }
 
+function formatTemplateOptionLabel(template: LocalExecutionTemplateOption): string {
+  return `${template.title} (${template.testPattern})`;
+}
+
 function buildHistoryDetail(summary: AssignedWorkPackageHistorySummarySnapshot): string {
   const parts = [normalizeDisplayValue(summary.lastResult), normalizeDisplayValue(summary.trendHint)].filter(
     (value): value is string => Boolean(value),
   );
 
   return parts.length > 0 ? parts.join(' • ') : 'History summary is available locally.';
+}
+
+function normalizeCaptureSummary(
+  captureSummary: string | undefined,
+  testPattern: string,
+): string {
+  return typeof captureSummary === 'string' && captureSummary.trim().length > 0
+    ? captureSummary
+    : `Capture the local execution values for ${testPattern}.`;
 }
 
 function normalizeDisplayValue(value: string | null | undefined): string | null {

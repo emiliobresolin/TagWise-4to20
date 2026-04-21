@@ -1,9 +1,17 @@
 export type SharedExecutionStepKind = 'context' | 'calculation' | 'history' | 'guidance';
 
+export type SharedExecutionCaptureFieldId = 'expectedValue' | 'observedValue';
+
 export interface SharedExecutionTemplateStepContract {
   id: string;
   title: string;
   kind: SharedExecutionStepKind;
+}
+
+export interface SharedExecutionTemplateCaptureFieldContract {
+  id: SharedExecutionCaptureFieldId;
+  label: string;
+  inputKind: 'numeric';
 }
 
 export interface SharedExecutionTemplateContract {
@@ -14,7 +22,10 @@ export interface SharedExecutionTemplateContract {
   testPattern: string;
   calculationMode: string;
   acceptanceStyle: string;
+  captureSummary: string;
+  captureFields: SharedExecutionTemplateCaptureFieldContract[];
   minimumSubmissionEvidence: string[];
+  expectedEvidence: string[];
   historyComparisonExpectation: string;
   steps: SharedExecutionTemplateStepContract[];
 }

@@ -1,5 +1,41 @@
 import type { SeededAssignedWorkPackageRecord } from './model';
 
+function buildNumericCaptureFields(expectedLabel: string, observedLabel: string) {
+  return [
+    { id: 'expectedValue' as const, label: expectedLabel, inputKind: 'numeric' as const },
+    { id: 'observedValue' as const, label: observedLabel, inputKind: 'numeric' as const },
+  ];
+}
+
+function buildTemplate(definition: {
+  id: string;
+  instrumentFamily: string;
+  testPattern: string;
+  title: string;
+  calculationMode: string;
+  acceptanceStyle: string;
+  captureSummary: string;
+  expectedLabel: string;
+  observedLabel: string;
+  minimumSubmissionEvidence: string[];
+  expectedEvidence: string[];
+  historyComparisonExpectation: string;
+}) {
+  return {
+    id: definition.id,
+    instrumentFamily: definition.instrumentFamily,
+    testPattern: definition.testPattern,
+    title: definition.title,
+    calculationMode: definition.calculationMode,
+    acceptanceStyle: definition.acceptanceStyle,
+    captureSummary: definition.captureSummary,
+    captureFields: buildNumericCaptureFields(definition.expectedLabel, definition.observedLabel),
+    minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
+    expectedEvidence: definition.expectedEvidence,
+    historyComparisonExpectation: definition.historyComparisonExpectation,
+  };
+}
+
 export function buildSeedAssignedWorkPackages(
   technicianUserId: string,
 ): SeededAssignedWorkPackageRecord[] {
@@ -57,9 +93,13 @@ export function buildSeedAssignedWorkPackages(
             measuredVariable: 'pressure',
             signalType: '4-20mA',
             range: { min: 0, max: 10, unit: 'bar' },
-            tolerance: '±0.25% span',
+            tolerance: '+/-0.25% span',
             criticality: 'high',
-            templateIds: ['tpl-pressure-as-found'],
+            templateIds: [
+              'tpl-pressure-as-found',
+              'tpl-pressure-as-left',
+              'tpl-pressure-loop-range',
+            ],
             guidanceReferenceIds: ['guide-pressure-loop-check'],
             historySummaryId: 'history-pt-101',
           },
@@ -74,41 +114,116 @@ export function buildSeedAssignedWorkPackages(
             measuredVariable: 'temperature',
             signalType: '4-20mA',
             range: { min: 0, max: 250, unit: 'C' },
-            tolerance: '±0.3C',
+            tolerance: '+/-0.3C',
             criticality: 'medium',
-            templateIds: ['tpl-temperature-rtd-check'],
+            templateIds: [
+              'tpl-temperature-input-simulation',
+              'tpl-temperature-calibration-verification',
+              'tpl-temperature-range-check',
+            ],
             guidanceReferenceIds: ['guide-rtd-input-check'],
             historySummaryId: 'history-tt-205',
           },
         ],
         templates: [
-          {
+          buildTemplate({
             id: 'tpl-pressure-as-found',
             instrumentFamily: 'pressure transmitter',
             testPattern: 'as-found calibration check',
             title: 'Pressure transmitter as-found calibration',
             calculationMode: 'point deviation by span',
             acceptanceStyle: 'within tolerance by point and overall span',
+            captureSummary:
+              'Capture structured pressure checkpoints before recalibration and compare measured versus expected values.',
+            expectedLabel: 'Expected pressure',
+            observedLabel: 'Measured pressure',
             minimumSubmissionEvidence: ['as-found readings', 'instrument note'],
+            expectedEvidence: ['supporting photo', 'loop condition note'],
             historyComparisonExpectation: 'compare last approved span error and repeated drift',
-          },
-          {
-            id: 'tpl-temperature-rtd-check',
+          }),
+          buildTemplate({
+            id: 'tpl-pressure-as-left',
+            instrumentFamily: 'pressure transmitter',
+            testPattern: 'as-left calibration check',
+            title: 'Pressure transmitter as-left calibration',
+            calculationMode: 'point deviation by span',
+            acceptanceStyle: 'within tolerance by point and overall span',
+            captureSummary:
+              'Capture post-adjustment pressure checkpoints and confirm the final instrument state against expected values.',
+            expectedLabel: 'Expected pressure',
+            observedLabel: 'Measured pressure',
+            minimumSubmissionEvidence: ['as-left readings', 'adjustment note'],
+            expectedEvidence: ['supporting photo', 'adjustment reference note'],
+            historyComparisonExpectation: 'compare final result against last approved as-left check',
+          }),
+          buildTemplate({
+            id: 'tpl-pressure-loop-range',
+            instrumentFamily: 'pressure transmitter',
+            testPattern: 'loop verification against expected range',
+            title: 'Pressure loop verification',
+            calculationMode: 'expected range vs measured loop output',
+            acceptanceStyle: 'within tolerance across expected range checkpoints',
+            captureSummary:
+              'Capture applied checkpoints and confirm the loop output against the expected operating range.',
+            expectedLabel: 'Expected loop value',
+            observedLabel: 'Measured loop value',
+            minimumSubmissionEvidence: ['loop checkpoints', 'measured outputs'],
+            expectedEvidence: ['reference source note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated loop or configuration drift at tested points',
+          }),
+          buildTemplate({
+            id: 'tpl-temperature-input-simulation',
             instrumentFamily: 'temperature transmitter / RTD input',
-            testPattern: 'input simulation and verification',
-            title: 'RTD input verification',
+            testPattern: 'input simulation check',
+            title: 'RTD input simulation check',
             calculationMode: 'simulated input vs reported output',
             acceptanceStyle: 'point deviation across expected RTD inputs',
+            captureSummary:
+              'Capture simulated temperature or RTD checkpoints and compare the reported output at each point.',
+            expectedLabel: 'Simulated input',
+            observedLabel: 'Reported output',
             minimumSubmissionEvidence: ['simulated inputs', 'reported outputs'],
+            expectedEvidence: ['input source note', 'supporting photo'],
             historyComparisonExpectation: 'compare last approved zero/span drift pattern',
-          },
+          }),
+          buildTemplate({
+            id: 'tpl-temperature-calibration-verification',
+            instrumentFamily: 'temperature transmitter / RTD input',
+            testPattern: 'calibration verification',
+            title: 'Temperature calibration verification',
+            calculationMode: 'expected temperature vs measured output',
+            acceptanceStyle: 'tolerance-based pass/fail with clear deviation display',
+            captureSummary:
+              'Capture calibration checkpoints and verify the measured output against the expected temperature values.',
+            expectedLabel: 'Expected temperature',
+            observedLabel: 'Measured output',
+            minimumSubmissionEvidence: ['calibration checkpoints', 'measured outputs'],
+            expectedEvidence: ['reference source note', 'configuration note'],
+            historyComparisonExpectation: 'compare last comparable verification result and drift pattern',
+          }),
+          buildTemplate({
+            id: 'tpl-temperature-range-check',
+            instrumentFamily: 'temperature transmitter / RTD input',
+            testPattern: 'expected-versus-measured range check',
+            title: 'Temperature expected-versus-measured range check',
+            calculationMode: 'expected value vs measured output',
+            acceptanceStyle: 'tolerance-based pass/fail with clear deviation display',
+            captureSummary:
+              'Capture expected and measured range checkpoints to verify the transmitter across the configured operating band.',
+            expectedLabel: 'Expected temperature',
+            observedLabel: 'Measured output',
+            minimumSubmissionEvidence: ['range checkpoints', 'measured outputs'],
+            expectedEvidence: ['input source note', 'supporting photo'],
+            historyComparisonExpectation: 'compare comparable temperature verification results when available',
+          }),
         ],
         guidance: [
           {
             id: 'guide-pressure-loop-check',
             title: 'Pressure loop check baseline',
             version: '2026.04',
-            summary: 'Confirm impulse path and vent condition before accepting transmitter deviation as instrument fault.',
+            summary:
+              'Confirm impulse path and vent condition before accepting transmitter deviation as instrument fault.',
             whyItMatters: 'Rules out process-side restriction before calibration decisions.',
             sourceReference: 'TAGWISE-BP-PT-001',
           },
@@ -116,7 +231,8 @@ export function buildSeedAssignedWorkPackages(
             id: 'guide-rtd-input-check',
             title: 'RTD input verification baseline',
             version: '2026.04',
-            summary: 'Validate simulated sensor input stability before documenting transmitter offset.',
+            summary:
+              'Validate simulated sensor input stability before documenting transmitter offset.',
             whyItMatters: 'Reduces false adjustment caused by unstable simulator or loose termination.',
             sourceReference: 'TAGWISE-BP-TT-002',
           },
@@ -160,9 +276,13 @@ export function buildSeedAssignedWorkPackages(
             measuredVariable: 'level',
             signalType: '4-20mA',
             range: { min: 0, max: 8, unit: 'm' },
-            tolerance: '±0.2% calibrated span',
+            tolerance: '+/-0.2% calibrated span',
             criticality: 'high',
-            templateIds: ['tpl-level-range-check'],
+            templateIds: [
+              'tpl-level-range-check',
+              'tpl-level-basic-calibration',
+              'tpl-level-output-verification',
+            ],
             guidanceReferenceIds: ['guide-level-reference-check'],
             historySummaryId: 'history-lt-410',
           },
@@ -185,26 +305,66 @@ export function buildSeedAssignedWorkPackages(
           },
         ],
         templates: [
-          {
+          buildTemplate({
             id: 'tpl-level-range-check',
             instrumentFamily: 'level transmitter',
             testPattern: 'range verification',
             title: 'Level transmitter range verification',
             calculationMode: 'applied level vs output deviation',
             acceptanceStyle: 'within tolerance across low-mid-high checkpoints',
+            captureSummary:
+              'Capture applied low, mid, and high checkpoints and compare the observed output across the configured level range.',
+            expectedLabel: 'Expected level',
+            observedLabel: 'Observed output',
             minimumSubmissionEvidence: ['level checkpoints', 'output values'],
+            expectedEvidence: ['reference setup note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated lower-range or upper-range bias',
-          },
-          {
+          }),
+          buildTemplate({
+            id: 'tpl-level-basic-calibration',
+            instrumentFamily: 'level transmitter',
+            testPattern: 'basic calibration check',
+            title: 'Level transmitter basic calibration',
+            calculationMode: 'expected level vs measured output',
+            acceptanceStyle: 'tolerance/pass-fail classification against configured operating range',
+            captureSummary:
+              'Capture calibration checkpoints and verify the measured level output against the configured reference values.',
+            expectedLabel: 'Expected level',
+            observedLabel: 'Measured output',
+            minimumSubmissionEvidence: ['calibration checkpoints', 'measured outputs'],
+            expectedEvidence: ['reference setup note', 'adjustment note'],
+            historyComparisonExpectation: 'compare recurring calibration drift before recalibration',
+          }),
+          buildTemplate({
+            id: 'tpl-level-output-verification',
+            instrumentFamily: 'level transmitter',
+            testPattern: 'expected-versus-measured output verification',
+            title: 'Level transmitter expected-versus-measured verification',
+            calculationMode: 'expected value vs measured output',
+            acceptanceStyle: 'tolerance/pass-fail classification against configured operating range',
+            captureSummary:
+              'Capture expected level references and compare them against the observed transmitter output at each point.',
+            expectedLabel: 'Expected level',
+            observedLabel: 'Observed output',
+            minimumSubmissionEvidence: ['expected references', 'observed outputs'],
+            expectedEvidence: ['reference setup note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated bias at the same operating region',
+          }),
+          buildTemplate({
             id: 'tpl-valve-stroke-check',
             instrumentFamily: 'control valve with positioner',
             testPattern: 'stroke test and position feedback verification',
             title: 'Valve stroke and feedback check',
             calculationMode: 'commanded position vs observed travel',
             acceptanceStyle: 'open/close travel and feedback within expected band',
+            captureSummary:
+              'Capture commanded position checkpoints and compare the observed travel or feedback response.',
+            expectedLabel: 'Commanded position',
+            observedLabel: 'Observed travel',
             minimumSubmissionEvidence: ['stroke observations', 'feedback values'],
+            expectedEvidence: ['supporting photo', 'actuator note'],
             historyComparisonExpectation: 'compare repeat sticking or delayed travel notes',
-          },
+          }),
         ],
         guidance: [
           {
@@ -219,7 +379,8 @@ export function buildSeedAssignedWorkPackages(
             id: 'guide-valve-stroke-baseline',
             title: 'Valve stroke baseline',
             version: '2026.04',
-            summary: 'Observe travel smoothness and positioner response before escalating to mechanical fault.',
+            summary:
+              'Observe travel smoothness and positioner response before escalating to mechanical fault.',
             whyItMatters: 'Separates feedback issues from actual valve sticking.',
             sourceReference: 'TAGWISE-BP-XV-003',
           },

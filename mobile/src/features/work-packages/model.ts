@@ -61,8 +61,19 @@ export interface AssignedWorkPackageTemplateSnapshot {
   title: string;
   calculationMode: string;
   acceptanceStyle: string;
+  captureSummary: string;
+  captureFields: AssignedWorkPackageTemplateCaptureFieldSnapshot[];
   minimumSubmissionEvidence: string[];
+  expectedEvidence: string[];
   historyComparisonExpectation: string;
+}
+
+export type AssignedWorkPackageTemplateCaptureFieldId = 'expectedValue' | 'observedValue';
+
+export interface AssignedWorkPackageTemplateCaptureFieldSnapshot {
+  id: AssignedWorkPackageTemplateCaptureFieldId;
+  label: string;
+  inputKind: 'numeric';
 }
 
 export interface AssignedWorkPackageGuidanceSnapshot {
@@ -109,6 +120,16 @@ export type LocalTagContextFieldState = 'available' | 'missing';
 export type LocalTagHistoryPreviewState = 'available' | 'missing' | 'unavailable';
 export type LocalTagReferencePointersState = 'available' | 'missing' | 'unavailable';
 
+export interface LocalExecutionTemplateOption {
+  id: string;
+  title: string;
+  instrumentFamily: string;
+  testPattern: string;
+  captureSummary: string;
+  minimumSubmissionEvidence: string[];
+  expectedEvidence: string[];
+}
+
 export interface LocalTagContextField {
   label: string;
   value: string;
@@ -126,9 +147,9 @@ export interface LocalTagHistoryPreview {
 export interface LocalTagReferencePointers {
   state: LocalTagReferencePointersState;
   templates: string[];
+  executionTemplates: LocalExecutionTemplateOption[];
   guidance: string[];
   detail: string;
-  executionTemplateLabel: string | null;
 }
 
 export interface LocalTagDueIndicator {

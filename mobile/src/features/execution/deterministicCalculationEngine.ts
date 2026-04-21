@@ -1,5 +1,6 @@
 import type { AssignedWorkPackageTagSnapshot } from '../work-packages/model';
 import type {
+  SharedExecutionCaptureFieldId,
   SharedExecutionCalculationDefinition,
   SharedExecutionCalculationRawInputs,
   SharedExecutionCalculationResult,
@@ -37,6 +38,7 @@ export function resolveDeterministicCalculationDefinition(
   tag: AssignedWorkPackageTagSnapshot,
   calculationMode: string,
   acceptanceStyle: string,
+  labelOverrides?: Partial<Record<SharedExecutionCaptureFieldId, string>>,
 ): SharedExecutionCalculationDefinition {
   const unit = normalizeDisplayValue(tag.range?.unit);
   const span =
@@ -48,8 +50,8 @@ export function resolveDeterministicCalculationDefinition(
   return {
     modeLabel: calculationMode,
     acceptanceLabel: acceptanceStyle,
-    expectedLabel: resolveExpectedLabel(calculationMode, unit),
-    observedLabel: resolveObservedLabel(calculationMode, unit),
+    expectedLabel: resolveExpectedLabel(calculationMode, unit, labelOverrides?.expectedValue),
+    observedLabel: resolveObservedLabel(calculationMode, unit, labelOverrides?.observedValue),
     unit,
     span,
     toleranceSource: normalizeDisplayValue(tag.tolerance) ?? 'Not defined locally',
@@ -154,24 +156,34 @@ function parseToleranceSpec(
   return { mode: 'unavailable', value: null };
 }
 
-function resolveExpectedLabel(calculationMode: string, unit: string | null): string {
+function resolveExpectedLabel(
+  calculationMode: string,
+  unit: string | null,
+  overrideLabel?: string,
+): string {
   return appendUnit(
-    resolveCalculationModeFieldLabel(
-      calculationMode,
-      calculationModeLabelRules.expected,
-      'Expected value',
-    ),
+    overrideLabel ??
+      resolveCalculationModeFieldLabel(
+        calculationMode,
+        calculationModeLabelRules.expected,
+        'Expected value',
+      ),
     unit,
   );
 }
 
-function resolveObservedLabel(calculationMode: string, unit: string | null): string {
+function resolveObservedLabel(
+  calculationMode: string,
+  unit: string | null,
+  overrideLabel?: string,
+): string {
   return appendUnit(
-    resolveCalculationModeFieldLabel(
-      calculationMode,
-      calculationModeLabelRules.observed,
-      'Observed value',
-    ),
+    overrideLabel ??
+      resolveCalculationModeFieldLabel(
+        calculationMode,
+        calculationModeLabelRules.observed,
+        'Observed value',
+      ),
     unit,
   );
 }

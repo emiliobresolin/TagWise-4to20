@@ -71,7 +71,13 @@ const seedSnapshot: AssignedWorkPackageSnapshot = {
       title: 'Pressure calibration',
       calculationMode: 'span deviation',
       acceptanceStyle: 'within tolerance',
+      captureSummary: 'Capture expected and measured pressure values at the tested checkpoints.',
+      captureFields: [
+        { id: 'expectedValue', label: 'Expected pressure', inputKind: 'numeric' },
+        { id: 'observedValue', label: 'Measured pressure', inputKind: 'numeric' },
+      ],
       minimumSubmissionEvidence: ['readings'],
+      expectedEvidence: ['supporting photo'],
       historyComparisonExpectation: 'compare repeated drift',
     },
   ],

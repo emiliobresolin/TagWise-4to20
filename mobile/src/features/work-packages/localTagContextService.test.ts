@@ -80,7 +80,13 @@ const baseSnapshot: AssignedWorkPackageSnapshot = {
       title: 'Pressure transmitter template',
       calculationMode: 'deviation',
       acceptanceStyle: 'tolerance pass/fail',
+      captureSummary: 'Capture local pressure checkpoints and compare expected versus measured values.',
+      captureFields: [
+        { id: 'expectedValue', label: 'Expected pressure', inputKind: 'numeric' },
+        { id: 'observedValue', label: 'Measured pressure', inputKind: 'numeric' },
+      ],
       minimumSubmissionEvidence: ['readings'],
+      expectedEvidence: ['supporting photo'],
       historyComparisonExpectation: 'compare last approved result',
     },
   ],
@@ -147,7 +153,13 @@ describe('LocalTagContextService', () => {
       },
       referencePointers: {
         state: 'available',
-        executionTemplateLabel: 'Pressure transmitter template (as-found calibration check)',
+        executionTemplates: [
+          {
+            id: 'tpl-pressure',
+            title: 'Pressure transmitter template',
+            testPattern: 'as-found calibration check',
+          },
+        ],
       },
     });
 

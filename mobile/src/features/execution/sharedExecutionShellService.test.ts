@@ -35,6 +35,38 @@ const session: ActiveUserSession = {
   reviewActionsAvailable: false,
 };
 
+function buildTemplate(definition: {
+  id: string;
+  instrumentFamily: string;
+  testPattern: string;
+  title: string;
+  calculationMode: string;
+  acceptanceStyle: string;
+  captureSummary: string;
+  expectedLabel: string;
+  observedLabel: string;
+  minimumSubmissionEvidence: string[];
+  expectedEvidence: string[];
+  historyComparisonExpectation: string;
+}) {
+  return {
+    id: definition.id,
+    instrumentFamily: definition.instrumentFamily,
+    testPattern: definition.testPattern,
+    title: definition.title,
+    calculationMode: definition.calculationMode,
+    acceptanceStyle: definition.acceptanceStyle,
+    captureSummary: definition.captureSummary,
+    captureFields: [
+      { id: 'expectedValue' as const, label: definition.expectedLabel, inputKind: 'numeric' as const },
+      { id: 'observedValue' as const, label: definition.observedLabel, inputKind: 'numeric' as const },
+    ],
+    minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
+    expectedEvidence: definition.expectedEvidence,
+    historyComparisonExpectation: definition.historyComparisonExpectation,
+  };
+}
+
 const baseSnapshot: AssignedWorkPackageSnapshot = {
   contractVersion: '2026-04-v1',
   generatedAt: '2026-04-19T10:00:00.000Z',
@@ -68,21 +100,43 @@ const baseSnapshot: AssignedWorkPackageSnapshot = {
       range: { min: 0, max: 10, unit: 'bar' },
       tolerance: '+/-0.25% span',
       criticality: 'high',
-      templateIds: ['tpl-pressure'],
+      templateIds: ['tpl-pressure-as-found', 'tpl-pressure-as-left'],
       guidanceReferenceIds: ['guide-pressure'],
       historySummaryId: 'history-001',
     },
   ],
   templates: [
     {
-      id: 'tpl-pressure',
+      id: 'tpl-pressure-as-found',
       instrumentFamily: 'pressure transmitter',
       testPattern: 'as-found calibration check',
-      title: 'Pressure transmitter template',
+      title: 'Pressure transmitter as-found template',
       calculationMode: 'deviation',
       acceptanceStyle: 'tolerance pass/fail',
+      captureSummary: 'Capture pre-adjustment checkpoints before any recalibration action.',
+      captureFields: [
+        { id: 'expectedValue', label: 'Expected pressure', inputKind: 'numeric' },
+        { id: 'observedValue', label: 'Measured pressure', inputKind: 'numeric' },
+      ],
       minimumSubmissionEvidence: ['readings', 'observations'],
+      expectedEvidence: ['supporting photo'],
       historyComparisonExpectation: 'compare last approved result',
+    },
+    {
+      id: 'tpl-pressure-as-left',
+      instrumentFamily: 'pressure transmitter',
+      testPattern: 'as-left calibration check',
+      title: 'Pressure transmitter as-left template',
+      calculationMode: 'deviation',
+      acceptanceStyle: 'tolerance pass/fail',
+      captureSummary: 'Capture post-adjustment checkpoints and final instrument state.',
+      captureFields: [
+        { id: 'expectedValue', label: 'Expected pressure', inputKind: 'numeric' },
+        { id: 'observedValue', label: 'Measured pressure', inputKind: 'numeric' },
+      ],
+      minimumSubmissionEvidence: ['readings', 'observations'],
+      expectedEvidence: ['supporting photo', 'adjustment note'],
+      historyComparisonExpectation: 'compare final result against the last approved as-left check',
     },
   ],
   guidance: [
@@ -103,6 +157,160 @@ const baseSnapshot: AssignedWorkPackageSnapshot = {
       summaryText: 'Last calibration was within tolerance.',
       lastResult: 'Pass',
       trendHint: 'Stable over the last two interventions.',
+    },
+  ],
+};
+
+const familyPackSnapshot: AssignedWorkPackageSnapshot = {
+  contractVersion: '2026-04-v1',
+  generatedAt: '2026-04-19T10:00:00.000Z',
+  summary: {
+    id: 'wp-local-003',
+    sourceReference: 'seed-cmms-003',
+    title: 'Transmitter family pack',
+    assignedTeam: 'Instrumentation Alpha',
+    priority: 'high',
+    status: 'assigned',
+    packageVersion: 1,
+    snapshotContractVersion: '2026-04-v1',
+    tagCount: 3,
+    dueWindow: {
+      startsAt: '2026-04-20T08:00:00.000Z',
+      endsAt: '2026-04-20T17:00:00.000Z',
+    },
+    updatedAt: '2026-04-19T10:00:00.000Z',
+  },
+  tags: [
+    {
+      id: 'tag-pt-family',
+      tagCode: 'PT-101',
+      shortDescription: 'North pressure transmitter',
+      area: 'North Unit',
+      parentAssetReference: 'asset-pt',
+      instrumentFamily: 'pressure transmitter',
+      instrumentSubtype: 'smart transmitter',
+      measuredVariable: 'pressure',
+      signalType: '4-20mA',
+      range: { min: 0, max: 10, unit: 'bar' },
+      tolerance: '+/-0.25% span',
+      criticality: 'high',
+      templateIds: ['tpl-pressure-loop-range'],
+      guidanceReferenceIds: ['guide-shared'],
+      historySummaryId: 'history-pt-family',
+    },
+    {
+      id: 'tag-tt-family',
+      tagCode: 'TT-205',
+      shortDescription: 'North temperature transmitter',
+      area: 'North Unit',
+      parentAssetReference: 'asset-tt',
+      instrumentFamily: 'temperature transmitter',
+      instrumentSubtype: 'RTD input',
+      measuredVariable: 'temperature',
+      signalType: '4-20mA',
+      range: { min: 0, max: 250, unit: 'C' },
+      tolerance: '+/-0.3C',
+      criticality: 'medium',
+      templateIds: ['tpl-temperature-calibration-verification'],
+      guidanceReferenceIds: ['guide-shared'],
+      historySummaryId: 'history-tt-family',
+    },
+    {
+      id: 'tag-lt-family',
+      tagCode: 'LT-410',
+      shortDescription: 'Tank level transmitter',
+      area: 'Tank Farm',
+      parentAssetReference: 'asset-lt',
+      instrumentFamily: 'level transmitter',
+      instrumentSubtype: 'guided wave radar',
+      measuredVariable: 'level',
+      signalType: '4-20mA',
+      range: { min: 0, max: 8, unit: 'm' },
+      tolerance: '+/-0.2% calibrated span',
+      criticality: 'high',
+      templateIds: ['tpl-level-output-verification'],
+      guidanceReferenceIds: ['guide-shared'],
+      historySummaryId: 'history-lt-family',
+    },
+  ],
+  templates: [
+    buildTemplate({
+      id: 'tpl-pressure-loop-range',
+      instrumentFamily: 'pressure transmitter',
+      testPattern: 'loop verification against expected range',
+      title: 'Pressure loop verification',
+      calculationMode: 'expected range vs measured loop output',
+      acceptanceStyle: 'within tolerance across expected range checkpoints',
+      captureSummary: 'Capture loop checkpoints.',
+      expectedLabel: 'Expected loop value',
+      observedLabel: 'Measured loop value',
+      minimumSubmissionEvidence: ['loop checkpoints'],
+      expectedEvidence: ['reference source note'],
+      historyComparisonExpectation: 'compare repeated loop drift',
+    }),
+    buildTemplate({
+      id: 'tpl-temperature-calibration-verification',
+      instrumentFamily: 'temperature transmitter / RTD input',
+      testPattern: 'calibration verification',
+      title: 'Temperature calibration verification',
+      calculationMode: 'expected temperature vs measured output',
+      acceptanceStyle: 'tolerance-based pass/fail with clear deviation display',
+      captureSummary: 'Capture calibration checkpoints.',
+      expectedLabel: 'Expected temperature',
+      observedLabel: 'Measured output',
+      minimumSubmissionEvidence: ['calibration checkpoints'],
+      expectedEvidence: ['configuration note'],
+      historyComparisonExpectation: 'compare last comparable verification result',
+    }),
+    buildTemplate({
+      id: 'tpl-level-output-verification',
+      instrumentFamily: 'level transmitter',
+      testPattern: 'expected-versus-measured output verification',
+      title: 'Level transmitter expected-versus-measured verification',
+      calculationMode: 'expected value vs measured output',
+      acceptanceStyle: 'tolerance/pass-fail classification against configured operating range',
+      captureSummary: 'Capture expected output checkpoints.',
+      expectedLabel: 'Expected level',
+      observedLabel: 'Observed output',
+      minimumSubmissionEvidence: ['expected references'],
+      expectedEvidence: ['supporting photo'],
+      historyComparisonExpectation: 'compare repeated output bias',
+    }),
+  ],
+  guidance: [
+    {
+      id: 'guide-shared',
+      title: 'Shared guidance',
+      version: 'v1',
+      summary: 'Shared transmitter guidance.',
+      whyItMatters: 'Keeps the shared shell grounded.',
+      sourceReference: 'TAGWISE-BP-SHARED-001',
+    },
+  ],
+  historySummaries: [
+    {
+      id: 'history-pt-family',
+      tagId: 'tag-pt-family',
+      lastObservedAt: '2026-04-10T12:00:00.000Z',
+      summaryText: 'Pressure history available.',
+      lastResult: 'Pass',
+      trendHint: 'Watch repeat drift.',
+    },
+    {
+      id: 'history-tt-family',
+      tagId: 'tag-tt-family',
+      lastObservedAt: '2026-04-09T12:00:00.000Z',
+      summaryText: 'Temperature history available.',
+      lastResult: 'Pass',
+      trendHint: 'Watch repeat offset.',
+    },
+    {
+      id: 'history-lt-family',
+      tagId: 'tag-lt-family',
+      lastObservedAt: '2026-04-08T12:00:00.000Z',
+      summaryText: 'Level history available.',
+      lastResult: 'Pass',
+      trendHint: 'Watch repeat upper-range bias.',
     },
   ],
 };
@@ -130,12 +338,14 @@ describe('SharedExecutionShellService', () => {
       now: () => new Date('2026-04-19T11:00:00.000Z'),
     });
 
-    await expect(service.loadShell(session, baseSnapshot.summary.id, 'tag-001')).resolves.toMatchObject({
+    await expect(
+      service.loadShell(session, baseSnapshot.summary.id, 'tag-001', 'tpl-pressure-as-found'),
+    ).resolves.toMatchObject({
       workPackageId: baseSnapshot.summary.id,
       tagCode: 'PT-101',
       template: {
-        id: 'tpl-pressure',
-        title: 'Pressure transmitter template',
+        id: 'tpl-pressure-as-found',
+        title: 'Pressure transmitter as-found template',
         version: '2026-04-v1',
         instrumentFamily: 'pressure transmitter',
         testPattern: 'as-found calibration check',
@@ -149,6 +359,94 @@ describe('SharedExecutionShellService', () => {
       progress: {
         currentStepId: 'context',
         visitedStepIds: ['context'],
+      },
+    });
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('opens offline execution shells for the approved pressure, temperature/RTD, and level patterns', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-family-pack-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(familyPackSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    await expect(
+      service.loadShell(
+        session,
+        familyPackSnapshot.summary.id,
+        'tag-pt-family',
+        'tpl-pressure-loop-range',
+      ),
+    ).resolves.toMatchObject({
+      tagCode: 'PT-101',
+      template: {
+        instrumentFamily: 'pressure transmitter',
+        testPattern: 'loop verification against expected range',
+      },
+      calculation: {
+        definition: {
+          expectedLabel: 'Expected loop value (bar)',
+          observedLabel: 'Measured loop value (bar)',
+        },
+      },
+    });
+
+    await expect(
+      service.loadShell(
+        session,
+        familyPackSnapshot.summary.id,
+        'tag-tt-family',
+        'tpl-temperature-calibration-verification',
+      ),
+    ).resolves.toMatchObject({
+      tagCode: 'TT-205',
+      template: {
+        instrumentFamily: 'temperature transmitter / RTD input',
+        testPattern: 'calibration verification',
+      },
+      calculation: {
+        definition: {
+          expectedLabel: 'Expected temperature (C)',
+          observedLabel: 'Measured output (C)',
+        },
+      },
+    });
+
+    await expect(
+      service.loadShell(
+        session,
+        familyPackSnapshot.summary.id,
+        'tag-lt-family',
+        'tpl-level-output-verification',
+      ),
+    ).resolves.toMatchObject({
+      tagCode: 'LT-410',
+      template: {
+        instrumentFamily: 'level transmitter',
+        testPattern: 'expected-versus-measured output verification',
+      },
+      calculation: {
+        definition: {
+          expectedLabel: 'Expected level (m)',
+          observedLabel: 'Observed output (m)',
+        },
       },
     });
 
@@ -179,7 +477,12 @@ describe('SharedExecutionShellService', () => {
       now: () => new Date('2026-04-19T11:05:00.000Z'),
     });
 
-    const firstShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+    const firstShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
     expect(firstShell).not.toBeNull();
 
     const progressedShell = await firstService.selectStep(
@@ -209,7 +512,14 @@ describe('SharedExecutionShellService', () => {
       now: () => new Date('2026-04-19T11:10:00.000Z'),
     });
 
-    await expect(secondService.loadShell(session, baseSnapshot.summary.id, 'tag-001')).resolves.toMatchObject({
+    await expect(
+      secondService.loadShell(
+        session,
+        baseSnapshot.summary.id,
+        'tag-001',
+        'tpl-pressure-as-found',
+      ),
+    ).resolves.toMatchObject({
       progress: {
         currentStepId: 'history',
         visitedStepIds: ['context', 'history'],
@@ -243,7 +553,12 @@ describe('SharedExecutionShellService', () => {
       now: () => new Date('2026-04-19T11:05:00.000Z'),
     });
 
-    const firstShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+    const firstShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
     expect(firstShell?.calculation).not.toBeNull();
 
     const calculatedShell = await firstService.saveCalculation(session, firstShell!, {
@@ -276,7 +591,14 @@ describe('SharedExecutionShellService', () => {
       now: () => new Date('2026-04-19T11:10:00.000Z'),
     });
 
-    await expect(secondService.loadShell(session, baseSnapshot.summary.id, 'tag-001')).resolves.toMatchObject({
+    await expect(
+      secondService.loadShell(
+        session,
+        baseSnapshot.summary.id,
+        'tag-001',
+        'tpl-pressure-as-found',
+      ),
+    ).resolves.toMatchObject({
       calculation: {
         rawInputs: {
           expectedValue: '5',
@@ -315,7 +637,12 @@ describe('SharedExecutionShellService', () => {
       now: () => new Date('2026-04-19T11:05:00.000Z'),
     });
 
-    const firstShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+    const firstShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
     expect(firstShell?.calculation).not.toBeNull();
 
     await firstService.saveCalculation(session, firstShell!, {
@@ -336,7 +663,12 @@ describe('SharedExecutionShellService', () => {
       '2026-04-20T09:00:00.000Z',
     );
 
-    const reloadedShell = await firstService.loadShell(session, baseSnapshot.summary.id, 'tag-001');
+    const reloadedShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
 
     expect(reloadedShell).toMatchObject({
       template: {

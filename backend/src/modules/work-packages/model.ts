@@ -49,8 +49,19 @@ export interface AssignedWorkPackageTemplateSnapshot {
   title: string;
   calculationMode: string;
   acceptanceStyle: string;
+  captureSummary: string;
+  captureFields: AssignedWorkPackageTemplateCaptureFieldSnapshot[];
   minimumSubmissionEvidence: string[];
+  expectedEvidence: string[];
   historyComparisonExpectation: string;
+}
+
+export type AssignedWorkPackageTemplateCaptureFieldId = 'expectedValue' | 'observedValue';
+
+export interface AssignedWorkPackageTemplateCaptureFieldSnapshot {
+  id: AssignedWorkPackageTemplateCaptureFieldId;
+  label: string;
+  inputKind: 'numeric';
 }
 
 export interface AssignedWorkPackageGuidanceSnapshot {
