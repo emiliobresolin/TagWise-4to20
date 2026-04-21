@@ -8,6 +8,7 @@ interface ExecutionCalculationRow {
   template_version: string;
   calculation_mode: string;
   acceptance_style: string;
+  execution_context_json: string;
   raw_inputs_json: string;
   result_json: string;
   updated_at: string;
@@ -34,6 +35,7 @@ export class UserPartitionedExecutionCalculationRepository {
           template_version,
           calculation_mode,
           acceptance_style,
+          execution_context_json,
           raw_inputs_json,
           result_json,
           updated_at
@@ -61,14 +63,16 @@ export class UserPartitionedExecutionCalculationRepository {
           template_version,
           calculation_mode,
           acceptance_style,
+          execution_context_json,
           raw_inputs_json,
           result_json,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(owner_user_id, work_package_id, tag_id, template_id, template_version) DO UPDATE SET
           calculation_mode = excluded.calculation_mode,
           acceptance_style = excluded.acceptance_style,
+          execution_context_json = excluded.execution_context_json,
           raw_inputs_json = excluded.raw_inputs_json,
           result_json = excluded.result_json,
           updated_at = excluded.updated_at;
@@ -81,6 +85,7 @@ export class UserPartitionedExecutionCalculationRepository {
         record.templateVersion,
         record.calculationMode,
         record.acceptanceStyle,
+        JSON.stringify(record.executionContext),
         JSON.stringify(record.rawInputs),
         JSON.stringify(record.result),
         record.updatedAt,
@@ -92,6 +97,10 @@ export class UserPartitionedExecutionCalculationRepository {
 function mapExecutionCalculationRow(
   row: ExecutionCalculationRow,
 ): StoredExecutionCalculationRecord {
+  const executionContext = JSON.parse(row.execution_context_json) as
+    | StoredExecutionCalculationRecord['executionContext']
+    | undefined;
+
   return {
     workPackageId: row.work_package_id,
     tagId: row.tag_id,
@@ -99,6 +108,10 @@ function mapExecutionCalculationRow(
     templateVersion: row.template_version,
     calculationMode: row.calculation_mode,
     acceptanceStyle: row.acceptance_style,
+    executionContext: {
+      conversionBasisSummary: executionContext?.conversionBasisSummary ?? null,
+      expectedRangeSummary: executionContext?.expectedRangeSummary ?? null,
+    },
     rawInputs: JSON.parse(row.raw_inputs_json),
     result: JSON.parse(row.result_json),
     updatedAt: row.updated_at,

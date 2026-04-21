@@ -12,6 +12,7 @@ export interface SharedExecutionTemplateCaptureFieldContract {
   id: SharedExecutionCaptureFieldId;
   label: string;
   inputKind: 'numeric';
+  unit?: string;
 }
 
 export interface SharedExecutionTemplateContract {
@@ -24,6 +25,9 @@ export interface SharedExecutionTemplateContract {
   acceptanceStyle: string;
   captureSummary: string;
   captureFields: SharedExecutionTemplateCaptureFieldContract[];
+  calculationRangeOverride: SharedExecutionCalculationRange | null;
+  conversionBasisSummary: string | null;
+  expectedRangeSummary: string | null;
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -65,9 +69,22 @@ export interface SharedExecutionCalculationDefinition {
   observedLabel: string;
   unit: string | null;
   span: number | null;
+  calculationRange: SharedExecutionCalculationRange | null;
   toleranceSource: string;
   toleranceMode: 'percent-of-span' | 'absolute' | 'unavailable';
   toleranceValue: number | null;
+  executionContext: SharedExecutionCalculationExecutionContext;
+}
+
+export interface SharedExecutionCalculationRange {
+  min: number;
+  max: number;
+  unit: string;
+}
+
+export interface SharedExecutionCalculationExecutionContext {
+  conversionBasisSummary: string | null;
+  expectedRangeSummary: string | null;
 }
 
 export interface SharedExecutionCalculationRawInputs {
@@ -120,6 +137,7 @@ export interface StoredExecutionCalculationRecord {
   templateVersion: string;
   calculationMode: string;
   acceptanceStyle: string;
+  executionContext: SharedExecutionCalculationExecutionContext;
   rawInputs: SharedExecutionCalculationRawInputs;
   result: SharedExecutionCalculationResult;
   updatedAt: string;

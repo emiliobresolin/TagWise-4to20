@@ -38,6 +38,9 @@ export class LocalExecutionTemplateRegistry {
       acceptanceStyle: template.acceptanceStyle,
       captureSummary: normalizeCaptureSummary(template.captureSummary, template.testPattern),
       captureFields: normalizeCaptureFields(template.captureFields),
+      calculationRangeOverride: normalizeCalculationRange(template.calculationRangeOverride),
+      conversionBasisSummary: normalizeOptionalSummary(template.conversionBasisSummary),
+      expectedRangeSummary: normalizeOptionalSummary(template.expectedRangeSummary),
       minimumSubmissionEvidence: template.minimumSubmissionEvidence,
       expectedEvidence: Array.isArray(template.expectedEvidence) ? template.expectedEvidence : [],
       historyComparisonExpectation: template.historyComparisonExpectation,
@@ -66,4 +69,29 @@ function normalizeCaptureFields(
     { id: 'expectedValue', label: 'Expected value', inputKind: 'numeric' },
     { id: 'observedValue', label: 'Observed value', inputKind: 'numeric' },
   ];
+}
+
+function normalizeOptionalSummary(value: string | undefined): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function normalizeCalculationRange(
+  range:
+    | AssignedWorkPackageSnapshot['templates'][number]['calculationRangeOverride']
+    | undefined,
+): SharedExecutionTemplateContract['calculationRangeOverride'] {
+  if (
+    typeof range?.min === 'number' &&
+    typeof range?.max === 'number' &&
+    typeof range.unit === 'string' &&
+    range.unit.trim().length > 0
+  ) {
+    return {
+      min: range.min,
+      max: range.max,
+      unit: range.unit,
+    };
+  }
+
+  return null;
 }

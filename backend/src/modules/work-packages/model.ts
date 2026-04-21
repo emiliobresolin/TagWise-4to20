@@ -51,6 +51,9 @@ export interface AssignedWorkPackageTemplateSnapshot {
   acceptanceStyle: string;
   captureSummary: string;
   captureFields: AssignedWorkPackageTemplateCaptureFieldSnapshot[];
+  calculationRangeOverride?: AssignedWorkPackageTemplateCalculationRangeSnapshot;
+  conversionBasisSummary?: string;
+  expectedRangeSummary?: string;
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -62,6 +65,13 @@ export interface AssignedWorkPackageTemplateCaptureFieldSnapshot {
   id: AssignedWorkPackageTemplateCaptureFieldId;
   label: string;
   inputKind: 'numeric';
+  unit?: string;
+}
+
+export interface AssignedWorkPackageTemplateCalculationRangeSnapshot {
+  min: number;
+  max: number;
+  unit: string;
 }
 
 export interface AssignedWorkPackageGuidanceSnapshot {

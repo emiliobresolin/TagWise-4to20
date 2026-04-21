@@ -45,6 +45,11 @@ function buildTemplate(definition: {
   captureSummary: string;
   expectedLabel: string;
   observedLabel: string;
+  expectedUnit?: string;
+  observedUnit?: string;
+  calculationRangeOverride?: { min: number; max: number; unit: string };
+  conversionBasisSummary?: string;
+  expectedRangeSummary?: string;
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -58,9 +63,22 @@ function buildTemplate(definition: {
     acceptanceStyle: definition.acceptanceStyle,
     captureSummary: definition.captureSummary,
     captureFields: [
-      { id: 'expectedValue' as const, label: definition.expectedLabel, inputKind: 'numeric' as const },
-      { id: 'observedValue' as const, label: definition.observedLabel, inputKind: 'numeric' as const },
+      {
+        id: 'expectedValue' as const,
+        label: definition.expectedLabel,
+        inputKind: 'numeric' as const,
+        unit: definition.expectedUnit,
+      },
+      {
+        id: 'observedValue' as const,
+        label: definition.observedLabel,
+        inputKind: 'numeric' as const,
+        unit: definition.observedUnit,
+      },
     ],
+    calculationRangeOverride: definition.calculationRangeOverride,
+    conversionBasisSummary: definition.conversionBasisSummary,
+    expectedRangeSummary: definition.expectedRangeSummary,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -173,7 +191,7 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
     status: 'assigned',
     packageVersion: 1,
     snapshotContractVersion: '2026-04-v1',
-    tagCount: 3,
+    tagCount: 4,
     dueWindow: {
       startsAt: '2026-04-20T08:00:00.000Z',
       endsAt: '2026-04-20T17:00:00.000Z',
@@ -232,6 +250,23 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
       guidanceReferenceIds: ['guide-shared'],
       historySummaryId: 'history-lt-family',
     },
+    {
+      id: 'tag-loop-family',
+      tagCode: 'AI-330',
+      shortDescription: 'North analog loop',
+      area: 'North Unit',
+      parentAssetReference: 'asset-loop',
+      instrumentFamily: 'analog 4-20 mA loop',
+      instrumentSubtype: 'isolated analog input loop',
+      measuredVariable: 'process value',
+      signalType: '4-20mA',
+      range: { min: 0, max: 100, unit: '%' },
+      tolerance: '+/-1% span',
+      criticality: 'high',
+      templateIds: ['tpl-loop-current-vs-process'],
+      guidanceReferenceIds: ['guide-shared'],
+      historySummaryId: 'history-loop-family',
+    },
   ],
   templates: [
     buildTemplate({
@@ -276,6 +311,26 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
       expectedEvidence: ['supporting photo'],
       historyComparisonExpectation: 'compare repeated output bias',
     }),
+    buildTemplate({
+      id: 'tpl-loop-current-vs-process',
+      instrumentFamily: 'analog 4-20 mA loop',
+      testPattern: 'expected current versus process value verification',
+      title: 'Analog loop expected current verification',
+      calculationMode: 'expected current vs measured current',
+      acceptanceStyle: 'deviation and tolerance outcome against the configured conversion basis',
+      captureSummary: 'Capture expected current from the process basis and compare it to measured loop current.',
+      expectedLabel: 'Expected current',
+      observedLabel: 'Measured current',
+      expectedUnit: 'mA',
+      observedUnit: 'mA',
+      calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+      conversionBasisSummary:
+        'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+      expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+      minimumSubmissionEvidence: ['expected current reference'],
+      expectedEvidence: ['conversion basis note'],
+      historyComparisonExpectation: 'compare repeated process-to-signal mismatch',
+    }),
   ],
   guidance: [
     {
@@ -311,6 +366,14 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
       summaryText: 'Level history available.',
       lastResult: 'Pass',
       trendHint: 'Watch repeat upper-range bias.',
+    },
+    {
+      id: 'history-loop-family',
+      tagId: 'tag-loop-family',
+      lastObservedAt: '2026-04-07T12:00:00.000Z',
+      summaryText: 'Analog loop history available.',
+      lastResult: 'Pass with note',
+      trendHint: 'Watch repeat mid-range current drift.',
     },
   ],
 };
@@ -365,7 +428,7 @@ describe('SharedExecutionShellService', () => {
     await runtime.database.closeAsync?.();
   });
 
-  it('opens offline execution shells for the approved pressure, temperature/RTD, and level patterns', async () => {
+  it('opens offline execution shells for the approved pressure, temperature/RTD, level, and analog loop patterns', async () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-family-pack-'));
     createdDirectories.push(tempDirectory);
 
@@ -446,6 +509,38 @@ describe('SharedExecutionShellService', () => {
         definition: {
           expectedLabel: 'Expected level (m)',
           observedLabel: 'Observed output (m)',
+        },
+      },
+    });
+
+    await expect(
+      service.loadShell(
+        session,
+        familyPackSnapshot.summary.id,
+        'tag-loop-family',
+        'tpl-loop-current-vs-process',
+      ),
+    ).resolves.toMatchObject({
+      tagCode: 'AI-330',
+      template: {
+        instrumentFamily: 'analog 4-20 mA loop',
+        testPattern: 'expected current versus process value verification',
+      },
+      calculation: {
+        definition: {
+          expectedLabel: 'Expected current (mA)',
+          observedLabel: 'Measured current (mA)',
+          unit: 'mA',
+          calculationRange: {
+            min: 4,
+            max: 20,
+            unit: 'mA',
+          },
+          executionContext: {
+            conversionBasisSummary:
+              'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+            expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+          },
         },
       },
     });
@@ -567,6 +662,12 @@ describe('SharedExecutionShellService', () => {
     });
 
     expect(calculatedShell.calculation).toMatchObject({
+      definition: {
+        executionContext: {
+          conversionBasisSummary: null,
+          expectedRangeSummary: null,
+        },
+      },
       rawInputs: {
         expectedValue: '5',
         observedValue: '5.02',
@@ -600,6 +701,12 @@ describe('SharedExecutionShellService', () => {
       ),
     ).resolves.toMatchObject({
       calculation: {
+        definition: {
+          executionContext: {
+            conversionBasisSummary: null,
+            expectedRangeSummary: null,
+          },
+        },
         rawInputs: {
           expectedValue: '5',
           observedValue: '5.02',

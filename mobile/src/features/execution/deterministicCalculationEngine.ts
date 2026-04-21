@@ -2,6 +2,8 @@ import type { AssignedWorkPackageTagSnapshot } from '../work-packages/model';
 import type {
   SharedExecutionCaptureFieldId,
   SharedExecutionCalculationDefinition,
+  SharedExecutionCalculationExecutionContext,
+  SharedExecutionCalculationRange,
   SharedExecutionCalculationRawInputs,
   SharedExecutionCalculationResult,
 } from './model';
@@ -39,24 +41,38 @@ export function resolveDeterministicCalculationDefinition(
   calculationMode: string,
   acceptanceStyle: string,
   labelOverrides?: Partial<Record<SharedExecutionCaptureFieldId, string>>,
+  unitOverrides?: Partial<Record<SharedExecutionCaptureFieldId, string>>,
+  calculationRangeOverride?: SharedExecutionCalculationRange | null,
+  executionContextOverrides?: Partial<SharedExecutionCalculationExecutionContext>,
 ): SharedExecutionCalculationDefinition {
-  const unit = normalizeDisplayValue(tag.range?.unit);
+  const calculationRange = resolveCalculationRange(tag, calculationRangeOverride, unitOverrides);
+  const unit = calculationRange?.unit ?? null;
   const span =
-    typeof tag.range?.min === 'number' && typeof tag.range?.max === 'number'
-      ? Math.abs(tag.range.max - tag.range.min)
-      : null;
+    calculationRange ? Math.abs(calculationRange.max - calculationRange.min) : null;
   const toleranceSpec = parseToleranceSpec(tag.tolerance, span);
 
   return {
     modeLabel: calculationMode,
     acceptanceLabel: acceptanceStyle,
-    expectedLabel: resolveExpectedLabel(calculationMode, unit, labelOverrides?.expectedValue),
-    observedLabel: resolveObservedLabel(calculationMode, unit, labelOverrides?.observedValue),
+    expectedLabel: resolveExpectedLabel(
+      calculationMode,
+      unit,
+      labelOverrides?.expectedValue,
+      unitOverrides?.expectedValue,
+    ),
+    observedLabel: resolveObservedLabel(
+      calculationMode,
+      unit,
+      labelOverrides?.observedValue,
+      unitOverrides?.observedValue,
+    ),
     unit,
     span,
+    calculationRange,
     toleranceSource: normalizeDisplayValue(tag.tolerance) ?? 'Not defined locally',
     toleranceMode: toleranceSpec.mode,
     toleranceValue: toleranceSpec.value,
+    executionContext: resolveExecutionContext(tag, executionContextOverrides),
   };
 }
 
@@ -156,10 +172,50 @@ function parseToleranceSpec(
   return { mode: 'unavailable', value: null };
 }
 
+function resolveExecutionContext(
+  tag: AssignedWorkPackageTagSnapshot,
+  overrides?: Partial<SharedExecutionCalculationExecutionContext>,
+): SharedExecutionCalculationExecutionContext {
+  const explicitConversionBasis = normalizeDisplayValue(overrides?.conversionBasisSummary);
+  const explicitExpectedRange = normalizeDisplayValue(overrides?.expectedRangeSummary);
+
+  if (explicitConversionBasis || explicitExpectedRange) {
+    return {
+      conversionBasisSummary: explicitConversionBasis,
+      expectedRangeSummary: explicitExpectedRange,
+    };
+  }
+
+  if (!isAnalogFourToTwentyLoopFamily(tag.instrumentFamily, tag.signalType)) {
+    return {
+      conversionBasisSummary: null,
+      expectedRangeSummary: null,
+    };
+  }
+
+  const unit = normalizeDisplayValue(tag.range?.unit);
+  if (
+    typeof tag.range?.min === 'number' &&
+    typeof tag.range?.max === 'number'
+  ) {
+    const rangeLabel = formatRange(tag.range.min, tag.range.max, unit);
+    return {
+      conversionBasisSummary: `Linear 4-20 mA conversion across ${rangeLabel}.`,
+      expectedRangeSummary: `${rangeLabel} maps to 4-20 mA.`,
+    };
+  }
+
+  return {
+    conversionBasisSummary: 'Linear 4-20 mA conversion basis.',
+    expectedRangeSummary: 'Expected signal range is 4-20 mA.',
+  };
+}
+
 function resolveExpectedLabel(
   calculationMode: string,
   unit: string | null,
   overrideLabel?: string,
+  overrideUnit?: string,
 ): string {
   return appendUnit(
     overrideLabel ??
@@ -168,7 +224,7 @@ function resolveExpectedLabel(
         calculationModeLabelRules.expected,
         'Expected value',
       ),
-    unit,
+    normalizeDisplayValue(overrideUnit) ?? unit,
   );
 }
 
@@ -176,6 +232,7 @@ function resolveObservedLabel(
   calculationMode: string,
   unit: string | null,
   overrideLabel?: string,
+  overrideUnit?: string,
 ): string {
   return appendUnit(
     overrideLabel ??
@@ -184,7 +241,7 @@ function resolveObservedLabel(
         calculationModeLabelRules.observed,
         'Observed value',
       ),
-    unit,
+    normalizeDisplayValue(overrideUnit) ?? unit,
   );
 }
 
@@ -205,6 +262,58 @@ function resolveCalculationModeFieldLabel(
 
 function appendUnit(label: string, unit: string | null): string {
   return unit ? `${label} (${unit})` : label;
+}
+
+function resolveCalculationRange(
+  tag: AssignedWorkPackageTagSnapshot,
+  calculationRangeOverride: SharedExecutionCalculationRange | null | undefined,
+  unitOverrides?: Partial<Record<SharedExecutionCaptureFieldId, string>>,
+): SharedExecutionCalculationRange | null {
+  if (calculationRangeOverride) {
+    return calculationRangeOverride;
+  }
+
+  const defaultUnit = resolveCalculationUnit(tag.range?.unit, unitOverrides);
+  if (
+    typeof tag.range?.min === 'number' &&
+    typeof tag.range?.max === 'number' &&
+    defaultUnit
+  ) {
+    return {
+      min: tag.range.min,
+      max: tag.range.max,
+      unit: defaultUnit,
+    };
+  }
+
+  return null;
+}
+
+function resolveCalculationUnit(
+  defaultUnit: string | null | undefined,
+  unitOverrides?: Partial<Record<SharedExecutionCaptureFieldId, string>>,
+): string | null {
+  const expectedUnit = normalizeDisplayValue(unitOverrides?.expectedValue);
+  const observedUnit = normalizeDisplayValue(unitOverrides?.observedValue);
+
+  if (expectedUnit && observedUnit) {
+    return expectedUnit === observedUnit ? expectedUnit : expectedUnit;
+  }
+
+  return expectedUnit ?? observedUnit ?? normalizeDisplayValue(defaultUnit);
+}
+
+function isAnalogFourToTwentyLoopFamily(
+  instrumentFamily: string | null | undefined,
+  signalType: string | null | undefined,
+): boolean {
+  const normalizedFamily = normalizeDisplayValue(instrumentFamily)?.toLowerCase();
+  const normalized = normalizeDisplayValue(signalType)?.toLowerCase().replace(/\s+/g, '');
+  return normalizedFamily === 'analog 4-20 ma loop' && normalized === '4-20ma';
+}
+
+function formatRange(min: number, max: number, unit: string | null): string {
+  return unit ? `${formatNumber(min)} to ${formatNumber(max)} ${unit}` : `${formatNumber(min)} to ${formatNumber(max)}`;
 }
 
 function normalizeDisplayValue(value: string | null | undefined): string | null {

@@ -13,6 +13,11 @@ function buildTemplate(definition: {
   captureSummary: string;
   expectedLabel: string;
   observedLabel: string;
+  expectedUnit?: string;
+  observedUnit?: string;
+  calculationRangeOverride?: { min: number; max: number; unit: string };
+  conversionBasisSummary?: string;
+  expectedRangeSummary?: string;
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -26,9 +31,22 @@ function buildTemplate(definition: {
     acceptanceStyle: definition.acceptanceStyle,
     captureSummary: definition.captureSummary,
     captureFields: [
-      { id: 'expectedValue' as const, label: definition.expectedLabel, inputKind: 'numeric' as const },
-      { id: 'observedValue' as const, label: definition.observedLabel, inputKind: 'numeric' as const },
+      {
+        id: 'expectedValue' as const,
+        label: definition.expectedLabel,
+        inputKind: 'numeric' as const,
+        unit: definition.expectedUnit,
+      },
+      {
+        id: 'observedValue' as const,
+        label: definition.observedLabel,
+        inputKind: 'numeric' as const,
+        unit: definition.observedUnit,
+      },
     ],
+    calculationRangeOverride: definition.calculationRangeOverride,
+    conversionBasisSummary: definition.conversionBasisSummary,
+    expectedRangeSummary: definition.expectedRangeSummary,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -47,7 +65,7 @@ const snapshot: AssignedWorkPackageSnapshot = {
     status: 'assigned',
     packageVersion: 1,
     snapshotContractVersion: '2026-04-v1',
-    tagCount: 3,
+    tagCount: 4,
     dueWindow: {
       startsAt: '2026-04-20T08:00:00.000Z',
       endsAt: '2026-04-20T17:00:00.000Z',
@@ -117,6 +135,27 @@ const snapshot: AssignedWorkPackageSnapshot = {
       ],
       guidanceReferenceIds: [],
       historySummaryId: 'history-level',
+    },
+    {
+      id: 'tag-loop',
+      tagCode: 'AI-330',
+      shortDescription: 'Analog process loop',
+      area: 'North Unit',
+      parentAssetReference: 'asset-004',
+      instrumentFamily: 'analog 4-20 mA loop',
+      instrumentSubtype: 'isolated analog input loop',
+      measuredVariable: 'process value',
+      signalType: '4-20mA',
+      range: { min: 0, max: 100, unit: '%' },
+      tolerance: '+/-1% span',
+      criticality: 'high',
+      templateIds: [
+        'tpl-loop-integrity-check',
+        'tpl-loop-signal-validation',
+        'tpl-loop-current-vs-process',
+      ],
+      guidanceReferenceIds: [],
+      historySummaryId: 'history-loop',
     },
   ],
   templates: [
@@ -246,6 +285,64 @@ const snapshot: AssignedWorkPackageSnapshot = {
       expectedEvidence: ['supporting photo'],
       historyComparisonExpectation: 'compare repeated output bias',
     }),
+    buildTemplate({
+      id: 'tpl-loop-integrity-check',
+      instrumentFamily: 'analog 4-20 mA loop',
+      testPattern: 'loop integrity check',
+      title: 'Analog loop integrity check',
+      calculationMode: 'expected current vs measured current',
+      acceptanceStyle: 'within tolerance at each loop checkpoint',
+      captureSummary: 'Capture expected and measured current checkpoints.',
+      expectedLabel: 'Expected current',
+      observedLabel: 'Measured current',
+      expectedUnit: 'mA',
+      observedUnit: 'mA',
+      calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+      conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
+      expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+      minimumSubmissionEvidence: ['loop checkpoints'],
+      expectedEvidence: ['supply note'],
+      historyComparisonExpectation: 'compare repeated loop instability',
+    }),
+    buildTemplate({
+      id: 'tpl-loop-signal-validation',
+      instrumentFamily: 'analog 4-20 mA loop',
+      testPattern: 'signal validation',
+      title: 'Analog loop signal validation',
+      calculationMode: 'expected current vs measured current',
+      acceptanceStyle: 'tolerance-based pass/fail across validated signal points',
+      captureSummary: 'Capture validated loop current points.',
+      expectedLabel: 'Expected current',
+      observedLabel: 'Measured current',
+      expectedUnit: 'mA',
+      observedUnit: 'mA',
+      calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+      conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
+      expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+      minimumSubmissionEvidence: ['validated current points'],
+      expectedEvidence: ['process reference note'],
+      historyComparisonExpectation: 'compare repeated signal validation drift',
+    }),
+    buildTemplate({
+      id: 'tpl-loop-current-vs-process',
+      instrumentFamily: 'analog 4-20 mA loop',
+      testPattern: 'expected current versus process value verification',
+      title: 'Analog loop expected current verification',
+      calculationMode: 'expected current vs measured current',
+      acceptanceStyle: 'deviation and tolerance outcome against the configured conversion basis',
+      captureSummary: 'Capture expected current derived from the process basis.',
+      expectedLabel: 'Expected current',
+      observedLabel: 'Measured current',
+      expectedUnit: 'mA',
+      observedUnit: 'mA',
+      calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+      conversionBasisSummary:
+        'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+      expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+      minimumSubmissionEvidence: ['expected current reference'],
+      expectedEvidence: ['conversion basis note'],
+      historyComparisonExpectation: 'compare repeated process-to-signal mismatch',
+    }),
   ],
   guidance: [],
   historySummaries: [
@@ -273,11 +370,19 @@ const snapshot: AssignedWorkPackageSnapshot = {
       lastResult: 'pass',
       trendHint: 'watch repeated upper-range bias',
     },
+    {
+      id: 'history-loop',
+      tagId: 'tag-loop',
+      lastObservedAt: '2026-04-07T09:30:00.000Z',
+      summaryText: 'Analog loop trend available.',
+      lastResult: 'pass-with-note',
+      trendHint: 'watch repeated mid-range current drift',
+    },
   ],
 };
 
 describe('LocalExecutionTemplateRegistry', () => {
-  it('resolves the approved v1 transmitter template patterns into explicit local contracts', () => {
+  it('resolves the approved v1 transmitter and analog loop template patterns into explicit local contracts', () => {
     const registry = new LocalExecutionTemplateRegistry();
 
     const cases = [
@@ -290,6 +395,9 @@ describe('LocalExecutionTemplateRegistry', () => {
       ['tag-level', 'tpl-level-range-check', 'level transmitter'],
       ['tag-level', 'tpl-level-basic-calibration', 'level transmitter'],
       ['tag-level', 'tpl-level-output-verification', 'level transmitter'],
+      ['tag-loop', 'tpl-loop-integrity-check', 'analog 4-20 mA loop'],
+      ['tag-loop', 'tpl-loop-signal-validation', 'analog 4-20 mA loop'],
+      ['tag-loop', 'tpl-loop-current-vs-process', 'analog 4-20 mA loop'],
     ] as const;
 
     for (const [tagId, templateId, instrumentFamily] of cases) {
@@ -303,13 +411,33 @@ describe('LocalExecutionTemplateRegistry', () => {
         instrumentFamily,
         version: '2026-04-v1',
       });
-      expect(resolved?.captureFields).toEqual([
+      expect(resolved?.captureFields).toMatchObject([
         { id: 'expectedValue', label: expect.any(String), inputKind: 'numeric' },
         { id: 'observedValue', label: expect.any(String), inputKind: 'numeric' },
       ]);
       expect(resolved?.minimumSubmissionEvidence.length).toBeGreaterThan(0);
       expect(resolved?.expectedEvidence.length).toBeGreaterThan(0);
     }
+  });
+
+  it('preserves analog loop conversion basis and expected range summaries in the local contract', () => {
+    const registry = new LocalExecutionTemplateRegistry();
+    const loopTag = snapshot.tags.find((item) => item.id === 'tag-loop');
+
+    expect(loopTag).toBeTruthy();
+
+    const resolved = registry.resolveTemplate(snapshot, loopTag!, 'tpl-loop-current-vs-process');
+
+    expect(resolved).toMatchObject({
+      calculationRangeOverride: {
+        min: 4,
+        max: 20,
+        unit: 'mA',
+      },
+      conversionBasisSummary:
+        'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+      expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+    });
   });
 
   it('returns null when the requested template is not attached to the selected tag', () => {

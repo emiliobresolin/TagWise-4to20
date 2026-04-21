@@ -51,6 +51,17 @@ const nonNumericToleranceTag: AssignedWorkPackageTagSnapshot = {
   tolerance: 'N/A',
 };
 
+const analogLoopTag: AssignedWorkPackageTagSnapshot = {
+  ...pressureTag,
+  id: 'tag-ai-330',
+  tagCode: 'AI-330',
+  instrumentFamily: 'analog 4-20 mA loop',
+  instrumentSubtype: 'isolated analog input loop',
+  measuredVariable: 'process value',
+  range: { min: 0, max: 100, unit: '%' },
+  tolerance: '+/-1% span',
+};
+
 describe('deterministicCalculationEngine', () => {
   it('computes a reproducible percent-of-span pass/fail result', () => {
     const definition = resolveDeterministicCalculationDefinition(
@@ -170,6 +181,79 @@ describe('deterministicCalculationEngine', () => {
       acceptanceReason:
         'Deterministic deviation is available, but local tolerance metadata is not numeric yet.',
     });
+  });
+
+  it('resolves analog loop conversion basis and mA capture units from template-driven overrides', () => {
+    const definition = resolveDeterministicCalculationDefinition(
+      analogLoopTag,
+      'expected current vs measured current',
+      'deviation and tolerance outcome against the configured conversion basis',
+      {
+        expectedValue: 'Expected current',
+        observedValue: 'Measured current',
+      },
+      {
+        expectedValue: 'mA',
+        observedValue: 'mA',
+      },
+      {
+        min: 4,
+        max: 20,
+        unit: 'mA',
+      },
+      {
+        conversionBasisSummary:
+          'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+        expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+      },
+    );
+
+    expect(definition).toMatchObject({
+      expectedLabel: 'Expected current (mA)',
+      observedLabel: 'Measured current (mA)',
+      unit: 'mA',
+      executionContext: {
+        conversionBasisSummary:
+          'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+        expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+      },
+    });
+  });
+
+  it('computes deterministic loop deviation using the shared tolerance path', () => {
+    const definition = resolveDeterministicCalculationDefinition(
+      analogLoopTag,
+      'expected current vs measured current',
+      'within tolerance at each loop checkpoint',
+      {
+        expectedValue: 'Expected current',
+        observedValue: 'Measured current',
+      },
+      {
+        expectedValue: 'mA',
+        observedValue: 'mA',
+      },
+      {
+        min: 4,
+        max: 20,
+        unit: 'mA',
+      },
+      {
+        conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
+        expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+      },
+    );
+
+    const result = computeDeterministicCalculation(definition, {
+      expectedValue: '12',
+      observedValue: '12.08',
+    });
+
+    expect(result.signedDeviation).toBeCloseTo(0.08, 6);
+    expect(result.absoluteDeviation).toBeCloseTo(0.08, 6);
+    expect(result.percentOfSpan).not.toBeNull();
+    expect(result.percentOfSpan ?? 0).toBeCloseTo(0.5, 6);
+    expect(result.acceptance).toBe('pass');
   });
 
   it('fails fast for non-numeric raw inputs', () => {

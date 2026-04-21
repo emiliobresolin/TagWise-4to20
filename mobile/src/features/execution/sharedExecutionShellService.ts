@@ -144,6 +144,7 @@ export class SharedExecutionShellService {
       templateVersion: shell.template.version,
       calculationMode: shell.template.calculationMode,
       acceptanceStyle: shell.template.acceptanceStyle,
+      executionContext: shell.calculation.definition.executionContext,
       rawInputs,
       result,
       updatedAt,
@@ -213,6 +214,14 @@ function buildExecutionShell(
             template.captureFields.map((field) => field.label).join(', '),
           ),
           availableField('Tolerance basis', calculation.definition.toleranceSource),
+          availableField(
+            'Conversion basis',
+            calculation.definition.executionContext.conversionBasisSummary ?? 'Not declared',
+          ),
+          availableField(
+            'Expected range',
+            calculation.definition.executionContext.expectedRangeSummary ?? 'Not declared',
+          ),
           availableField(
             'Minimum evidence',
             template.minimumSubmissionEvidence.length > 0
@@ -303,10 +312,20 @@ function buildCalculationState(
     template.calculationMode,
     template.acceptanceStyle,
     mapTemplateInputLabelOverrides(template.captureFields),
+    mapTemplateInputUnitOverrides(template.captureFields),
+    template.calculationRangeOverride,
+    {
+      conversionBasisSummary: template.conversionBasisSummary,
+      expectedRangeSummary: template.expectedRangeSummary,
+    },
   );
+  const executionContext = storedCalculation?.executionContext ?? definition.executionContext;
 
   return {
-    definition,
+    definition: {
+      ...definition,
+      executionContext,
+    },
     rawInputs: storedCalculation?.rawInputs ?? {
       expectedValue: '',
       observedValue: '',
@@ -326,6 +345,20 @@ function mapTemplateInputLabelOverrides(
   }
 
   return labels;
+}
+
+function mapTemplateInputUnitOverrides(
+  captureFields: SharedExecutionShell['template']['captureFields'],
+): Partial<Record<SharedExecutionCaptureFieldId, string>> {
+  const units: Partial<Record<SharedExecutionCaptureFieldId, string>> = {};
+
+  for (const field of captureFields) {
+    if (field.unit) {
+      units[field.id] = field.unit;
+    }
+  }
+
+  return units;
 }
 
 function normalizeProgress(

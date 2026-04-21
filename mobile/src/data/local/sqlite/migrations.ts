@@ -363,6 +363,15 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 10,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        ALTER TABLE user_partitioned_execution_calculations
+        ADD COLUMN execution_context_json TEXT NOT NULL DEFAULT '{}';
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

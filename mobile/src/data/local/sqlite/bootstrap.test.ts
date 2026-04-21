@@ -51,8 +51,8 @@ describe('runMigrations', () => {
          );`,
     );
 
-    expect(summary.currentSchemaVersion).toBe(9);
-    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+    expect(summary.currentSchemaVersion).toBe(10);
+    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
     expect(partitionTables?.count).toBe(10);
@@ -87,6 +87,7 @@ describe('runMigrations', () => {
       { id: 7 },
       { id: 8 },
       { id: 9 },
+      { id: 10 },
     ]);
     expect(record?.count).toBe(1);
 
@@ -187,8 +188,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(9);
-    expect(summary.appliedMigrationIds).toEqual(['9']);
+    expect(summary.currentSchemaVersion).toBe(10);
+    expect(summary.appliedMigrationIds).toEqual(['9', '10']);
     expect(migratedRows).toEqual([
       {
         template_version: '2026-04-v1',
@@ -242,6 +243,110 @@ describe('runMigrations', () => {
 
     expect(insertSecondVersion.changes).toBe(1);
     expect(rowCount?.count).toBe(2);
+
+    await database.closeAsync?.();
+  });
+
+  it('migrates populated pre-v10 execution calculation rows and defaults execution context safely', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-migrations-legacy-v9-'));
+    createdDirectories.push(tempDirectory);
+
+    const database = createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'));
+
+    await database.execAsync(`
+      CREATE TABLE schema_migrations (
+        id INTEGER PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+
+      INSERT INTO schema_migrations (id, applied_at) VALUES
+        (1, '2026-04-01T00:00:00.000Z'),
+        (2, '2026-04-01T00:00:00.000Z'),
+        (3, '2026-04-01T00:00:00.000Z'),
+        (4, '2026-04-01T00:00:00.000Z'),
+        (5, '2026-04-01T00:00:00.000Z'),
+        (6, '2026-04-01T00:00:00.000Z'),
+        (7, '2026-04-01T00:00:00.000Z'),
+        (8, '2026-04-01T00:00:00.000Z'),
+        (9, '2026-04-01T00:00:00.000Z');
+
+      CREATE TABLE user_partitioned_execution_calculations (
+        owner_user_id TEXT NOT NULL,
+        work_package_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_version TEXT NOT NULL,
+        calculation_mode TEXT NOT NULL,
+        acceptance_style TEXT NOT NULL,
+        raw_inputs_json TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version
+        )
+      );
+    `);
+
+    await database.runAsync(
+      `
+        INSERT INTO user_partitioned_execution_calculations (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          calculation_mode,
+          acceptance_style,
+          raw_inputs_json,
+          result_json,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+      [
+        'user-technician',
+        'wp-loop-001',
+        'tag-loop-001',
+        'tpl-loop-integrity',
+        '2026-04-v1',
+        'expected current vs measured current',
+        'within tolerance at each test point',
+        '{"expectedValue":"12","observedValue":"12.1"}',
+        '{"signedDeviation":0.1,"absoluteDeviation":0.1,"percentOfSpan":0.625,"acceptance":"pass","acceptanceReason":"Tolerance is 1% of span."}',
+        '2026-04-21T09:00:00.000Z',
+      ],
+    );
+
+    const summary = await runMigrations(database);
+    const migratedRow = await database.getFirstAsync<{
+      execution_context_json: string;
+      raw_inputs_json: string;
+      result_json: string;
+    }>(
+      `
+        SELECT execution_context_json, raw_inputs_json, result_json
+        FROM user_partitioned_execution_calculations
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?
+          AND template_version = ?;
+      `,
+      ['user-technician', 'wp-loop-001', 'tag-loop-001', 'tpl-loop-integrity', '2026-04-v1'],
+    );
+
+    expect(summary.currentSchemaVersion).toBe(10);
+    expect(summary.appliedMigrationIds).toEqual(['10']);
+    expect(migratedRow).toEqual({
+      execution_context_json: '{}',
+      raw_inputs_json: '{"expectedValue":"12","observedValue":"12.1"}',
+      result_json:
+        '{"signedDeviation":0.1,"absoluteDeviation":0.1,"percentOfSpan":0.625,"acceptance":"pass","acceptanceReason":"Tolerance is 1% of span."}',
+    });
 
     await database.closeAsync?.();
   });

@@ -1,9 +1,24 @@
 import type { SeededAssignedWorkPackageRecord } from './model';
 
-function buildNumericCaptureFields(expectedLabel: string, observedLabel: string) {
+function buildNumericCaptureFields(
+  expectedLabel: string,
+  observedLabel: string,
+  expectedUnit?: string,
+  observedUnit?: string,
+) {
   return [
-    { id: 'expectedValue' as const, label: expectedLabel, inputKind: 'numeric' as const },
-    { id: 'observedValue' as const, label: observedLabel, inputKind: 'numeric' as const },
+    {
+      id: 'expectedValue' as const,
+      label: expectedLabel,
+      inputKind: 'numeric' as const,
+      unit: expectedUnit,
+    },
+    {
+      id: 'observedValue' as const,
+      label: observedLabel,
+      inputKind: 'numeric' as const,
+      unit: observedUnit,
+    },
   ];
 }
 
@@ -17,6 +32,11 @@ function buildTemplate(definition: {
   captureSummary: string;
   expectedLabel: string;
   observedLabel: string;
+  expectedUnit?: string;
+  observedUnit?: string;
+  calculationRangeOverride?: { min: number; max: number; unit: string };
+  conversionBasisSummary?: string;
+  expectedRangeSummary?: string;
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -29,7 +49,15 @@ function buildTemplate(definition: {
     calculationMode: definition.calculationMode,
     acceptanceStyle: definition.acceptanceStyle,
     captureSummary: definition.captureSummary,
-    captureFields: buildNumericCaptureFields(definition.expectedLabel, definition.observedLabel),
+    captureFields: buildNumericCaptureFields(
+      definition.expectedLabel,
+      definition.observedLabel,
+      definition.expectedUnit,
+      definition.observedUnit,
+    ),
+    calculationRangeOverride: definition.calculationRangeOverride,
+    conversionBasisSummary: definition.conversionBasisSummary,
+    expectedRangeSummary: definition.expectedRangeSummary,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -48,7 +76,7 @@ export function buildSeedAssignedWorkPackages(
     status: 'assigned' as const,
     packageVersion: 1,
     snapshotContractVersion: '2026-04-v1',
-    tagCount: 2,
+    tagCount: 3,
     dueWindow: {
       startsAt: '2026-04-20T08:00:00.000Z',
       endsAt: '2026-04-20T17:00:00.000Z',
@@ -123,6 +151,27 @@ export function buildSeedAssignedWorkPackages(
             ],
             guidanceReferenceIds: ['guide-rtd-input-check'],
             historySummaryId: 'history-tt-205',
+          },
+          {
+            id: 'tag-ai-330',
+            tagCode: 'AI-330',
+            shortDescription: 'North process analog loop',
+            area: 'North Unit',
+            parentAssetReference: 'loop-ai-330',
+            instrumentFamily: 'analog 4-20 mA loop',
+            instrumentSubtype: 'isolated analog input loop',
+            measuredVariable: 'process value',
+            signalType: '4-20mA',
+            range: { min: 0, max: 100, unit: '%' },
+            tolerance: '+/-1% span',
+            criticality: 'high',
+            templateIds: [
+              'tpl-loop-integrity-check',
+              'tpl-loop-signal-validation',
+              'tpl-loop-current-vs-process',
+            ],
+            guidanceReferenceIds: ['guide-loop-integrity-check'],
+            historySummaryId: 'history-ai-330',
           },
         ],
         templates: [
@@ -216,6 +265,67 @@ export function buildSeedAssignedWorkPackages(
             expectedEvidence: ['input source note', 'supporting photo'],
             historyComparisonExpectation: 'compare comparable temperature verification results when available',
           }),
+          buildTemplate({
+            id: 'tpl-loop-integrity-check',
+            instrumentFamily: 'analog 4-20 mA loop',
+            testPattern: 'loop integrity check',
+            title: 'Analog loop integrity check',
+            calculationMode: 'expected current vs measured current',
+            acceptanceStyle: 'within tolerance at each loop checkpoint',
+            captureSummary:
+              'Capture expected and measured loop current at the selected checkpoints to verify continuity and stable signal transfer.',
+            expectedLabel: 'Expected current',
+            observedLabel: 'Measured current',
+            expectedUnit: 'mA',
+            observedUnit: 'mA',
+            calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+            conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
+            expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+            minimumSubmissionEvidence: ['loop checkpoints', 'measured current values'],
+            expectedEvidence: ['supply/continuity note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated continuity loss, instability, or loop drift at the same checkpoints',
+          }),
+          buildTemplate({
+            id: 'tpl-loop-signal-validation',
+            instrumentFamily: 'analog 4-20 mA loop',
+            testPattern: 'signal validation',
+            title: 'Analog loop signal validation',
+            calculationMode: 'expected current vs measured current',
+            acceptanceStyle: 'tolerance-based pass/fail across validated signal points',
+            captureSummary:
+              'Capture expected and measured current values while validating the loop signal against the configured process range.',
+            expectedLabel: 'Expected current',
+            observedLabel: 'Measured current',
+            expectedUnit: 'mA',
+            observedUnit: 'mA',
+            calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+            conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
+            expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+            minimumSubmissionEvidence: ['validated current points', 'process reference note'],
+            expectedEvidence: ['input source note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated signal validation drift or intermittent response',
+          }),
+          buildTemplate({
+            id: 'tpl-loop-current-vs-process',
+            instrumentFamily: 'analog 4-20 mA loop',
+            testPattern: 'expected current versus process value verification',
+            title: 'Analog loop expected current verification',
+            calculationMode: 'expected current vs measured current',
+            acceptanceStyle: 'deviation and tolerance outcome against the configured conversion basis',
+            captureSummary:
+              'Capture the expected loop current derived from the process value basis and compare it against the observed loop current.',
+            expectedLabel: 'Expected current',
+            observedLabel: 'Measured current',
+            expectedUnit: 'mA',
+            observedUnit: 'mA',
+            calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
+            conversionBasisSummary:
+              'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
+            expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+            minimumSubmissionEvidence: ['expected current reference', 'measured current values'],
+            expectedEvidence: ['conversion basis note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated conversion mismatch or process-to-signal deviation patterns',
+          }),
         ],
         guidance: [
           {
@@ -236,6 +346,15 @@ export function buildSeedAssignedWorkPackages(
             whyItMatters: 'Reduces false adjustment caused by unstable simulator or loose termination.',
             sourceReference: 'TAGWISE-BP-TT-002',
           },
+          {
+            id: 'guide-loop-integrity-check',
+            title: 'Analog loop integrity baseline',
+            version: '2026.04',
+            summary:
+              'Confirm supply, polarity, and continuity before accepting a loop deviation as a device fault.',
+            whyItMatters: 'Separates instrument issues from simple wiring or supply-side problems.',
+            sourceReference: 'TAGWISE-BP-LOOP-001',
+          },
         ],
         historySummaries: [
           {
@@ -253,6 +372,14 @@ export function buildSeedAssignedWorkPackages(
             summaryText: 'Previous RTD verification passed after retightening terminal block.',
             lastResult: 'pass',
             trendHint: 'repeat wiring check if noise reappears',
+          },
+          {
+            id: 'history-ai-330',
+            tagId: 'tag-ai-330',
+            lastObservedAt: '2026-03-18T13:10:00.000Z',
+            summaryText: 'Previous loop validation found slight mid-range current drift but remained acceptable.',
+            lastResult: 'pass-with-note',
+            trendHint: 'watch recurring mid-range current drift before escalating',
           },
         ],
       },

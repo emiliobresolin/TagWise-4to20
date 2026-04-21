@@ -87,6 +87,10 @@ describe('UserPartitionedLocalStoreFactory', () => {
       templateVersion: '2026-04-v1',
       calculationMode: 'point deviation by span',
       acceptanceStyle: 'within tolerance by point and overall span',
+      executionContext: {
+        conversionBasisSummary: null,
+        expectedRangeSummary: '0 to 10 bar maps to 4-20 mA.',
+      },
       rawInputs: {
         expectedValue: '5',
         observedValue: '5.1',
@@ -175,6 +179,10 @@ describe('UserPartitionedLocalStoreFactory', () => {
         '2026-04-v1',
       ),
     ).toMatchObject({
+      executionContext: {
+        conversionBasisSummary: null,
+        expectedRangeSummary: '0 to 10 bar maps to 4-20 mA.',
+      },
       rawInputs: {
         expectedValue: '5',
         observedValue: '5.1',
