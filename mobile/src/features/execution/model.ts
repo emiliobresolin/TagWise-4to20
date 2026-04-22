@@ -28,6 +28,7 @@ export interface SharedExecutionTemplateContract {
   calculationRangeOverride: SharedExecutionCalculationRange | null;
   conversionBasisSummary: string | null;
   expectedRangeSummary: string | null;
+  checklistPrompts: string[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;

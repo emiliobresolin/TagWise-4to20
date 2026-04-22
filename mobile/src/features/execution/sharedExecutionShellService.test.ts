@@ -50,6 +50,7 @@ function buildTemplate(definition: {
   calculationRangeOverride?: { min: number; max: number; unit: string };
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
+  checklistPrompts?: string[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -79,6 +80,7 @@ function buildTemplate(definition: {
     calculationRangeOverride: definition.calculationRangeOverride,
     conversionBasisSummary: definition.conversionBasisSummary,
     expectedRangeSummary: definition.expectedRangeSummary,
+    checklistPrompts: definition.checklistPrompts,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -191,7 +193,7 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
     status: 'assigned',
     packageVersion: 1,
     snapshotContractVersion: '2026-04-v1',
-    tagCount: 4,
+    tagCount: 5,
     dueWindow: {
       startsAt: '2026-04-20T08:00:00.000Z',
       endsAt: '2026-04-20T17:00:00.000Z',
@@ -267,6 +269,26 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
       guidanceReferenceIds: ['guide-shared'],
       historySummaryId: 'history-loop-family',
     },
+    {
+      id: 'tag-valve-family',
+      tagCode: 'XV-402',
+      shortDescription: 'Tank inlet control valve with positioner',
+      area: 'Tank Farm',
+      parentAssetReference: 'asset-valve',
+      instrumentFamily: 'control valve with positioner',
+      instrumentSubtype: 'on-off with smart positioner',
+      measuredVariable: 'position',
+      signalType: 'digital-position-feedback',
+      range: { min: 0, max: 100, unit: '%' },
+      tolerance: '+/-2% span',
+      criticality: 'medium',
+      templateIds: [
+        'tpl-valve-stroke-test',
+        'tpl-valve-position-feedback-verification',
+      ],
+      guidanceReferenceIds: ['guide-shared'],
+      historySummaryId: 'history-valve-family',
+    },
   ],
   templates: [
     buildTemplate({
@@ -331,6 +353,43 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
       expectedEvidence: ['conversion basis note'],
       historyComparisonExpectation: 'compare repeated process-to-signal mismatch',
     }),
+    buildTemplate({
+      id: 'tpl-valve-stroke-test',
+      instrumentFamily: 'control valve with positioner',
+      testPattern: 'stroke test',
+      title: 'Valve stroke test',
+      calculationMode: 'commanded position vs observed travel',
+      acceptanceStyle: 'pass/fail classification at commanded movement checkpoints',
+      captureSummary: 'Capture commanded open, mid, and closed checkpoints.',
+      expectedLabel: 'Commanded position',
+      observedLabel: 'Observed travel',
+      checklistPrompts: [
+        'Confirm the movement path is clear before issuing a stroke command.',
+        'Verify actuator supply or permissive readiness before concluding a movement fault.',
+      ],
+      minimumSubmissionEvidence: ['commanded points', 'observed travel responses'],
+      expectedEvidence: ['supporting photo', 'actuator note'],
+      historyComparisonExpectation: 'compare repeat sticking or delayed travel notes',
+    }),
+    buildTemplate({
+      id: 'tpl-valve-position-feedback-verification',
+      instrumentFamily: 'control valve with positioner',
+      testPattern: 'position feedback verification',
+      title: 'Valve position feedback verification',
+      calculationMode: 'commanded position vs observed travel',
+      acceptanceStyle: 'pass/fail classification at commanded feedback checkpoints',
+      captureSummary:
+        'Capture commanded position checkpoints and compare them against the observed position feedback response.',
+      expectedLabel: 'Commanded position',
+      observedLabel: 'Observed feedback',
+      checklistPrompts: [
+        'Confirm feedback indication is available before treating the issue as a travel fault.',
+        'If feedback is unavailable, record that condition instead of blocking the check.',
+      ],
+      minimumSubmissionEvidence: ['commanded points', 'observed feedback responses'],
+      expectedEvidence: ['supporting photo', 'positioner note'],
+      historyComparisonExpectation: 'compare repeat feedback mismatch or delayed response notes',
+    }),
   ],
   guidance: [
     {
@@ -374,6 +433,14 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
       summaryText: 'Analog loop history available.',
       lastResult: 'Pass with note',
       trendHint: 'Watch repeat mid-range current drift.',
+    },
+    {
+      id: 'history-valve-family',
+      tagId: 'tag-valve-family',
+      lastObservedAt: '2026-04-06T12:00:00.000Z',
+      summaryText: 'Valve history available.',
+      lastResult: 'Pass with note',
+      trendHint: 'Watch repeat delayed travel or feedback mismatch.',
     },
   ],
 };
@@ -544,6 +611,37 @@ describe('SharedExecutionShellService', () => {
         },
       },
     });
+
+    const valveShell = await service.loadShell(
+      session,
+      familyPackSnapshot.summary.id,
+      'tag-valve-family',
+      'tpl-valve-stroke-test',
+    );
+
+    expect(valveShell).toMatchObject({
+      tagCode: 'XV-402',
+      template: {
+        instrumentFamily: 'control valve with positioner',
+        testPattern: 'stroke test',
+      },
+      calculation: {
+        definition: {
+          expectedLabel: 'Commanded position (%)',
+          observedLabel: 'Observed travel (%)',
+        },
+      },
+    });
+    expect(valveShell?.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Checklist prompts',
+          value: expect.stringContaining(
+            'Confirm the movement path is clear before issuing a stroke command.',
+          ),
+        }),
+      ]),
+    );
 
     await runtime.database.closeAsync?.();
   });

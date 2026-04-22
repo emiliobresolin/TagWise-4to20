@@ -41,6 +41,7 @@ export class LocalExecutionTemplateRegistry {
       calculationRangeOverride: normalizeCalculationRange(template.calculationRangeOverride),
       conversionBasisSummary: normalizeOptionalSummary(template.conversionBasisSummary),
       expectedRangeSummary: normalizeOptionalSummary(template.expectedRangeSummary),
+      checklistPrompts: normalizeChecklistPrompts(template.checklistPrompts),
       minimumSubmissionEvidence: template.minimumSubmissionEvidence,
       expectedEvidence: Array.isArray(template.expectedEvidence) ? template.expectedEvidence : [],
       historyComparisonExpectation: template.historyComparisonExpectation,
@@ -73,6 +74,14 @@ function normalizeCaptureFields(
 
 function normalizeOptionalSummary(value: string | undefined): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function normalizeChecklistPrompts(value: string[] | undefined): string[] {
+  return Array.isArray(value)
+    ? value
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item) => item.length > 0)
+    : [];
 }
 
 function normalizeCalculationRange(

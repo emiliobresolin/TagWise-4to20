@@ -1,6 +1,6 @@
 ﻿# Story 3.5: Control Valve With Positioner Template Pack
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 3-5-control-valve-with-positioner-template-pack
@@ -41,3 +41,35 @@ keep v1 to commanded-versus-observed checks and approved checklist prompts; do n
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Extended the local execution template contract with lightweight `checklistPrompts` metadata so Story 3.5 can surface safety-aware valve prompts in-flow without creating a new checklist workflow.
+- Replaced the old placeholder valve template with the approved v1 pair: `stroke test` and `position feedback verification`.
+- Kept the implementation template-driven and shared-shell based: valve prompts are rendered through the existing guidance step, and the deterministic engine continues to consume only generic calculation metadata.
+- Added valve checkpoint acceptance coverage using the existing commanded-versus-observed deterministic calculation path with numeric span tolerance.
+
+### Tests Run
+- `cd mobile && npm test`
+- `cd mobile && npm run typecheck`
+- `cd mobile && npx expo export --platform android`
+- `cd backend && npm test`
+- `cd backend && npm run typecheck`
+- `cd backend && npm run build`
+
+### File List
+- `backend/src/modules/work-packages/model.ts`
+- `backend/src/modules/work-packages/seedData.ts`
+- `backend/dist/modules/work-packages/seedData.js`
+- `mobile/src/features/work-packages/model.ts`
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/localExecutionTemplateRegistry.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/deterministicCalculationEngine.test.ts`
+- `mobile/src/features/execution/localExecutionTemplateRegistry.test.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `_bmad-output/implementation-artifacts/3-5-control-valve-with-positioner-template-pack.md`

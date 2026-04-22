@@ -284,6 +284,12 @@ function buildExecutionShell(
                 ? 'available'
                 : mapReferenceFieldState(tagContext.referencePointers.state),
           },
+          availableField(
+            'Checklist prompts',
+            template.checklistPrompts.length > 0
+              ? template.checklistPrompts.join('; ')
+              : 'None declared',
+          ),
           {
             label: 'Procedure pointers',
             value:

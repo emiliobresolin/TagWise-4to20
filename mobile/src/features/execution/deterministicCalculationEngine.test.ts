@@ -62,6 +62,18 @@ const analogLoopTag: AssignedWorkPackageTagSnapshot = {
   tolerance: '+/-1% span',
 };
 
+const controlValveTag: AssignedWorkPackageTagSnapshot = {
+  ...pressureTag,
+  id: 'tag-xv-500',
+  tagCode: 'XV-500',
+  instrumentFamily: 'control valve with positioner',
+  instrumentSubtype: 'on-off with smart positioner',
+  measuredVariable: 'position',
+  signalType: 'digital-position-feedback',
+  range: { min: 0, max: 100, unit: '%' },
+  tolerance: '+/-2% span',
+};
+
 describe('deterministicCalculationEngine', () => {
   it('computes a reproducible percent-of-span pass/fail result', () => {
     const definition = resolveDeterministicCalculationDefinition(
@@ -180,6 +192,36 @@ describe('deterministicCalculationEngine', () => {
       acceptance: 'unavailable',
       acceptanceReason:
         'Deterministic deviation is available, but local tolerance metadata is not numeric yet.',
+    });
+  });
+
+  it('computes deterministic checkpoint acceptance for valve stroke checks', () => {
+    const definition = resolveDeterministicCalculationDefinition(
+      controlValveTag,
+      'commanded position vs observed travel',
+      'pass/fail classification at commanded movement checkpoints',
+      {
+        expectedValue: 'Commanded position',
+        observedValue: 'Observed travel',
+      },
+    );
+
+    const result = computeDeterministicCalculation(definition, {
+      expectedValue: '75',
+      observedValue: '76.5',
+    });
+
+    expect(definition).toMatchObject({
+      expectedLabel: 'Commanded position (%)',
+      observedLabel: 'Observed travel (%)',
+      toleranceMode: 'percent-of-span',
+      toleranceValue: 2,
+    });
+    expect(result).toMatchObject({
+      signedDeviation: 1.5,
+      absoluteDeviation: 1.5,
+      percentOfSpan: 1.5,
+      acceptance: 'pass',
     });
   });
 

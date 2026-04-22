@@ -66,6 +66,7 @@ export interface AssignedWorkPackageTemplateSnapshot {
   calculationRangeOverride?: AssignedWorkPackageTemplateCalculationRangeSnapshot;
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
+  checklistPrompts?: string[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;

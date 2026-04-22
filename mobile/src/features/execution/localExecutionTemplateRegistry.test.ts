@@ -18,6 +18,7 @@ function buildTemplate(definition: {
   calculationRangeOverride?: { min: number; max: number; unit: string };
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
+  checklistPrompts?: string[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -47,6 +48,7 @@ function buildTemplate(definition: {
     calculationRangeOverride: definition.calculationRangeOverride,
     conversionBasisSummary: definition.conversionBasisSummary,
     expectedRangeSummary: definition.expectedRangeSummary,
+    checklistPrompts: definition.checklistPrompts,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -65,7 +67,7 @@ const snapshot: AssignedWorkPackageSnapshot = {
     status: 'assigned',
     packageVersion: 1,
     snapshotContractVersion: '2026-04-v1',
-    tagCount: 4,
+    tagCount: 5,
     dueWindow: {
       startsAt: '2026-04-20T08:00:00.000Z',
       endsAt: '2026-04-20T17:00:00.000Z',
@@ -156,6 +158,26 @@ const snapshot: AssignedWorkPackageSnapshot = {
       ],
       guidanceReferenceIds: [],
       historySummaryId: 'history-loop',
+    },
+    {
+      id: 'tag-valve',
+      tagCode: 'XV-402',
+      shortDescription: 'Control valve with positioner',
+      area: 'Tank Farm',
+      parentAssetReference: 'asset-005',
+      instrumentFamily: 'control valve with positioner',
+      instrumentSubtype: 'on-off with smart positioner',
+      measuredVariable: 'position',
+      signalType: 'digital-position-feedback',
+      range: { min: 0, max: 100, unit: '%' },
+      tolerance: '+/-2% span',
+      criticality: 'medium',
+      templateIds: [
+        'tpl-valve-stroke-test',
+        'tpl-valve-position-feedback-verification',
+      ],
+      guidanceReferenceIds: [],
+      historySummaryId: 'history-valve',
     },
   ],
   templates: [
@@ -343,6 +365,43 @@ const snapshot: AssignedWorkPackageSnapshot = {
       expectedEvidence: ['conversion basis note'],
       historyComparisonExpectation: 'compare repeated process-to-signal mismatch',
     }),
+    buildTemplate({
+      id: 'tpl-valve-stroke-test',
+      instrumentFamily: 'control valve with positioner',
+      testPattern: 'stroke test',
+      title: 'Valve stroke test',
+      calculationMode: 'commanded position vs observed travel',
+      acceptanceStyle: 'pass/fail classification at commanded movement checkpoints',
+      captureSummary: 'Capture commanded open, mid, and closed checkpoints.',
+      expectedLabel: 'Commanded position',
+      observedLabel: 'Observed travel',
+      checklistPrompts: [
+        'Confirm the movement path is clear before issuing a stroke command.',
+        'Verify actuator supply or permissive readiness before concluding a movement fault.',
+      ],
+      minimumSubmissionEvidence: ['commanded points', 'observed travel responses'],
+      expectedEvidence: ['supporting photo', 'actuator note'],
+      historyComparisonExpectation: 'compare repeat sticking or delayed travel notes',
+    }),
+    buildTemplate({
+      id: 'tpl-valve-position-feedback-verification',
+      instrumentFamily: 'control valve with positioner',
+      testPattern: 'position feedback verification',
+      title: 'Valve position feedback verification',
+      calculationMode: 'commanded position vs observed travel',
+      acceptanceStyle: 'pass/fail classification at commanded feedback checkpoints',
+      captureSummary:
+        'Capture commanded position checkpoints and compare them against the observed position feedback response.',
+      expectedLabel: 'Commanded position',
+      observedLabel: 'Observed feedback',
+      checklistPrompts: [
+        'Confirm feedback indication is available before treating the issue as a travel fault.',
+        'If feedback is unavailable, record that condition instead of blocking the check.',
+      ],
+      minimumSubmissionEvidence: ['commanded points', 'observed feedback responses'],
+      expectedEvidence: ['supporting photo', 'positioner note'],
+      historyComparisonExpectation: 'compare repeat feedback mismatch or delayed response notes',
+    }),
   ],
   guidance: [],
   historySummaries: [
@@ -378,6 +437,14 @@ const snapshot: AssignedWorkPackageSnapshot = {
       lastResult: 'pass-with-note',
       trendHint: 'watch repeated mid-range current drift',
     },
+    {
+      id: 'history-valve',
+      tagId: 'tag-valve',
+      lastObservedAt: '2026-04-06T08:30:00.000Z',
+      summaryText: 'Valve history available.',
+      lastResult: 'pass-with-note',
+      trendHint: 'watch repeated delayed travel or feedback mismatch',
+    },
   ],
 };
 
@@ -398,6 +465,12 @@ describe('LocalExecutionTemplateRegistry', () => {
       ['tag-loop', 'tpl-loop-integrity-check', 'analog 4-20 mA loop'],
       ['tag-loop', 'tpl-loop-signal-validation', 'analog 4-20 mA loop'],
       ['tag-loop', 'tpl-loop-current-vs-process', 'analog 4-20 mA loop'],
+      ['tag-valve', 'tpl-valve-stroke-test', 'control valve with positioner'],
+      [
+        'tag-valve',
+        'tpl-valve-position-feedback-verification',
+        'control valve with positioner',
+      ],
     ] as const;
 
     for (const [tagId, templateId, instrumentFamily] of cases) {
@@ -437,6 +510,22 @@ describe('LocalExecutionTemplateRegistry', () => {
       conversionBasisSummary:
         'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
       expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+    });
+  });
+
+  it('preserves valve checklist prompts in the local contract', () => {
+    const registry = new LocalExecutionTemplateRegistry();
+    const valveTag = snapshot.tags.find((item) => item.id === 'tag-valve');
+
+    expect(valveTag).toBeTruthy();
+
+    const resolved = registry.resolveTemplate(snapshot, valveTag!, 'tpl-valve-stroke-test');
+
+    expect(resolved).toMatchObject({
+      checklistPrompts: [
+        'Confirm the movement path is clear before issuing a stroke command.',
+        'Verify actuator supply or permissive readiness before concluding a movement fault.',
+      ],
     });
   });
 
