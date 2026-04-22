@@ -9,8 +9,12 @@ import { LocalExecutionTemplateRegistry } from './localExecutionTemplateRegistry
 import type {
   SharedExecutionCalculationAcceptance,
   SharedExecutionCalculationState,
+  SharedExecutionChecklistItem,
+  SharedExecutionChecklistOutcome,
   SharedExecutionCaptureFieldId,
   SharedExecutionField,
+  SharedExecutionGuidanceState,
+  SharedExecutionLinkedGuidanceSnippet,
   SharedExecutionShell,
   SharedExecutionCalculationRawInputs,
   StoredExecutionCalculationRecord,
@@ -162,7 +166,33 @@ export class SharedExecutionShellService {
       shell.template.id,
     );
 
-    return reloadedShell ?? shell;
+    return reloadedShell ? mergeGuidanceOutcomesIntoShell(reloadedShell, shell.guidance) : shell;
+  }
+
+  updateChecklistOutcome(
+    shell: SharedExecutionShell,
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ): SharedExecutionShell {
+    const checklistItems = shell.guidance.checklistItems.map((item) =>
+      item.id === checklistItemId ? { ...item, outcome } : item,
+    );
+
+    const didChange = checklistItems.some(
+      (item, index) => item.outcome !== shell.guidance.checklistItems[index]?.outcome,
+    );
+
+    if (!didChange) {
+      return shell;
+    }
+
+    return applyGuidanceState(
+      shell,
+      normalizeGuidanceState({
+        ...shell.guidance,
+        checklistItems,
+      }),
+    );
   }
 }
 
@@ -175,6 +205,7 @@ function buildExecutionShell(
   storedCalculation: StoredExecutionCalculationRecord | null,
 ): SharedExecutionShell {
   const calculation = buildCalculationState(tag, template, storedCalculation);
+  const guidance = buildGuidanceState(snapshot, tag, template);
 
   return {
     workPackageId: snapshot.summary.id,
@@ -183,6 +214,7 @@ function buildExecutionShell(
     tagCode: tag.tagCode,
     template,
     calculation,
+    guidance,
     steps: [
       {
         id: 'context',
@@ -248,48 +280,13 @@ function buildExecutionShell(
         id: 'guidance',
         title: 'Checklist and guidance',
         kind: 'guidance',
-        summary: tagContext.referencePointers.detail,
-        detail:
-          'Checklist and why-it-matters content stays lightweight in the shared shell and will expand in the guidance story.',
-        fields: [
-          {
-            label: 'Reference state',
-            value: toDisplayState(tagContext.referencePointers.state),
-            state: mapReferenceFieldState(tagContext.referencePointers.state),
-          },
-          {
-            label: 'Guidance pointers',
-            value:
-              tagContext.referencePointers.guidance.length > 0
-                ? tagContext.referencePointers.guidance.join(', ')
-                : 'None attached',
-            state:
-              tagContext.referencePointers.guidance.length > 0
-                ? 'available'
-                : mapReferenceFieldState(tagContext.referencePointers.state),
-          },
-          availableField(
-            'Checklist prompts',
-            template.checklistPrompts.length > 0
-              ? template.checklistPrompts.join('; ')
-              : 'None declared',
-          ),
-          {
-            label: 'Procedure pointers',
-            value:
-              tagContext.referencePointers.templates.length > 0
-                ? tagContext.referencePointers.templates.join(', ')
-                : 'None attached',
-            state:
-              tagContext.referencePointers.templates.length > 0
-                ? 'available'
-                : mapReferenceFieldState(tagContext.referencePointers.state),
-          },
-        ],
+        summary: buildGuidanceStepSummary(guidance),
+        detail: buildGuidanceStepDetail(guidance),
+        fields: buildGuidanceFields(guidance),
       },
     ],
     progress: normalizeProgress(progress, template.steps.map((step) => step.id)),
-  };
+  } satisfies SharedExecutionShell;
 }
 
 function buildCalculationState(
@@ -367,6 +364,180 @@ function normalizeProgress(
     currentStepId,
     visitedStepIds,
   };
+}
+
+function buildGuidanceState(
+  snapshot: AssignedWorkPackageSnapshot,
+  tag: AssignedWorkPackageTagSnapshot,
+  template: SharedExecutionShell['template'],
+): SharedExecutionGuidanceState {
+  return normalizeGuidanceState({
+    checklistItems: template.checklistSteps.map((item) => ({
+      ...item,
+      outcome: 'pending',
+    })),
+    guidedDiagnosisPrompts: template.guidedDiagnosisPrompts,
+    linkedGuidance: buildLinkedGuidance(snapshot, tag),
+    riskState: 'clear',
+    riskHooks: [],
+  });
+}
+
+function buildLinkedGuidance(
+  snapshot: AssignedWorkPackageSnapshot,
+  tag: AssignedWorkPackageTagSnapshot,
+): SharedExecutionLinkedGuidanceSnippet[] {
+  return snapshot.guidance
+    .filter((item) => tag.guidanceReferenceIds.includes(item.id))
+    .map((item) => ({
+      id: item.id,
+      title: item.title,
+      summary: item.summary,
+      whyItMatters: item.whyItMatters,
+      sourceReference: item.sourceReference,
+    }));
+}
+
+function normalizeGuidanceState(
+  guidance: SharedExecutionGuidanceState,
+): SharedExecutionGuidanceState {
+  const riskHooks = guidance.checklistItems
+    .map(buildChecklistRiskHook)
+    .filter((item): item is string => item !== null);
+
+  return {
+    ...guidance,
+    riskState: riskHooks.length > 0 ? 'flagged' : 'clear',
+    riskHooks,
+  };
+}
+
+function buildChecklistRiskHook(item: SharedExecutionChecklistItem): string | null {
+  if (item.outcome === 'skipped') {
+    return `Skipped: ${item.prompt} This leaves ${item.helpsRuleOut} unresolved.`;
+  }
+
+  if (item.outcome === 'incomplete') {
+    return `Incomplete: ${item.prompt} Recheck it because it helps rule out ${item.helpsRuleOut}.`;
+  }
+
+  return null;
+}
+
+function applyGuidanceState(
+  shell: SharedExecutionShell,
+  guidance: SharedExecutionGuidanceState,
+): SharedExecutionShell {
+  return {
+    ...shell,
+    guidance,
+    steps: shell.steps.map((step) =>
+      step.id === 'guidance'
+        ? {
+            ...step,
+            summary: buildGuidanceStepSummary(guidance),
+            detail: buildGuidanceStepDetail(guidance),
+            fields: buildGuidanceFields(guidance),
+          }
+        : step,
+    ),
+  };
+}
+
+function mergeGuidanceOutcomesIntoShell(
+  shell: SharedExecutionShell,
+  previousGuidance: SharedExecutionGuidanceState,
+): SharedExecutionShell {
+  const checklistItems = shell.guidance.checklistItems.map((item) => {
+    const previousItem = previousGuidance.checklistItems.find(
+      (candidate) => candidate.id === item.id,
+    );
+
+    return previousItem ? { ...item, outcome: previousItem.outcome } : item;
+  });
+
+  return applyGuidanceState(
+    shell,
+    normalizeGuidanceState({
+      ...shell.guidance,
+      checklistItems,
+    }),
+  );
+}
+
+function buildGuidanceStepSummary(guidance: SharedExecutionGuidanceState): string {
+  if (guidance.riskState === 'flagged') {
+    return 'Checklist risk is flagged locally. Review the incomplete or skipped items before moving on.';
+  }
+
+  if (
+    guidance.checklistItems.length > 0 ||
+    guidance.guidedDiagnosisPrompts.length > 0 ||
+    guidance.linkedGuidance.length > 0
+  ) {
+    return 'Lightweight checklist and diagnosis guidance is available locally for this execution.';
+  }
+
+  return 'No checklist or diagnosis guidance is attached to this template.';
+}
+
+function buildGuidanceStepDetail(guidance: SharedExecutionGuidanceState): string {
+  if (guidance.riskState === 'flagged') {
+    return 'The shell remains non-blocking, but the flagged checklist items stay visible until you review them.';
+  }
+
+  return 'Guidance stays lightweight in the shared shell: what to do, why it matters, what it helps rule out, and the cached source reference.';
+}
+
+function buildGuidanceFields(
+  guidance: SharedExecutionGuidanceState,
+): SharedExecutionField[] {
+  const completedCount = guidance.checklistItems.filter(
+    (item) => item.outcome === 'completed',
+  ).length;
+  const incompleteCount = guidance.checklistItems.filter(
+    (item) => item.outcome === 'incomplete',
+  ).length;
+  const skippedCount = guidance.checklistItems.filter(
+    (item) => item.outcome === 'skipped',
+  ).length;
+  const pendingCount = guidance.checklistItems.filter(
+    (item) => item.outcome === 'pending',
+  ).length;
+
+  return [
+    availableField(
+      'Checklist status',
+      guidance.checklistItems.length > 0
+        ? `Pending ${pendingCount}; Completed ${completedCount}; Incomplete ${incompleteCount}; Skipped ${skippedCount}`
+        : 'None declared',
+    ),
+    availableField(
+      'Guided diagnosis prompts',
+      guidance.guidedDiagnosisPrompts.length > 0
+        ? `${guidance.guidedDiagnosisPrompts.length} prompt(s) available`
+        : 'None declared',
+    ),
+    availableField(
+      'Linked guidance',
+      guidance.linkedGuidance.length > 0
+        ? guidance.linkedGuidance.map((item) => item.title).join(', ')
+        : 'None attached',
+    ),
+    {
+      label: 'Guidance risk state',
+      value: guidance.riskState === 'flagged' ? 'Flagged' : 'Clear',
+      state: guidance.riskState === 'flagged' ? 'missing' : 'available',
+    },
+    {
+      label: 'Risk hooks',
+      value:
+        guidance.riskHooks.length > 0
+          ? guidance.riskHooks.join(' ')
+          : 'No checklist risk is currently flagged.',
+      state: guidance.riskHooks.length > 0 ? 'missing' : 'available',
+    },
+  ];
 }
 
 function mapContextField(

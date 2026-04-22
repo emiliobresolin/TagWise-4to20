@@ -19,6 +19,8 @@ function buildTemplate(definition: {
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
   checklistPrompts?: string[];
+  checklistSteps?: AssignedWorkPackageSnapshot['templates'][number]['checklistSteps'];
+  guidedDiagnosisPrompts?: AssignedWorkPackageSnapshot['templates'][number]['guidedDiagnosisPrompts'];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -49,6 +51,8 @@ function buildTemplate(definition: {
     conversionBasisSummary: definition.conversionBasisSummary,
     expectedRangeSummary: definition.expectedRangeSummary,
     checklistPrompts: definition.checklistPrompts,
+    checklistSteps: definition.checklistSteps,
+    guidedDiagnosisPrompts: definition.guidedDiagnosisPrompts,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -176,7 +180,7 @@ const snapshot: AssignedWorkPackageSnapshot = {
         'tpl-valve-stroke-test',
         'tpl-valve-position-feedback-verification',
       ],
-      guidanceReferenceIds: [],
+      guidanceReferenceIds: ['guide-shared'],
       historySummaryId: 'history-valve',
     },
   ],
@@ -379,6 +383,37 @@ const snapshot: AssignedWorkPackageSnapshot = {
         'Confirm the movement path is clear before issuing a stroke command.',
         'Verify actuator supply or permissive readiness before concluding a movement fault.',
       ],
+      checklistSteps: [
+        {
+          id: 'valve-path-check',
+          prompt:
+            'Confirm the movement path and required permissives are clear before judging the stroke result.',
+          whyItMatters:
+            'This keeps the stroke test grounded in actual field readiness before escalation.',
+          helpsRuleOut: 'blocked movement path or missing permissive conditions',
+          sourceReference: 'TAGWISE-BP-XV-003',
+        },
+        {
+          id: 'valve-supply-check',
+          prompt:
+            'Confirm actuator supply and indication are available before concluding a valve fault.',
+          whyItMatters:
+            'Supply or indication gaps can look like travel failure when the valve is not the root cause.',
+          helpsRuleOut: 'air supply, control enable, or indication availability issues',
+          sourceReference: 'TAGWISE-BP-XV-003',
+        },
+      ],
+      guidedDiagnosisPrompts: [
+        {
+          id: 'valve-diagnosis-travel-lag',
+          prompt:
+            'If commanded position changes but travel lags, inspect supply and mechanical restriction before escalation.',
+          whyItMatters:
+            'Lagging response needs a quick field check before treating it as a confirmed device defect.',
+          helpsRuleOut: 'air-supply weakness or mechanical restriction',
+          sourceReference: 'TAGWISE-BP-XV-003',
+        },
+      ],
       minimumSubmissionEvidence: ['commanded points', 'observed travel responses'],
       expectedEvidence: ['supporting photo', 'actuator note'],
       historyComparisonExpectation: 'compare repeat sticking or delayed travel notes',
@@ -403,7 +438,16 @@ const snapshot: AssignedWorkPackageSnapshot = {
       historyComparisonExpectation: 'compare repeat feedback mismatch or delayed response notes',
     }),
   ],
-  guidance: [],
+  guidance: [
+    {
+      id: 'guide-shared',
+      title: 'Valve shared guidance',
+      version: 'v1',
+      summary: 'Separate positioner feedback issues from true movement faults.',
+      whyItMatters: 'This keeps the shared shell diagnosis local and practical.',
+      sourceReference: 'TAGWISE-BP-XV-003',
+    },
+  ],
   historySummaries: [
     {
       id: 'history-pressure',
@@ -527,6 +571,69 @@ describe('LocalExecutionTemplateRegistry', () => {
         'Verify actuator supply or permissive readiness before concluding a movement fault.',
       ],
     });
+  });
+
+  it('normalizes structured checklist steps and guided diagnosis prompts into the local contract', () => {
+    const registry = new LocalExecutionTemplateRegistry();
+    const valveTag = snapshot.tags.find((item) => item.id === 'tag-valve');
+
+    expect(valveTag).toBeTruthy();
+
+    const resolved = registry.resolveTemplate(snapshot, valveTag!, 'tpl-valve-stroke-test');
+
+    expect(resolved?.checklistSteps).toEqual([
+      expect.objectContaining({
+        id: 'valve-path-check',
+        prompt: expect.stringContaining('movement path'),
+        whyItMatters: expect.stringContaining('field readiness'),
+        helpsRuleOut: 'blocked movement path or missing permissive conditions',
+        sourceReference: 'TAGWISE-BP-XV-003',
+      }),
+      expect.objectContaining({
+        id: 'valve-supply-check',
+      }),
+    ]);
+    expect(resolved?.guidedDiagnosisPrompts).toEqual([
+      expect.objectContaining({
+        id: 'valve-diagnosis-travel-lag',
+        prompt: expect.stringContaining('travel lags'),
+        sourceReference: 'TAGWISE-BP-XV-003',
+      }),
+    ]);
+  });
+
+  it('falls back to checklist prompts and linked guidance when structured guidance is not declared', () => {
+    const registry = new LocalExecutionTemplateRegistry();
+    const valveTag = snapshot.tags.find((item) => item.id === 'tag-valve');
+
+    expect(valveTag).toBeTruthy();
+
+    const resolved = registry.resolveTemplate(
+      snapshot,
+      valveTag!,
+      'tpl-valve-position-feedback-verification',
+    );
+
+    expect(resolved?.checklistSteps).toEqual([
+      expect.objectContaining({
+        id: 'checklist-1',
+        prompt: 'Confirm feedback indication is available before treating the issue as a travel fault.',
+        sourceReference: 'TAGWISE-BP-XV-003',
+      }),
+      expect.objectContaining({
+        id: 'checklist-2',
+      }),
+    ]);
+    expect(resolved?.guidedDiagnosisPrompts).toEqual([
+      expect.objectContaining({
+        id: 'diagnosis-1',
+        prompt: 'Separate positioner feedback issues from true movement faults.',
+        whyItMatters: 'This keeps the shared shell diagnosis local and practical.',
+        helpsRuleOut:
+          'Simple field-condition or setup issues before treating the result as a confirmed device fault.',
+        sourceReference: 'TAGWISE-BP-XV-003',
+      }),
+    ]);
   });
 
   it('returns null when the requested template is not attached to the selected tag', () => {

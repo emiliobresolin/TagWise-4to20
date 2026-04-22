@@ -67,6 +67,8 @@ export interface AssignedWorkPackageTemplateSnapshot {
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
   checklistPrompts?: string[];
+  checklistSteps?: AssignedWorkPackageTemplateGuidanceItemSnapshot[];
+  guidedDiagnosisPrompts?: AssignedWorkPackageTemplateGuidanceItemSnapshot[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -85,6 +87,14 @@ export interface AssignedWorkPackageTemplateCalculationRangeSnapshot {
   min: number;
   max: number;
   unit: string;
+}
+
+export interface AssignedWorkPackageTemplateGuidanceItemSnapshot {
+  id: string;
+  prompt: string;
+  whyItMatters: string;
+  helpsRuleOut: string;
+  sourceReference: string;
 }
 
 export interface AssignedWorkPackageGuidanceSnapshot {

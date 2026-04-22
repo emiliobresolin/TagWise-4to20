@@ -51,6 +51,8 @@ function buildTemplate(definition: {
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
   checklistPrompts?: string[];
+  checklistSteps?: AssignedWorkPackageSnapshot['templates'][number]['checklistSteps'];
+  guidedDiagnosisPrompts?: AssignedWorkPackageSnapshot['templates'][number]['guidedDiagnosisPrompts'];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -81,6 +83,8 @@ function buildTemplate(definition: {
     conversionBasisSummary: definition.conversionBasisSummary,
     expectedRangeSummary: definition.expectedRangeSummary,
     checklistPrompts: definition.checklistPrompts,
+    checklistSteps: definition.checklistSteps,
+    guidedDiagnosisPrompts: definition.guidedDiagnosisPrompts,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
@@ -137,6 +141,34 @@ const baseSnapshot: AssignedWorkPackageSnapshot = {
       captureFields: [
         { id: 'expectedValue', label: 'Expected pressure', inputKind: 'numeric' },
         { id: 'observedValue', label: 'Measured pressure', inputKind: 'numeric' },
+      ],
+      checklistSteps: [
+        {
+          id: 'pressure-path-check',
+          prompt:
+            'Confirm impulse path and vent condition before treating deviation as transmitter drift.',
+          whyItMatters:
+            'This keeps the pressure check grounded in process-side reality before recalibration.',
+          helpsRuleOut: 'plugged impulse lines or trapped process-side pressure',
+          sourceReference: 'ISA local practice',
+        },
+        {
+          id: 'pressure-reference-check',
+          prompt: 'Confirm the applied reference is stable before saving the checkpoint.',
+          whyItMatters: 'Stable reference prevents false span error in the local shell.',
+          helpsRuleOut: 'unstable pressure source or setup error',
+          sourceReference: 'ISA local practice',
+        },
+      ],
+      guidedDiagnosisPrompts: [
+        {
+          id: 'pressure-diagnosis-repeat',
+          prompt:
+            'If the result repeats the prior drift pattern, inspect sensing path and manifold condition first.',
+          whyItMatters: 'Repeated patterns often point to recurring field conditions, not sudden sensor failure.',
+          helpsRuleOut: 'recurring manifold or impulse line problems',
+          sourceReference: 'ISA local practice',
+        },
       ],
       minimumSubmissionEvidence: ['readings', 'observations'],
       expectedEvidence: ['supporting photo'],
@@ -383,6 +415,27 @@ const familyPackSnapshot: AssignedWorkPackageSnapshot = {
         'Confirm the movement path is clear before issuing a stroke command.',
         'Verify actuator supply or permissive readiness before concluding a movement fault.',
       ],
+      checklistSteps: [
+        {
+          id: 'valve-path-check',
+          prompt:
+            'Confirm the movement path and required permissives are clear before judging the stroke result.',
+          whyItMatters: 'This keeps the movement check grounded in actual field readiness before escalation.',
+          helpsRuleOut: 'blocked movement path or missing permissive conditions',
+          sourceReference: 'TAGWISE-BP-XV-003',
+        },
+      ],
+      guidedDiagnosisPrompts: [
+        {
+          id: 'valve-diagnosis-travel-lag',
+          prompt:
+            'If commanded position changes but travel lags, inspect supply and mechanical restriction before escalation.',
+          whyItMatters:
+            'Lagging response needs a quick field check before treating it as a confirmed device defect.',
+          helpsRuleOut: 'air-supply weakness or mechanical restriction',
+          sourceReference: 'TAGWISE-BP-XV-003',
+        },
+      ],
       minimumSubmissionEvidence: ['commanded points', 'observed travel responses'],
       expectedEvidence: ['supporting photo', 'actuator note'],
       historyComparisonExpectation: 'compare repeat sticking or delayed travel notes',
@@ -507,6 +560,84 @@ describe('SharedExecutionShellService', () => {
         visitedStepIds: ['context'],
       },
     });
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('loads structured checklist steps, guided diagnosis prompts, and linked guidance into the shared guidance step', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-guidance-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    expect(shell).toMatchObject({
+      guidance: {
+        riskState: 'clear',
+        checklistItems: [
+          expect.objectContaining({
+            id: 'pressure-path-check',
+            outcome: 'pending',
+            sourceReference: 'ISA local practice',
+          }),
+          expect.objectContaining({
+            id: 'pressure-reference-check',
+            outcome: 'pending',
+          }),
+        ],
+        guidedDiagnosisPrompts: [
+          expect.objectContaining({
+            id: 'pressure-diagnosis-repeat',
+            prompt: expect.stringContaining('prior drift pattern'),
+          }),
+        ],
+        linkedGuidance: [
+          expect.objectContaining({
+            id: 'guide-pressure',
+            title: 'Pressure verification guidance',
+            sourceReference: 'ISA local practice',
+          }),
+        ],
+      },
+    });
+    expect(shell?.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Checklist status',
+          value: 'Pending 2; Completed 0; Incomplete 0; Skipped 0',
+        }),
+        expect.objectContaining({
+          label: 'Guided diagnosis prompts',
+          value: '1 prompt(s) available',
+        }),
+        expect.objectContaining({
+          label: 'Linked guidance',
+          value: 'Pressure verification guidance',
+        }),
+      ]),
+    );
 
     await runtime.database.closeAsync?.();
   });
@@ -647,14 +778,29 @@ describe('SharedExecutionShellService', () => {
           observedLabel: 'Observed travel (%)',
         },
       },
+      guidance: {
+        checklistItems: [
+          expect.objectContaining({
+            id: 'valve-path-check',
+            outcome: 'pending',
+          }),
+        ],
+        guidedDiagnosisPrompts: [
+          expect.objectContaining({
+            id: 'valve-diagnosis-travel-lag',
+          }),
+        ],
+      },
     });
     expect(valveShell?.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: 'Checklist prompts',
-          value: expect.stringContaining(
-            'Confirm the movement path is clear before issuing a stroke command.',
-          ),
+          label: 'Checklist status',
+          value: 'Pending 1; Completed 0; Incomplete 0; Skipped 0',
+        }),
+        expect.objectContaining({
+          label: 'Guided diagnosis prompts',
+          value: '1 prompt(s) available',
         }),
       ]),
     );
@@ -864,6 +1010,95 @@ describe('SharedExecutionShellService', () => {
     });
 
     await secondRuntime.database.closeAsync?.();
+  });
+
+  it('creates visible non-blocking risk hooks for skipped or incomplete checklist items and preserves them after calculation save', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-guidance-risk-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    const riskFlaggedShell = service.updateChecklistOutcome(
+      service.updateChecklistOutcome(shell!, 'pressure-path-check', 'skipped'),
+      'pressure-reference-check',
+      'incomplete',
+    );
+
+    expect(riskFlaggedShell.guidance).toMatchObject({
+      riskState: 'flagged',
+      checklistItems: [
+        expect.objectContaining({
+          id: 'pressure-path-check',
+          outcome: 'skipped',
+        }),
+        expect.objectContaining({
+          id: 'pressure-reference-check',
+          outcome: 'incomplete',
+        }),
+      ],
+      riskHooks: [
+        expect.stringContaining('Skipped: Confirm impulse path'),
+        expect.stringContaining('Incomplete: Confirm the applied reference'),
+      ],
+    });
+    expect(riskFlaggedShell.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Guidance risk state',
+          value: 'Flagged',
+          state: 'missing',
+        }),
+        expect.objectContaining({
+          label: 'Risk hooks',
+          value: expect.stringContaining('Skipped: Confirm impulse path'),
+          state: 'missing',
+        }),
+      ]),
+    );
+
+    const calculatedShell = await service.saveCalculation(session, riskFlaggedShell, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    expect(calculatedShell.guidance).toMatchObject({
+      riskState: 'flagged',
+      checklistItems: [
+        expect.objectContaining({
+          id: 'pressure-path-check',
+          outcome: 'skipped',
+        }),
+        expect.objectContaining({
+          id: 'pressure-reference-check',
+          outcome: 'incomplete',
+        }),
+      ],
+    });
+
+    await runtime.database.closeAsync?.();
   });
 
   it('shows deterministic current result data in the history step, not only pass fail language', async () => {

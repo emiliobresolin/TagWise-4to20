@@ -1,4 +1,7 @@
-import type { SeededAssignedWorkPackageRecord } from './model';
+import type {
+  AssignedWorkPackageTemplateGuidanceItemSnapshot,
+  SeededAssignedWorkPackageRecord,
+} from './model';
 
 function buildNumericCaptureFields(
   expectedLabel: string,
@@ -38,6 +41,8 @@ function buildTemplate(definition: {
   conversionBasisSummary?: string;
   expectedRangeSummary?: string;
   checklistPrompts?: string[];
+  checklistSteps?: AssignedWorkPackageTemplateGuidanceItemSnapshot[];
+  guidedDiagnosisPrompts?: AssignedWorkPackageTemplateGuidanceItemSnapshot[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -60,10 +65,218 @@ function buildTemplate(definition: {
     conversionBasisSummary: definition.conversionBasisSummary,
     expectedRangeSummary: definition.expectedRangeSummary,
     checklistPrompts: definition.checklistPrompts,
+    checklistSteps: definition.checklistSteps,
+    guidedDiagnosisPrompts: definition.guidedDiagnosisPrompts,
     minimumSubmissionEvidence: definition.minimumSubmissionEvidence,
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
   };
+}
+
+function buildGuidanceItem(
+  id: string,
+  prompt: string,
+  whyItMatters: string,
+  helpsRuleOut: string,
+  sourceReference: string,
+): AssignedWorkPackageTemplateGuidanceItemSnapshot {
+  return {
+    id,
+    prompt,
+    whyItMatters,
+    helpsRuleOut,
+    sourceReference,
+  };
+}
+
+function buildPressureChecklistSteps() {
+  return [
+    buildGuidanceItem(
+      'pressure-path-check',
+      'Confirm impulse path, venting, and isolation condition before treating deviation as transmitter drift.',
+      'This separates installation-side restriction from true transmitter error.',
+      'plugged impulse lines or trapped process-side pressure',
+      'TAGWISE-BP-PT-001',
+    ),
+    buildGuidanceItem(
+      'pressure-reference-check',
+      'Confirm the applied reference is stable and traceable before saving the checkpoint.',
+      'An unstable reference can create false span error and wasted recalibration work.',
+      'unstable pressure source or setup error',
+      'TAGWISE-BP-PT-001',
+    ),
+  ];
+}
+
+function buildPressureDiagnosisPrompts() {
+  return [
+    buildGuidanceItem(
+      'pressure-diagnosis-loop',
+      'If deviation grows with span, compare loop output and reference stability before recalibration.',
+      'Growing error across the span can come from setup or loop-side influence, not only sensor drift.',
+      'loop-side scaling or reference instability',
+      'TAGWISE-BP-PT-001',
+    ),
+    buildGuidanceItem(
+      'pressure-diagnosis-repeat',
+      'If the result repeats the prior drift pattern, inspect sensing path and manifold condition first.',
+      'Repeated patterns often point to recurring field conditions rather than sudden device failure.',
+      'recurring manifold or impulse line problems',
+      'TAGWISE-BP-PT-001',
+    ),
+  ];
+}
+
+function buildTemperatureChecklistSteps() {
+  return [
+    buildGuidanceItem(
+      'temperature-stability-check',
+      'Confirm the simulated or applied temperature input is stable before recording the checkpoint.',
+      'Stable reference input prevents false offset readings during verification.',
+      'unstable simulator output or changing reference conditions',
+      'TAGWISE-BP-TT-002',
+    ),
+    buildGuidanceItem(
+      'temperature-termination-check',
+      'Confirm RTD or input termination is secure before treating the result as calibration drift.',
+      'Loose termination can mimic offset or intermittent noise during a temperature check.',
+      'termination, wiring, or contact resistance issues',
+      'TAGWISE-BP-TT-002',
+    ),
+  ];
+}
+
+function buildTemperatureDiagnosisPrompts() {
+  return [
+    buildGuidanceItem(
+      'temperature-diagnosis-noise',
+      'If noise or offset appears, recheck simulator leads and terminal tightness before adjustment.',
+      'Basic connection issues can look like sensor or transmitter drift.',
+      'simulator lead or terminal-block problems',
+      'TAGWISE-BP-TT-002',
+    ),
+    buildGuidanceItem(
+      'temperature-diagnosis-config',
+      'If deviation is consistent across all points, compare configuration and sensor type mapping first.',
+      'Consistent bias across points often indicates configuration mismatch rather than random error.',
+      'sensor-type or range-configuration mismatch',
+      'TAGWISE-BP-TT-002',
+    ),
+  ];
+}
+
+function buildLevelChecklistSteps() {
+  return [
+    buildGuidanceItem(
+      'level-reference-check',
+      'Confirm the level reference datum before capturing the result.',
+      'Incorrect reference datum can create false upper-range or lower-range deviation.',
+      'incorrect tank reference or datum setup',
+      'TAGWISE-BP-LT-001',
+    ),
+    buildGuidanceItem(
+      'level-process-condition-check',
+      'Confirm the process condition is settled before treating the output bias as instrument drift.',
+      'Unsettled process conditions can distort the comparison against the cached range.',
+      'transient process condition or unstable level reference',
+      'TAGWISE-BP-LT-001',
+    ),
+  ];
+}
+
+function buildLevelDiagnosisPrompts() {
+  return [
+    buildGuidanceItem(
+      'level-diagnosis-high-end',
+      'If only high-end points shift, inspect reference datum and mounting before recalibration.',
+      'High-end bias often points to setup or geometry issues before device drift.',
+      'reference, mounting, or installation geometry issues',
+      'TAGWISE-BP-LT-001',
+    ),
+    buildGuidanceItem(
+      'level-diagnosis-region-bias',
+      'If bias repeats in the same operating region, compare process conditions and signal path first.',
+      'Recurring regional bias usually needs field-condition review before adjustment.',
+      'recurring process-condition or path-related bias',
+      'TAGWISE-BP-LT-001',
+    ),
+  ];
+}
+
+function buildLoopChecklistSteps() {
+  return [
+    buildGuidanceItem(
+      'loop-supply-check',
+      'Confirm supply, polarity, and continuity before accepting a current mismatch.',
+      'Simple loop-side issues can mimic instrument problems in a 4-20 mA check.',
+      'basic wiring, polarity, or supply faults',
+      'TAGWISE-BP-LOOP-001',
+    ),
+    buildGuidanceItem(
+      'loop-conversion-check',
+      'Confirm the conversion basis and configured range before saving loop deviation.',
+      'A wrong conversion basis can make the current result look bad even when the device is behaving correctly.',
+      'range or scaling mismatch in the loop setup',
+      'TAGWISE-BP-LOOP-001',
+    ),
+  ];
+}
+
+function buildLoopDiagnosisPrompts() {
+  return [
+    buildGuidanceItem(
+      'loop-diagnosis-mid-range',
+      'If mismatch repeats in the mid-range, compare scaling and reference injection before suspecting hardware.',
+      'Mid-range drift can come from setup and scaling issues, not only device failure.',
+      'scaling or injected-reference mismatch',
+      'TAGWISE-BP-LOOP-001',
+    ),
+    buildGuidanceItem(
+      'loop-diagnosis-instability',
+      'If current is unstable, inspect power and continuity before escalating to device fault.',
+      'Instability across points is often caused by supply or continuity problems first.',
+      'power, continuity, or intermittent loop faults',
+      'TAGWISE-BP-LOOP-001',
+    ),
+  ];
+}
+
+function buildValveChecklistSteps() {
+  return [
+    buildGuidanceItem(
+      'valve-path-check',
+      'Confirm the movement path and required permissives are clear before judging the stroke or feedback result.',
+      'This keeps the movement check grounded in actual field readiness before escalation.',
+      'blocked movement path or missing permissive conditions',
+      'TAGWISE-BP-XV-003',
+    ),
+    buildGuidanceItem(
+      'valve-supply-feedback-check',
+      'Confirm actuator supply and feedback availability before concluding a valve fault.',
+      'Supply or indication gaps can look like travel failure when the valve is not the root cause.',
+      'air supply, control enable, or feedback availability issues',
+      'TAGWISE-BP-XV-003',
+    ),
+  ];
+}
+
+function buildValveDiagnosisPrompts() {
+  return [
+    buildGuidanceItem(
+      'valve-diagnosis-travel-lag',
+      'If commanded position changes but travel lags, inspect supply and mechanical restriction before escalation.',
+      'Lagging response needs a quick field check before treating it as a confirmed device defect.',
+      'air-supply weakness or mechanical restriction',
+      'TAGWISE-BP-XV-003',
+    ),
+    buildGuidanceItem(
+      'valve-diagnosis-feedback-mismatch',
+      'If feedback disagrees with travel, separate positioner or feedback issues from actuator movement first.',
+      'Feedback mismatch does not always mean the valve itself failed to move.',
+      'positioner, linkage, or feedback indication issues',
+      'TAGWISE-BP-XV-003',
+    ),
+  ];
 }
 
 export function buildSeedAssignedWorkPackages(
@@ -188,6 +401,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture structured pressure checkpoints before recalibration and compare measured versus expected values.',
             expectedLabel: 'Expected pressure',
             observedLabel: 'Measured pressure',
+            checklistSteps: buildPressureChecklistSteps(),
+            guidedDiagnosisPrompts: buildPressureDiagnosisPrompts(),
             minimumSubmissionEvidence: ['as-found readings', 'instrument note'],
             expectedEvidence: ['supporting photo', 'loop condition note'],
             historyComparisonExpectation: 'compare last approved span error and repeated drift',
@@ -203,6 +418,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture post-adjustment pressure checkpoints and confirm the final instrument state against expected values.',
             expectedLabel: 'Expected pressure',
             observedLabel: 'Measured pressure',
+            checklistSteps: buildPressureChecklistSteps(),
+            guidedDiagnosisPrompts: buildPressureDiagnosisPrompts(),
             minimumSubmissionEvidence: ['as-left readings', 'adjustment note'],
             expectedEvidence: ['supporting photo', 'adjustment reference note'],
             historyComparisonExpectation: 'compare final result against last approved as-left check',
@@ -218,6 +435,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture applied checkpoints and confirm the loop output against the expected operating range.',
             expectedLabel: 'Expected loop value',
             observedLabel: 'Measured loop value',
+            checklistSteps: buildPressureChecklistSteps(),
+            guidedDiagnosisPrompts: buildPressureDiagnosisPrompts(),
             minimumSubmissionEvidence: ['loop checkpoints', 'measured outputs'],
             expectedEvidence: ['reference source note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated loop or configuration drift at tested points',
@@ -233,6 +452,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture simulated temperature or RTD checkpoints and compare the reported output at each point.',
             expectedLabel: 'Simulated input',
             observedLabel: 'Reported output',
+            checklistSteps: buildTemperatureChecklistSteps(),
+            guidedDiagnosisPrompts: buildTemperatureDiagnosisPrompts(),
             minimumSubmissionEvidence: ['simulated inputs', 'reported outputs'],
             expectedEvidence: ['input source note', 'supporting photo'],
             historyComparisonExpectation: 'compare last approved zero/span drift pattern',
@@ -248,6 +469,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture calibration checkpoints and verify the measured output against the expected temperature values.',
             expectedLabel: 'Expected temperature',
             observedLabel: 'Measured output',
+            checklistSteps: buildTemperatureChecklistSteps(),
+            guidedDiagnosisPrompts: buildTemperatureDiagnosisPrompts(),
             minimumSubmissionEvidence: ['calibration checkpoints', 'measured outputs'],
             expectedEvidence: ['reference source note', 'configuration note'],
             historyComparisonExpectation: 'compare last comparable verification result and drift pattern',
@@ -263,6 +486,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture expected and measured range checkpoints to verify the transmitter across the configured operating band.',
             expectedLabel: 'Expected temperature',
             observedLabel: 'Measured output',
+            checklistSteps: buildTemperatureChecklistSteps(),
+            guidedDiagnosisPrompts: buildTemperatureDiagnosisPrompts(),
             minimumSubmissionEvidence: ['range checkpoints', 'measured outputs'],
             expectedEvidence: ['input source note', 'supporting photo'],
             historyComparisonExpectation: 'compare comparable temperature verification results when available',
@@ -283,6 +508,8 @@ export function buildSeedAssignedWorkPackages(
             calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
             conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
             expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+            checklistSteps: buildLoopChecklistSteps(),
+            guidedDiagnosisPrompts: buildLoopDiagnosisPrompts(),
             minimumSubmissionEvidence: ['loop checkpoints', 'measured current values'],
             expectedEvidence: ['supply/continuity note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated continuity loss, instability, or loop drift at the same checkpoints',
@@ -303,6 +530,8 @@ export function buildSeedAssignedWorkPackages(
             calculationRangeOverride: { min: 4, max: 20, unit: 'mA' },
             conversionBasisSummary: 'Linear 4-20 mA conversion derived from the configured process range.',
             expectedRangeSummary: '0 to 100 % maps to 4-20 mA.',
+            checklistSteps: buildLoopChecklistSteps(),
+            guidedDiagnosisPrompts: buildLoopDiagnosisPrompts(),
             minimumSubmissionEvidence: ['validated current points', 'process reference note'],
             expectedEvidence: ['input source note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated signal validation drift or intermittent response',
@@ -324,6 +553,8 @@ export function buildSeedAssignedWorkPackages(
             conversionBasisSummary:
               'Expected current is derived from the configured process range using a linear 4-20 mA conversion basis.',
             expectedRangeSummary: '0 to 100 % process value range / 4-20 mA signal range.',
+            checklistSteps: buildLoopChecklistSteps(),
+            guidedDiagnosisPrompts: buildLoopDiagnosisPrompts(),
             minimumSubmissionEvidence: ['expected current reference', 'measured current values'],
             expectedEvidence: ['conversion basis note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated conversion mismatch or process-to-signal deviation patterns',
@@ -448,6 +679,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture applied low, mid, and high checkpoints and compare the observed output across the configured level range.',
             expectedLabel: 'Expected level',
             observedLabel: 'Observed output',
+            checklistSteps: buildLevelChecklistSteps(),
+            guidedDiagnosisPrompts: buildLevelDiagnosisPrompts(),
             minimumSubmissionEvidence: ['level checkpoints', 'output values'],
             expectedEvidence: ['reference setup note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated lower-range or upper-range bias',
@@ -463,6 +696,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture calibration checkpoints and verify the measured level output against the configured reference values.',
             expectedLabel: 'Expected level',
             observedLabel: 'Measured output',
+            checklistSteps: buildLevelChecklistSteps(),
+            guidedDiagnosisPrompts: buildLevelDiagnosisPrompts(),
             minimumSubmissionEvidence: ['calibration checkpoints', 'measured outputs'],
             expectedEvidence: ['reference setup note', 'adjustment note'],
             historyComparisonExpectation: 'compare recurring calibration drift before recalibration',
@@ -478,6 +713,8 @@ export function buildSeedAssignedWorkPackages(
               'Capture expected level references and compare them against the observed transmitter output at each point.',
             expectedLabel: 'Expected level',
             observedLabel: 'Observed output',
+            checklistSteps: buildLevelChecklistSteps(),
+            guidedDiagnosisPrompts: buildLevelDiagnosisPrompts(),
             minimumSubmissionEvidence: ['expected references', 'observed outputs'],
             expectedEvidence: ['reference setup note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated bias at the same operating region',
@@ -498,6 +735,8 @@ export function buildSeedAssignedWorkPackages(
               'Verify actuator supply or permissive readiness before concluding a movement fault.',
               'If travel is skipped or interrupted, record a technician justification locally.',
             ],
+            checklistSteps: buildValveChecklistSteps(),
+            guidedDiagnosisPrompts: buildValveDiagnosisPrompts(),
             minimumSubmissionEvidence: ['commanded points', 'observed travel responses'],
             expectedEvidence: ['supporting photo', 'actuator note'],
             historyComparisonExpectation: 'compare repeat sticking or delayed travel notes',
@@ -518,6 +757,8 @@ export function buildSeedAssignedWorkPackages(
               'Use concise prompts to separate positioner feedback issues from actuator movement issues.',
               'If feedback is unavailable, record that condition instead of blocking the check.',
             ],
+            checklistSteps: buildValveChecklistSteps(),
+            guidedDiagnosisPrompts: buildValveDiagnosisPrompts(),
             minimumSubmissionEvidence: [
               'commanded points',
               'observed feedback responses',

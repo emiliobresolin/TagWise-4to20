@@ -29,6 +29,8 @@ export interface SharedExecutionTemplateContract {
   conversionBasisSummary: string | null;
   expectedRangeSummary: string | null;
   checklistPrompts: string[];
+  checklistSteps: SharedExecutionGuidanceItem[];
+  guidedDiagnosisPrompts: SharedExecutionGuidanceItem[];
   minimumSubmissionEvidence: string[];
   expectedEvidence: string[];
   historyComparisonExpectation: string;
@@ -117,6 +119,41 @@ export interface SharedExecutionShell {
   steps: SharedExecutionStepView[];
   progress: SharedExecutionProgressState;
   calculation: SharedExecutionCalculationState | null;
+  guidance: SharedExecutionGuidanceState;
+}
+
+export interface SharedExecutionGuidanceItem {
+  id: string;
+  prompt: string;
+  whyItMatters: string;
+  helpsRuleOut: string;
+  sourceReference: string;
+}
+
+export type SharedExecutionChecklistOutcome =
+  | 'pending'
+  | 'completed'
+  | 'incomplete'
+  | 'skipped';
+
+export interface SharedExecutionChecklistItem extends SharedExecutionGuidanceItem {
+  outcome: SharedExecutionChecklistOutcome;
+}
+
+export interface SharedExecutionLinkedGuidanceSnippet {
+  id: string;
+  title: string;
+  summary: string;
+  whyItMatters: string;
+  sourceReference: string;
+}
+
+export interface SharedExecutionGuidanceState {
+  checklistItems: SharedExecutionChecklistItem[];
+  guidedDiagnosisPrompts: SharedExecutionGuidanceItem[];
+  linkedGuidance: SharedExecutionLinkedGuidanceSnippet[];
+  riskState: 'clear' | 'flagged';
+  riskHooks: string[];
 }
 
 export interface StoredExecutionProgressRecord {

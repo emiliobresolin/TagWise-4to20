@@ -35,7 +35,14 @@ import {
   resolveExplicitExecutionTemplateSelection,
 } from '../features/execution/executionTemplateSelection';
 import { SharedExecutionShellService } from '../features/execution/sharedExecutionShellService';
-import type { SharedExecutionField, SharedExecutionShell } from '../features/execution/model';
+import type {
+  SharedExecutionChecklistItem,
+  SharedExecutionChecklistOutcome,
+  SharedExecutionField,
+  SharedExecutionGuidanceItem,
+  SharedExecutionLinkedGuidanceSnippet,
+  SharedExecutionShell,
+} from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
 import { LocalTagContextService } from '../features/work-packages/localTagContextService';
 import { LocalTagEntryService } from '../features/work-packages/localTagEntryService';
@@ -720,6 +727,24 @@ export function TagWiseApp() {
                 },
               },
             },
+          },
+    );
+  }
+
+  function handleChecklistOutcomeChange(
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ) {
+    setStatus((current) =>
+      current.type !== 'ready' || !current.executionShell
+        ? current
+        : {
+            ...current,
+            executionShell: current.executionShellService.updateChecklistOutcome(
+              current.executionShell,
+              checklistItemId,
+              outcome,
+            ),
           },
     );
   }
@@ -1710,6 +1735,13 @@ export function TagWiseApp() {
                           </View>
                         ) : null}
 
+                        {selectedExecutionStep.kind === 'guidance' ? (
+                          <ExecutionGuidancePanel
+                            guidance={readyState.executionShell.guidance}
+                            onChecklistOutcomeChange={handleChecklistOutcomeChange}
+                          />
+                        ) : null}
+
                         <View style={styles.metricGrid}>
                           <Pressable
                             accessibilityRole="button"
@@ -1988,6 +2020,203 @@ function ExecutionFieldCard({
   );
 }
 
+function ExecutionGuidancePanel({
+  guidance,
+  onChecklistOutcomeChange,
+}: {
+  guidance: SharedExecutionShell['guidance'];
+  onChecklistOutcomeChange: (
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ) => void;
+}) {
+  return (
+    <View style={styles.listCard}>
+      <Text style={styles.metricLabel}>Guidance flow</Text>
+      <Text style={styles.helperText}>
+        Use the cached checklist and diagnosis prompts as lightweight field support. They stay
+        visible, local, and non-blocking.
+      </Text>
+
+      <View
+        style={[
+          styles.metricCard,
+          guidance.riskState === 'flagged' ? styles.missingMetricCard : null,
+        ]}
+      >
+        <Text style={styles.metricLabel}>Risk hooks</Text>
+        <Text
+          style={[
+            styles.metricValue,
+            guidance.riskState === 'flagged' ? styles.missingMetricValue : null,
+          ]}
+        >
+          {guidance.riskState === 'flagged'
+            ? 'Checklist risk flagged'
+            : 'No checklist risk flagged'}
+        </Text>
+        <Text style={styles.helperText}>
+          {guidance.riskHooks.length > 0
+            ? guidance.riskHooks.join(' ')
+            : 'Checklist items can still be skipped or left incomplete without blocking the shell.'}
+        </Text>
+      </View>
+
+      <Text style={styles.sectionTitle}>Checklist steps</Text>
+      {guidance.checklistItems.length > 0 ? (
+        guidance.checklistItems.map((item) => (
+          <ExecutionChecklistCard
+            key={item.id}
+            item={item}
+            onChecklistOutcomeChange={onChecklistOutcomeChange}
+          />
+        ))
+      ) : (
+        <Text style={styles.helperText}>No checklist steps are attached to this template.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Guided diagnosis prompts</Text>
+      {guidance.guidedDiagnosisPrompts.length > 0 ? (
+        guidance.guidedDiagnosisPrompts.map((item) => (
+          <GuidancePromptCard key={item.id} item={item} label="Diagnosis prompt" />
+        ))
+      ) : (
+        <Text style={styles.helperText}>No guided diagnosis prompts are attached locally.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Linked guidance references</Text>
+      {guidance.linkedGuidance.length > 0 ? (
+        guidance.linkedGuidance.map((item) => (
+          <LinkedGuidanceCard key={item.id} item={item} />
+        ))
+      ) : (
+        <Text style={styles.helperText}>No linked guidance references were cached for this tag.</Text>
+      )}
+    </View>
+  );
+}
+
+function ExecutionChecklistCard({
+  item,
+  onChecklistOutcomeChange,
+}: {
+  item: SharedExecutionChecklistItem;
+  onChecklistOutcomeChange: (
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ) => void;
+}) {
+  return (
+    <View
+      style={[
+        styles.metricCard,
+        item.outcome === 'incomplete' || item.outcome === 'skipped'
+          ? styles.missingMetricCard
+          : null,
+      ]}
+    >
+      <Text style={styles.metricLabel}>Checklist step</Text>
+      <Text
+        style={[
+          styles.metricValue,
+          item.outcome === 'incomplete' || item.outcome === 'skipped'
+            ? styles.missingMetricValue
+            : null,
+        ]}
+      >
+        {item.prompt}
+      </Text>
+      <Text style={styles.helperText}>Why it matters: {item.whyItMatters}</Text>
+      <Text style={styles.helperText}>Helps rule out: {item.helpsRuleOut}</Text>
+      <Text style={styles.helperText}>Source: {item.sourceReference}</Text>
+      <Text style={styles.helperText}>Status: {toChecklistOutcomeLabel(item.outcome)}</Text>
+
+      <View style={styles.metricGrid}>
+        <ChecklistOutcomeButton
+          active={item.outcome === 'completed'}
+          label="Complete"
+          onPress={() => onChecklistOutcomeChange(item.id, 'completed')}
+        />
+        <ChecklistOutcomeButton
+          active={item.outcome === 'incomplete'}
+          label="Incomplete"
+          onPress={() => onChecklistOutcomeChange(item.id, 'incomplete')}
+        />
+      </View>
+      <View style={styles.metricGrid}>
+        <ChecklistOutcomeButton
+          active={item.outcome === 'skipped'}
+          label="Skip"
+          onPress={() => onChecklistOutcomeChange(item.id, 'skipped')}
+        />
+        <ChecklistOutcomeButton
+          active={item.outcome === 'pending'}
+          label="Reset"
+          onPress={() => onChecklistOutcomeChange(item.id, 'pending')}
+        />
+      </View>
+    </View>
+  );
+}
+
+function ChecklistOutcomeButton({
+  active,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={[styles.secondaryButton, active ? styles.routeButtonActive : null]}
+    >
+      <Text
+        style={[styles.secondaryButtonLabel, active ? styles.routeButtonLabelActive : null]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function GuidancePromptCard({
+  item,
+  label,
+}: {
+  item: SharedExecutionGuidanceItem;
+  label: string;
+}) {
+  return (
+    <View style={styles.metricCard}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricValue}>{item.prompt}</Text>
+      <Text style={styles.helperText}>Why it matters: {item.whyItMatters}</Text>
+      <Text style={styles.helperText}>Helps rule out: {item.helpsRuleOut}</Text>
+      <Text style={styles.helperText}>Source: {item.sourceReference}</Text>
+    </View>
+  );
+}
+
+function LinkedGuidanceCard({
+  item,
+}: {
+  item: SharedExecutionLinkedGuidanceSnippet;
+}) {
+  return (
+    <View style={styles.metricCard}>
+      <Text style={styles.metricLabel}>Linked guidance</Text>
+      <Text style={styles.metricValue}>{item.title}</Text>
+      <Text style={styles.helperText}>{item.summary}</Text>
+      <Text style={styles.helperText}>Why it matters: {item.whyItMatters}</Text>
+      <Text style={styles.helperText}>Source: {item.sourceReference}</Text>
+    </View>
+  );
+}
+
 function formatTimestamp(value: string) {
   return new Date(value).toLocaleString();
 }
@@ -2013,6 +2242,19 @@ function toAcceptanceLabel(value: 'pass' | 'fail' | 'unavailable') {
       return 'Fail';
     default:
       return 'Unavailable';
+  }
+}
+
+function toChecklistOutcomeLabel(value: SharedExecutionChecklistOutcome) {
+  switch (value) {
+    case 'completed':
+      return 'Completed';
+    case 'incomplete':
+      return 'Incomplete';
+    case 'skipped':
+      return 'Skipped';
+    default:
+      return 'Pending';
   }
 }
 
@@ -2198,6 +2440,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     color: '#64748b',
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0f172a',
   },
   listCard: {
     backgroundColor: '#f8faf9',
