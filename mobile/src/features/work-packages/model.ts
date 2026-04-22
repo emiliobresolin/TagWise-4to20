@@ -128,7 +128,12 @@ export interface LocalAssignedTagEntry {
 }
 
 export type LocalTagContextFieldState = 'available' | 'missing';
-export type LocalTagHistoryPreviewState = 'available' | 'missing' | 'unavailable';
+export type LocalTagHistoryPreviewState =
+  | 'available'
+  | 'stale'
+  | 'age-unknown'
+  | 'missing'
+  | 'unavailable';
 export type LocalTagReferencePointersState = 'available' | 'missing' | 'unavailable';
 
 export interface LocalExecutionTemplateOption {
@@ -153,6 +158,8 @@ export interface LocalTagHistoryPreview {
   summary: string;
   detail: string;
   lastObservedAt: string | null;
+  lastResult: string | null;
+  recurrenceCue: string | null;
 }
 
 export interface LocalTagReferencePointers {

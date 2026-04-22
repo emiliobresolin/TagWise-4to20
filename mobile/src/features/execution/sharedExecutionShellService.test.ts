@@ -181,6 +181,22 @@ const baseSnapshot: AssignedWorkPackageSnapshot = {
   ],
 };
 
+const noHistorySnapshot: AssignedWorkPackageSnapshot = {
+  ...baseSnapshot,
+  summary: {
+    ...baseSnapshot.summary,
+    id: 'wp-local-004',
+    title: 'Assigned package without history',
+  },
+  tags: [
+    {
+      ...baseSnapshot.tags[0]!,
+      id: 'tag-no-history',
+      historySummaryId: '',
+    },
+  ],
+};
+
 const familyPackSnapshot: AssignedWorkPackageSnapshot = {
   contractVersion: '2026-04-v1',
   generatedAt: '2026-04-19T10:00:00.000Z',
@@ -774,6 +790,38 @@ describe('SharedExecutionShellService', () => {
         acceptance: 'pass',
       },
     });
+    expect(calculatedShell.steps.find((step) => step.id === 'history')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Current result',
+          value: expect.stringContaining('Pass'),
+        }),
+        expect.objectContaining({
+          label: 'Current signed deviation',
+          value: '0.02 bar',
+        }),
+        expect.objectContaining({
+          label: 'Current absolute deviation',
+          value: '0.02 bar',
+        }),
+        expect.objectContaining({
+          label: 'Current percent of span',
+          value: '0.2%',
+        }),
+        expect.objectContaining({
+          label: 'Current vs prior',
+          value: 'Pass now versus Pass previously.',
+        }),
+        expect.objectContaining({
+          label: 'Prior result',
+          value: 'Pass',
+        }),
+        expect.objectContaining({
+          label: 'Recurrence cue',
+          value: 'Stable over the last two interventions.',
+        }),
+      ]),
+    );
 
     await firstRuntime.database.closeAsync?.();
 
@@ -816,6 +864,113 @@ describe('SharedExecutionShellService', () => {
     });
 
     await secondRuntime.database.closeAsync?.();
+  });
+
+  it('shows deterministic current result data in the history step, not only pass fail language', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-history-current-data-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    const calculatedShell = await service.saveCalculation(session, shell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    expect(calculatedShell.steps.find((step) => step.id === 'history')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Current checkpoint',
+          value: 'Expected pressure (bar): 5; Measured pressure (bar): 5.02',
+        }),
+        expect.objectContaining({
+          label: 'Current signed deviation',
+          value: '0.02 bar',
+        }),
+        expect.objectContaining({
+          label: 'Current absolute deviation',
+          value: '0.02 bar',
+        }),
+        expect.objectContaining({
+          label: 'Current percent of span',
+          value: '0.2%',
+        }),
+      ]),
+    );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('keeps execution available when cached history is unavailable', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-history-unavailable-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(noHistorySnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      noHistorySnapshot.summary.id,
+      'tag-no-history',
+      'tpl-pressure-as-found',
+    );
+
+    expect(shell).toMatchObject({
+      workPackageId: noHistorySnapshot.summary.id,
+      tagCode: 'PT-101',
+    });
+    expect(shell?.steps.find((step) => step.id === 'history')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'History state',
+          value: 'Unavailable',
+        }),
+        expect.objectContaining({
+          label: 'Current vs prior',
+          value: 'Enter current values to compare them with cached history.',
+        }),
+      ]),
+    );
+
+    await runtime.database.closeAsync?.();
   });
 
   it('does not load a persisted calculation when the template contract version changes', async () => {

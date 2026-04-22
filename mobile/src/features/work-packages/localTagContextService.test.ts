@@ -150,6 +150,9 @@ describe('LocalTagContextService', () => {
       historyPreview: {
         state: 'available',
         summary: 'Last calibration was within tolerance.',
+        detail: expect.stringContaining('Cached history is recent enough for local comparison.'),
+        lastResult: 'Pass',
+        recurrenceCue: 'Stable over the last two interventions.',
       },
       referencePointers: {
         state: 'available',
@@ -230,10 +233,87 @@ describe('LocalTagContextService', () => {
       historyPreview: {
         state: 'unavailable',
         summary: 'No local history summary was attached to this tag.',
+        lastResult: null,
+        recurrenceCue: null,
       },
       referencePointers: {
         state: 'missing',
         detail: 'Missing template pointer(s): tpl-missing. Missing guidance pointer(s): guide-missing',
+      },
+    });
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('marks cached history as stale when the local package freshness is stale', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-tag-context-stale-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new LocalTagContextService({
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-20T12:30:00.000Z'),
+    });
+
+    await expect(
+      service.getTagContext(session, baseSnapshot.summary.id, 'tag-001'),
+    ).resolves.toMatchObject({
+      historyPreview: {
+        state: 'stale',
+        summary: 'Last calibration was within tolerance.',
+        detail: expect.stringContaining(
+          'The cached history came from an upstream snapshot older than 24 hours. Compare carefully and refresh when connected.',
+        ),
+        lastResult: 'Pass',
+        recurrenceCue: 'Stable over the last two interventions.',
+      },
+    });
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('marks cached history as age unknown when upstream freshness metadata is missing', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-tag-context-age-unknown-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    const ageUnknownSnapshot: AssignedWorkPackageSnapshot = {
+      ...baseSnapshot,
+      generatedAt: '',
+    };
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(ageUnknownSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new LocalTagContextService({
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    await expect(
+      service.getTagContext(session, ageUnknownSnapshot.summary.id, 'tag-001'),
+    ).resolves.toMatchObject({
+      historyPreview: {
+        state: 'age-unknown',
+        summary: 'Last calibration was within tolerance.',
+        detail: expect.stringContaining(
+          'History freshness metadata is missing. Refresh this package while connected before trusting the comparison.',
+        ),
+        lastResult: 'Pass',
+        recurrenceCue: 'Stable over the last two interventions.',
       },
     });
 

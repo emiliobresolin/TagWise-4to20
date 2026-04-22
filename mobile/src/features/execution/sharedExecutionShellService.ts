@@ -7,6 +7,7 @@ import type {
 } from '../work-packages/model';
 import { LocalExecutionTemplateRegistry } from './localExecutionTemplateRegistry';
 import type {
+  SharedExecutionCalculationAcceptance,
   SharedExecutionCalculationState,
   SharedExecutionCaptureFieldId,
   SharedExecutionField,
@@ -154,15 +155,14 @@ export class SharedExecutionShellService {
       .forUser(session.userId)
       .executionCalculations.saveCalculation(record);
 
-    return {
-      ...shell,
-      calculation: {
-        ...shell.calculation,
-        rawInputs,
-        result,
-        updatedAt,
-      },
-    };
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell ?? shell;
   }
 }
 
@@ -242,23 +242,7 @@ function buildExecutionShell(
         kind: 'history',
         summary: tagContext.historyPreview.summary,
         detail: `${tagContext.historyPreview.detail} Expected comparison: ${template.historyComparisonExpectation}.`,
-        fields: [
-          {
-            label: 'History state',
-            value: toDisplayState(tagContext.historyPreview.state),
-            state: mapHistoryFieldState(tagContext.historyPreview.state),
-          },
-          {
-            label: 'Last observed',
-            value: tagContext.historyPreview.lastObservedAt
-              ? new Date(tagContext.historyPreview.lastObservedAt).toLocaleString()
-              : tagContext.historyPreview.state === 'unavailable'
-                ? 'Not included in this package'
-                : 'Missing',
-            state: mapHistoryFieldState(tagContext.historyPreview.state),
-          },
-          availableField('History expectation', template.historyComparisonExpectation),
-        ],
+        fields: buildHistoryFields(tagContext, calculation, template.historyComparisonExpectation),
       },
       {
         id: 'guidance',
@@ -410,6 +394,8 @@ function mapHistoryFieldState(
 ): SharedExecutionField['state'] {
   switch (state) {
     case 'available':
+    case 'stale':
+    case 'age-unknown':
       return 'available';
     case 'missing':
       return 'missing';
@@ -431,13 +417,196 @@ function mapReferenceFieldState(
   }
 }
 
-function toDisplayState(state: 'available' | 'missing' | 'unavailable'): string {
+function toDisplayState(
+  state: 'available' | 'stale' | 'age-unknown' | 'missing' | 'unavailable',
+): string {
   switch (state) {
     case 'available':
       return 'Available';
+    case 'stale':
+      return 'Stale';
+    case 'age-unknown':
+      return 'Age unknown';
     case 'missing':
       return 'Missing';
     default:
       return 'Unavailable';
   }
+}
+
+function buildHistoryFields(
+  tagContext: LocalTagContext,
+  calculation: SharedExecutionCalculationState | null,
+  historyExpectation: string,
+): SharedExecutionField[] {
+  return [
+    {
+      label: 'History state',
+      value: toDisplayState(tagContext.historyPreview.state),
+      state: mapHistoryFieldState(tagContext.historyPreview.state),
+    },
+    {
+      label: 'Current result',
+      value: formatCurrentHistoryResult(calculation),
+      state: calculation?.result ? 'available' : 'unavailable',
+    },
+    {
+      label: 'Current checkpoint',
+      value: formatCurrentCheckpoint(calculation),
+      state: calculation?.result ? 'available' : 'unavailable',
+    },
+    {
+      label: 'Current signed deviation',
+      value: formatCurrentSignedDeviation(calculation),
+      state: calculation?.result ? 'available' : 'unavailable',
+    },
+    {
+      label: 'Current absolute deviation',
+      value: formatCurrentAbsoluteDeviation(calculation),
+      state: calculation?.result ? 'available' : 'unavailable',
+    },
+    {
+      label: 'Current percent of span',
+      value: formatCurrentPercentOfSpan(calculation),
+      state: calculation?.result ? 'available' : 'unavailable',
+    },
+    {
+      label: 'Current vs prior',
+      value: buildCurrentVsPriorSummary(calculation, tagContext),
+      state: mapCurrentVsPriorState(calculation, tagContext),
+    },
+    {
+      label: 'Prior result',
+      value: formatPriorResult(tagContext),
+      state: mapHistoryFieldState(tagContext.historyPreview.state),
+    },
+    {
+      label: 'Recurrence cue',
+      value: tagContext.historyPreview.recurrenceCue ?? 'No recurrence cue attached.',
+      state: mapHistoryFieldState(tagContext.historyPreview.state),
+    },
+    {
+      label: 'Last observed',
+      value: tagContext.historyPreview.lastObservedAt
+        ? new Date(tagContext.historyPreview.lastObservedAt).toLocaleString()
+        : tagContext.historyPreview.state === 'unavailable'
+          ? 'Not included in this package'
+          : 'Missing',
+      state: mapHistoryFieldState(tagContext.historyPreview.state),
+    },
+    availableField('History expectation', historyExpectation),
+  ];
+}
+
+function formatCurrentHistoryResult(calculation: SharedExecutionCalculationState | null): string {
+  if (!calculation?.result) {
+    return 'Not entered yet';
+  }
+
+  return `${toDisplayAcceptance(calculation.result.acceptance)} (${calculation.result.acceptanceReason})`;
+}
+
+function formatCurrentCheckpoint(calculation: SharedExecutionCalculationState | null): string {
+  if (!calculation?.result) {
+    return 'Not entered yet';
+  }
+
+  return `${calculation.definition.expectedLabel}: ${calculation.rawInputs.expectedValue}; ${calculation.definition.observedLabel}: ${calculation.rawInputs.observedValue}`;
+}
+
+function formatCurrentSignedDeviation(calculation: SharedExecutionCalculationState | null): string {
+  if (!calculation?.result) {
+    return 'Not entered yet';
+  }
+
+  return formatDeviation(calculation.result.signedDeviation, calculation.definition.unit);
+}
+
+function formatCurrentAbsoluteDeviation(
+  calculation: SharedExecutionCalculationState | null,
+): string {
+  if (!calculation?.result) {
+    return 'Not entered yet';
+  }
+
+  return formatDeviation(calculation.result.absoluteDeviation, calculation.definition.unit);
+}
+
+function formatCurrentPercentOfSpan(calculation: SharedExecutionCalculationState | null): string {
+  if (!calculation?.result) {
+    return 'Not entered yet';
+  }
+
+  return calculation.result.percentOfSpan !== null
+    ? `${formatNumber(calculation.result.percentOfSpan)}%`
+    : 'Not available';
+}
+
+function buildCurrentVsPriorSummary(
+  calculation: SharedExecutionCalculationState | null,
+  tagContext: LocalTagContext,
+): string {
+  if (!calculation?.result) {
+    return 'Enter current values to compare them with cached history.';
+  }
+
+  if (tagContext.historyPreview.state === 'unavailable') {
+    return 'Current result saved. No cached history was included with this tag.';
+  }
+
+  if (tagContext.historyPreview.state === 'missing') {
+    return 'Current result saved. The cached history pointer is missing from this package.';
+  }
+
+  if (!tagContext.historyPreview.lastResult) {
+    return 'Current result saved. Prior result label is not available in the cached history.';
+  }
+
+  return `${toDisplayAcceptance(calculation.result.acceptance)} now versus ${tagContext.historyPreview.lastResult} previously.`;
+}
+
+function mapCurrentVsPriorState(
+  calculation: SharedExecutionCalculationState | null,
+  tagContext: LocalTagContext,
+): SharedExecutionField['state'] {
+  if (!calculation?.result) {
+    return 'unavailable';
+  }
+
+  return mapHistoryFieldState(tagContext.historyPreview.state);
+}
+
+function formatPriorResult(tagContext: LocalTagContext): string {
+  switch (tagContext.historyPreview.state) {
+    case 'available':
+    case 'stale':
+    case 'age-unknown':
+      return tagContext.historyPreview.lastResult ?? 'Prior result label missing.';
+    case 'missing':
+      return 'History summary pointer missing.';
+    default:
+      return 'Not included in this package';
+  }
+}
+
+function toDisplayAcceptance(
+  acceptance: SharedExecutionCalculationAcceptance,
+): string {
+  switch (acceptance) {
+    case 'pass':
+      return 'Pass';
+    case 'fail':
+      return 'Fail';
+    default:
+      return 'Unavailable';
+  }
+}
+
+function formatDeviation(value: number, unit: string | null): string {
+  const formatted = formatNumber(value);
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function formatNumber(value: number): string {
+  return value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }

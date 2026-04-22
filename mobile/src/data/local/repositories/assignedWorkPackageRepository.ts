@@ -268,6 +268,38 @@ export class AssignedWorkPackageRepository {
     return rows.map(mapAssignedWorkPackageSummaryRow);
   }
 
+  async getSummary(workPackageId: string): Promise<LocalAssignedWorkPackageSummary | null> {
+    const row = await this.database.getFirstAsync<AssignedWorkPackageSummaryRow>(
+      `
+        SELECT
+          summary.work_package_id,
+          summary.source_reference,
+          summary.title,
+          summary.assigned_team,
+          summary.priority,
+          summary.status,
+          summary.package_version,
+          summary.snapshot_contract_version,
+          summary.tag_count,
+          summary.due_starts_at,
+          summary.due_ends_at,
+          summary.updated_at,
+          summary.last_downloaded_at,
+          CASE WHEN snapshot.work_package_id IS NULL THEN 0 ELSE 1 END as has_snapshot,
+          snapshot.generated_at as snapshot_generated_at
+        FROM assigned_work_package_summaries summary
+        LEFT JOIN assigned_work_package_snapshots snapshot
+          ON snapshot.owner_user_id = summary.owner_user_id
+         AND snapshot.work_package_id = summary.work_package_id
+        WHERE summary.owner_user_id = ?
+          AND summary.work_package_id = ?;
+      `,
+      [this.ownerUserId, workPackageId],
+    );
+
+    return row ? mapAssignedWorkPackageSummaryRow(row) : null;
+  }
+
   async getSnapshot(workPackageId: string): Promise<AssignedWorkPackageSnapshot | null> {
     const row = await this.database.getFirstAsync<AssignedWorkPackageSnapshotRow>(
       `

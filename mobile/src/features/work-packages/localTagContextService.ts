@@ -2,16 +2,17 @@ import type { ActiveUserSession } from '../auth/model';
 import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
 import type {
   AssignedWorkPackageGuidanceSnapshot,
-  AssignedWorkPackageHistorySummarySnapshot,
   AssignedWorkPackageSnapshot,
   AssignedWorkPackageTagSnapshot,
   AssignedWorkPackageTemplateSnapshot,
+  LocalAssignedWorkPackageSummary,
   LocalExecutionTemplateOption,
   LocalTagContext,
   LocalTagContextField,
   LocalTagHistoryPreview,
   LocalTagReferencePointers,
 } from './model';
+import { ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS } from './assignedWorkPackageReadiness';
 
 interface LocalTagContextServiceDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
@@ -30,9 +31,11 @@ export class LocalTagContextService {
     workPackageId: string,
     tagId: string,
   ): Promise<LocalTagContext | null> {
-    const snapshot = await this.dependencies.userPartitions
-      .forUser(session.userId)
-      .workPackages.getSnapshot(workPackageId);
+    const workPackages = this.dependencies.userPartitions.forUser(session.userId).workPackages;
+    const [snapshot, packageSummary] = await Promise.all([
+      workPackages.getSnapshot(workPackageId),
+      workPackages.getSummary(workPackageId),
+    ]);
 
     if (!snapshot) {
       return null;
@@ -59,7 +62,7 @@ export class LocalTagContextService {
       tolerance: mapField('Tolerance', tag.tolerance),
       criticality: mapCriticalityField(tag.criticality),
       dueIndicator: mapDueIndicator(snapshot, this.now()),
-      historyPreview: mapHistoryPreview(snapshot, tag),
+      historyPreview: mapHistoryPreview(snapshot, tag, packageSummary, this.now()),
       referencePointers: mapReferencePointers(snapshot, tag),
     };
   }
@@ -134,6 +137,8 @@ function mapDueIndicator(snapshot: AssignedWorkPackageSnapshot, now: Date) {
 function mapHistoryPreview(
   snapshot: AssignedWorkPackageSnapshot,
   tag: AssignedWorkPackageTagSnapshot,
+  packageSummary: LocalAssignedWorkPackageSummary | null,
+  now: Date,
 ): LocalTagHistoryPreview {
   const historySummaryId = normalizeDisplayValue(tag.historySummaryId);
   if (!historySummaryId) {
@@ -143,6 +148,8 @@ function mapHistoryPreview(
       summary: 'No local history summary was attached to this tag.',
       detail: 'Proceed with visible risk if history is needed later.',
       lastObservedAt: null,
+      lastResult: null,
+      recurrenceCue: null,
     };
   }
 
@@ -154,15 +161,21 @@ function mapHistoryPreview(
       summary: 'History reference is missing from the downloaded package.',
       detail: `Expected local history summary ${historySummaryId}.`,
       lastObservedAt: null,
+      lastResult: null,
+      recurrenceCue: null,
     };
   }
 
+  const freshness = resolveHistoryFreshness(packageSummary, now);
+
   return {
-    state: 'available',
+    state: freshness.state,
     title: 'History preview',
     summary: summary.summaryText,
-    detail: buildHistoryDetail(summary),
+    detail: buildHistoryDetail(summary, freshness.detail),
     lastObservedAt: summary.lastObservedAt,
+    lastResult: normalizeDisplayValue(summary.lastResult),
+    recurrenceCue: normalizeDisplayValue(summary.trendHint),
   };
 }
 
@@ -258,12 +271,21 @@ function formatTemplateOptionLabel(template: LocalExecutionTemplateOption): stri
   return `${template.title} (${template.testPattern})`;
 }
 
-function buildHistoryDetail(summary: AssignedWorkPackageHistorySummarySnapshot): string {
-  const parts = [normalizeDisplayValue(summary.lastResult), normalizeDisplayValue(summary.trendHint)].filter(
-    (value): value is string => Boolean(value),
-  );
+function buildHistoryDetail(
+  summary: AssignedWorkPackageSnapshot['historySummaries'][number],
+  freshnessDetail: string,
+): string {
+  const parts = [
+    normalizeDisplayValue(summary.lastResult)
+      ? `Last result: ${normalizeDisplayValue(summary.lastResult)}`
+      : null,
+    normalizeDisplayValue(summary.trendHint)
+      ? `Recurrence cue: ${normalizeDisplayValue(summary.trendHint)}`
+      : null,
+    freshnessDetail,
+  ].filter((value): value is string => Boolean(value));
 
-  return parts.length > 0 ? parts.join(' • ') : 'History summary is available locally.';
+  return parts.join('; ');
 }
 
 function normalizeCaptureSummary(
@@ -282,4 +304,53 @@ function normalizeDisplayValue(value: string | null | undefined): string | null 
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveHistoryFreshness(
+  packageSummary: LocalAssignedWorkPackageSummary | null,
+  now: Date,
+): Pick<LocalTagHistoryPreview, 'state' | 'detail'> {
+  const downloadedAt = parseTimestamp(packageSummary?.downloadedAt ?? null);
+  const snapshotGeneratedAt = parseTimestamp(packageSummary?.snapshotGeneratedAt ?? null);
+
+  if (!downloadedAt || !snapshotGeneratedAt) {
+    return {
+      state: 'age-unknown',
+      detail:
+        'History freshness metadata is missing. Refresh this package while connected before trusting the comparison.',
+    };
+  }
+
+  if (isStale(snapshotGeneratedAt, now)) {
+    return {
+      state: 'stale',
+      detail: `The cached history came from an upstream snapshot older than ${ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS} hours. Compare carefully and refresh when connected.`,
+    };
+  }
+
+  if (isStale(downloadedAt, now)) {
+    return {
+      state: 'stale',
+      detail: `This package has not been refreshed locally for more than ${ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS} hours. Refresh it before relying on the cached history.`,
+    };
+  }
+
+  return {
+    state: 'available',
+    detail: 'Cached history is recent enough for local comparison.',
+  };
+}
+
+function parseTimestamp(timestamp: string | null): Date | null {
+  if (!timestamp) {
+    return null;
+  }
+
+  const value = new Date(timestamp);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function isStale(timestamp: Date, now: Date): boolean {
+  const staleAfterMs = ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS * 60 * 60 * 1000;
+  return now.getTime() - timestamp.getTime() > staleAfterMs;
 }
