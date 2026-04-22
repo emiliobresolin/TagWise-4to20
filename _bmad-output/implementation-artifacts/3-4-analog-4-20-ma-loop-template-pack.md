@@ -53,6 +53,9 @@ GPT-5 Codex
 - Kept execution template-driven by carrying loop-specific `mA` capture units and signal-span calculation range in template data rather than introducing a loop-specific screen or backend runtime dependency.
 - Updated the shared execution shell to surface loop conversion basis and expected range inside the calculation step, and persisted that execution context with the local calculation record so restart/resume keeps the same loop basis visible.
 - Kept Story 3.4 narrow: no report flow, no checklist workflow expansion, no sync logic, no approval flow, no AI/diagnosis, and no live backend lookup were introduced.
+- Removed analog-family inference from the deterministic calculation engine so execution context now comes only from template metadata and remains explicitly unresolved when a template omits loop summaries.
+- Added a regression test proving analog loop tags without template-supplied conversion basis or expected range do not silently synthesize those values.
+- Added a minimal ignore rule for the backend Vitest cache path and removed the generated `results.json` artifact from the change set.
 
 ### Tests Run
 - `cd mobile && npm test`
@@ -63,6 +66,7 @@ GPT-5 Codex
 - `cd backend && npm run build`
 
 ### File List
+- `.gitignore`
 - `backend/src/modules/work-packages/model.ts`
 - `backend/src/modules/work-packages/seedData.ts`
 - `backend/dist/modules/work-packages/seedData.js`

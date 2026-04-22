@@ -72,7 +72,7 @@ export function resolveDeterministicCalculationDefinition(
     toleranceSource: normalizeDisplayValue(tag.tolerance) ?? 'Not defined locally',
     toleranceMode: toleranceSpec.mode,
     toleranceValue: toleranceSpec.value,
-    executionContext: resolveExecutionContext(tag, executionContextOverrides),
+    executionContext: resolveExecutionContext(executionContextOverrides),
   };
 }
 
@@ -173,41 +173,11 @@ function parseToleranceSpec(
 }
 
 function resolveExecutionContext(
-  tag: AssignedWorkPackageTagSnapshot,
   overrides?: Partial<SharedExecutionCalculationExecutionContext>,
 ): SharedExecutionCalculationExecutionContext {
-  const explicitConversionBasis = normalizeDisplayValue(overrides?.conversionBasisSummary);
-  const explicitExpectedRange = normalizeDisplayValue(overrides?.expectedRangeSummary);
-
-  if (explicitConversionBasis || explicitExpectedRange) {
-    return {
-      conversionBasisSummary: explicitConversionBasis,
-      expectedRangeSummary: explicitExpectedRange,
-    };
-  }
-
-  if (!isAnalogFourToTwentyLoopFamily(tag.instrumentFamily, tag.signalType)) {
-    return {
-      conversionBasisSummary: null,
-      expectedRangeSummary: null,
-    };
-  }
-
-  const unit = normalizeDisplayValue(tag.range?.unit);
-  if (
-    typeof tag.range?.min === 'number' &&
-    typeof tag.range?.max === 'number'
-  ) {
-    const rangeLabel = formatRange(tag.range.min, tag.range.max, unit);
-    return {
-      conversionBasisSummary: `Linear 4-20 mA conversion across ${rangeLabel}.`,
-      expectedRangeSummary: `${rangeLabel} maps to 4-20 mA.`,
-    };
-  }
-
   return {
-    conversionBasisSummary: 'Linear 4-20 mA conversion basis.',
-    expectedRangeSummary: 'Expected signal range is 4-20 mA.',
+    conversionBasisSummary: normalizeDisplayValue(overrides?.conversionBasisSummary),
+    expectedRangeSummary: normalizeDisplayValue(overrides?.expectedRangeSummary),
   };
 }
 
@@ -301,19 +271,6 @@ function resolveCalculationUnit(
   }
 
   return expectedUnit ?? observedUnit ?? normalizeDisplayValue(defaultUnit);
-}
-
-function isAnalogFourToTwentyLoopFamily(
-  instrumentFamily: string | null | undefined,
-  signalType: string | null | undefined,
-): boolean {
-  const normalizedFamily = normalizeDisplayValue(instrumentFamily)?.toLowerCase();
-  const normalized = normalizeDisplayValue(signalType)?.toLowerCase().replace(/\s+/g, '');
-  return normalizedFamily === 'analog 4-20 ma loop' && normalized === '4-20ma';
-}
-
-function formatRange(min: number, max: number, unit: string | null): string {
-  return unit ? `${formatNumber(min)} to ${formatNumber(max)} ${unit}` : `${formatNumber(min)} to ${formatNumber(max)}`;
 }
 
 function normalizeDisplayValue(value: string | null | undefined): string | null {

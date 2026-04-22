@@ -183,6 +183,41 @@ describe('deterministicCalculationEngine', () => {
     });
   });
 
+  it('does not synthesize analog loop execution context when template metadata is missing', () => {
+    const definition = resolveDeterministicCalculationDefinition(
+      analogLoopTag,
+      'expected current vs measured current',
+      'within tolerance at each loop checkpoint',
+      {
+        expectedValue: 'Expected current',
+        observedValue: 'Measured current',
+      },
+      {
+        expectedValue: 'mA',
+        observedValue: 'mA',
+      },
+      {
+        min: 4,
+        max: 20,
+        unit: 'mA',
+      },
+    );
+
+    expect(definition).toMatchObject({
+      expectedLabel: 'Expected current (mA)',
+      observedLabel: 'Measured current (mA)',
+      calculationRange: {
+        min: 4,
+        max: 20,
+        unit: 'mA',
+      },
+      executionContext: {
+        conversionBasisSummary: null,
+        expectedRangeSummary: null,
+      },
+    });
+  });
+
   it('resolves analog loop conversion basis and mA capture units from template-driven overrides', () => {
     const definition = resolveDeterministicCalculationDefinition(
       analogLoopTag,
