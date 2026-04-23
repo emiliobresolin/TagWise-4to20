@@ -120,6 +120,13 @@ describe('UserPartitionedLocalStoreFactory', () => {
           outcome: 'completed',
         },
       ],
+      riskJustifications: [
+        {
+          riskItemId: 'history-stale',
+          reasonType: 'missing-history',
+          justificationText: 'Used the available local history anyway because the field condition was unchanged.',
+        },
+      ],
       createdAt: '2026-04-20T10:17:00.000Z',
       updatedAt: '2026-04-20T10:17:00.000Z',
     });
@@ -234,6 +241,14 @@ describe('UserPartitionedLocalStoreFactory', () => {
           {
             checklistItemId: 'pressure-path-check',
             outcome: 'completed',
+          },
+        ],
+        riskJustifications: [
+          {
+            riskItemId: 'history-stale',
+            reasonType: 'missing-history',
+            justificationText:
+              'Used the available local history anyway because the field condition was unchanged.',
           },
         ],
       }),

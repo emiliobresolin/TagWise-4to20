@@ -768,6 +768,21 @@ export function TagWiseApp() {
     );
   }
 
+  function handleRiskJustificationChange(riskItemId: string, justificationText: string) {
+    setStatus((current) =>
+      current.type !== 'ready' || !current.executionShell
+        ? current
+        : {
+            ...current,
+            executionShell: current.executionShellService.updateRiskJustification(
+              current.executionShell,
+              riskItemId,
+              justificationText,
+            ),
+          },
+    );
+  }
+
   async function handleSaveExecutionCalculation() {
     if (status.type !== 'ready' || !readyState.session || !readyState.executionShell?.calculation) {
       return;
@@ -1850,6 +1865,7 @@ export function TagWiseApp() {
                             onAttachPhotoFromLibrary={() => void handleAttachExecutionPhoto('library')}
                             onChecklistOutcomeChange={handleChecklistOutcomeChange}
                             onObservationNotesChange={handleObservationNotesChange}
+                            onRiskJustificationChange={handleRiskJustificationChange}
                             onRemovePhotoAttachment={(evidenceId) =>
                               void handleRemoveExecutionPhoto(evidenceId)
                             }
@@ -2142,6 +2158,7 @@ function ExecutionGuidancePanel({
   onAttachPhotoFromLibrary,
   onChecklistOutcomeChange,
   onObservationNotesChange,
+  onRiskJustificationChange,
   onRemovePhotoAttachment,
   onSaveEvidence,
 }: {
@@ -2154,6 +2171,7 @@ function ExecutionGuidancePanel({
     outcome: SharedExecutionChecklistOutcome,
   ) => void;
   onObservationNotesChange: (value: string) => void;
+  onRiskJustificationChange: (riskItemId: string, justificationText: string) => void;
   onRemovePhotoAttachment: (evidenceId: string) => void;
   onSaveEvidence: () => void;
 }) {
@@ -2179,15 +2197,54 @@ function ExecutionGuidancePanel({
           ]}
         >
           {guidance.riskState === 'flagged'
-            ? 'Checklist risk flagged'
-            : 'No checklist risk flagged'}
+            ? 'Visible risk flagged'
+            : 'No visible risk flagged'}
         </Text>
         <Text style={styles.helperText}>
           {guidance.riskHooks.length > 0
             ? guidance.riskHooks.join(' ')
-            : 'Checklist items can still be skipped or left incomplete without blocking the shell.'}
+            : 'Missing context, history, checklist gaps, and evidence gaps can stay visible here without blocking local execution.'}
         </Text>
       </View>
+
+      <View
+        style={[
+          styles.metricCard,
+          guidance.submitReadiness === 'blocked' ? styles.missingMetricCard : null,
+        ]}
+      >
+        <Text style={styles.metricLabel}>Submit readiness hooks</Text>
+        <Text
+          style={[
+            styles.metricValue,
+            guidance.submitReadiness === 'blocked' ? styles.missingMetricValue : null,
+          ]}
+        >
+          {guidance.submitReadiness === 'blocked'
+            ? 'Submit-blocking hooks are still active'
+            : 'No submit-blocking hooks are active'}
+        </Text>
+        <Text style={styles.helperText}>
+          {guidance.submitBlockingHooks.length > 0
+            ? guidance.submitBlockingHooks.join(' ')
+            : 'Visible risks can remain non-blocking as long as minimum evidence is present and required justifications are captured.'}
+        </Text>
+      </View>
+
+      <Text style={styles.sectionTitle}>Visible risks and justifications</Text>
+      {guidance.riskItems.length > 0 ? (
+        guidance.riskItems.map((item) => (
+          <ExecutionRiskItemCard
+            key={item.id}
+            item={item}
+            onJustificationChange={(value) => onRiskJustificationChange(item.id, value)}
+          />
+        ))
+      ) : (
+        <Text style={styles.helperText}>
+          No visible risk is currently flagged for this local draft.
+        </Text>
+      )}
 
       <View style={styles.metricCard}>
         <Text style={styles.metricLabel}>Linked draft report</Text>
@@ -2252,7 +2309,7 @@ function ExecutionGuidancePanel({
         onPress={onSaveEvidence}
         style={styles.primaryButton}
       >
-        <Text style={styles.primaryButtonLabel}>Save notes and checklist evidence</Text>
+        <Text style={styles.primaryButtonLabel}>Save notes, checklist, and justifications</Text>
       </Pressable>
 
       <Text style={styles.sectionTitle}>Checklist steps</Text>
@@ -2381,6 +2438,63 @@ function ExecutionChecklistCard({
           onPress={() => onChecklistOutcomeChange(item.id, 'pending')}
         />
       </View>
+    </View>
+  );
+}
+
+function ExecutionRiskItemCard({
+  item,
+  onJustificationChange,
+}: {
+  item: SharedExecutionShell['guidance']['riskItems'][number];
+  onJustificationChange: (value: string) => void;
+}) {
+  const justificationMissing =
+    item.justificationRequired && item.justificationText.trim().length === 0;
+
+  return (
+    <View
+      style={[
+        styles.metricCard,
+        item.severity === 'submit-block' || justificationMissing
+          ? styles.missingMetricCard
+          : null,
+      ]}
+    >
+      <Text style={styles.metricLabel}>
+        {item.severity === 'submit-block' ? 'Submit-blocking risk' : 'Visible risk'}
+      </Text>
+      <Text
+        style={[
+          styles.metricValue,
+          item.severity === 'submit-block' || justificationMissing
+            ? styles.missingMetricValue
+            : null,
+        ]}
+      >
+        {item.title}
+      </Text>
+      <Text style={styles.helperText}>{item.detail}</Text>
+      {item.justificationRequired ? (
+        <>
+          <Text style={styles.helperText}>
+            {item.justificationPrompt ?? 'Capture a field justification for this visible risk.'}
+          </Text>
+          <TextInput
+            autoCapitalize="sentences"
+            autoCorrect
+            multiline
+            onChangeText={onJustificationChange}
+            placeholder="Enter the local field justification for this risk."
+            style={styles.input}
+            value={item.justificationText}
+          />
+        </>
+      ) : (
+        <Text style={styles.helperText}>
+          Capture the missing minimum evidence before this draft is considered submission-ready.
+        </Text>
+      )}
     </View>
   );
 }

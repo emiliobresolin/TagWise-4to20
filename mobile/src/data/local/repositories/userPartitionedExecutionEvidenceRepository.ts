@@ -11,6 +11,7 @@ interface ExecutionEvidenceRow {
   structured_readings_json: string;
   observation_notes_text: string;
   checklist_outcomes_json: string;
+  risk_justifications_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -40,6 +41,7 @@ export class UserPartitionedExecutionEvidenceRepository {
           structured_readings_json,
           observation_notes_text,
           checklist_outcomes_json,
+          risk_justifications_json,
           created_at,
           updated_at
         FROM user_partitioned_execution_evidence
@@ -81,6 +83,7 @@ export class UserPartitionedExecutionEvidenceRepository {
           structured_readings_json,
           observation_notes_text,
           checklist_outcomes_json,
+          risk_justifications_json,
           created_at,
           updated_at
         FROM user_partitioned_execution_evidence
@@ -111,10 +114,11 @@ export class UserPartitionedExecutionEvidenceRepository {
           structured_readings_json,
           observation_notes_text,
           checklist_outcomes_json,
+          risk_justifications_json,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(
           owner_user_id,
           work_package_id,
@@ -127,6 +131,7 @@ export class UserPartitionedExecutionEvidenceRepository {
           structured_readings_json = excluded.structured_readings_json,
           observation_notes_text = excluded.observation_notes_text,
           checklist_outcomes_json = excluded.checklist_outcomes_json,
+          risk_justifications_json = excluded.risk_justifications_json,
           updated_at = excluded.updated_at;
       `,
       [
@@ -140,6 +145,7 @@ export class UserPartitionedExecutionEvidenceRepository {
         JSON.stringify(record.structuredReadings),
         record.observationNotes,
         JSON.stringify(record.checklistOutcomes),
+        JSON.stringify(record.riskJustifications),
         record.createdAt,
         record.updatedAt,
       ],
@@ -165,6 +171,10 @@ function mapExecutionEvidenceRow(
       (JSON.parse(
         row.checklist_outcomes_json,
       ) as StoredExecutionEvidenceRecord['checklistOutcomes']) ?? [],
+    riskJustifications:
+      (JSON.parse(
+        row.risk_justifications_json,
+      ) as StoredExecutionEvidenceRecord['riskJustifications']) ?? [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -52,7 +52,7 @@ describe('runMigrations', () => {
          );`,
     );
 
-    expect(summary.currentSchemaVersion).toBe(11);
+    expect(summary.currentSchemaVersion).toBe(12);
     expect(summary.appliedMigrationIds).toEqual([
       '1',
       '2',
@@ -65,6 +65,7 @@ describe('runMigrations', () => {
       '9',
       '10',
       '11',
+      '12',
     ]);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
@@ -102,6 +103,7 @@ describe('runMigrations', () => {
       { id: 9 },
       { id: 10 },
       { id: 11 },
+      { id: 12 },
     ]);
     expect(record?.count).toBe(1);
 
@@ -202,8 +204,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(11);
-    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11']);
+    expect(summary.currentSchemaVersion).toBe(12);
+    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11', '12']);
     expect(migratedRows).toEqual([
       {
         template_version: '2026-04-v1',
@@ -353,13 +355,134 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-loop-001', 'tag-loop-001', 'tpl-loop-integrity', '2026-04-v1'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(11);
-    expect(summary.appliedMigrationIds).toEqual(['10', '11']);
+    expect(summary.currentSchemaVersion).toBe(12);
+    expect(summary.appliedMigrationIds).toEqual(['10', '11', '12']);
     expect(migratedRow).toEqual({
       execution_context_json: '{}',
       raw_inputs_json: '{"expectedValue":"12","observedValue":"12.1"}',
       result_json:
         '{"signedDeviation":0.1,"absoluteDeviation":0.1,"percentOfSpan":0.625,"acceptance":"pass","acceptanceReason":"Tolerance is 1% of span."}',
+    });
+
+    await database.closeAsync?.();
+  });
+
+  it('migrates populated pre-v12 execution evidence rows and defaults risk justifications safely', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-migrations-legacy-v11-'));
+    createdDirectories.push(tempDirectory);
+
+    const database = createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'));
+
+    await database.execAsync(`
+      CREATE TABLE schema_migrations (
+        id INTEGER PRIMARY KEY NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+
+      INSERT INTO schema_migrations (id, applied_at) VALUES
+        (1, '2026-04-01T00:00:00.000Z'),
+        (2, '2026-04-01T00:00:00.000Z'),
+        (3, '2026-04-01T00:00:00.000Z'),
+        (4, '2026-04-01T00:00:00.000Z'),
+        (5, '2026-04-01T00:00:00.000Z'),
+        (6, '2026-04-01T00:00:00.000Z'),
+        (7, '2026-04-01T00:00:00.000Z'),
+        (8, '2026-04-01T00:00:00.000Z'),
+        (9, '2026-04-01T00:00:00.000Z'),
+        (10, '2026-04-01T00:00:00.000Z'),
+        (11, '2026-04-01T00:00:00.000Z');
+
+      CREATE TABLE user_partitioned_execution_evidence (
+        owner_user_id TEXT NOT NULL,
+        work_package_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_version TEXT NOT NULL,
+        draft_report_id TEXT NOT NULL,
+        execution_step_id TEXT NOT NULL,
+        structured_readings_json TEXT NOT NULL DEFAULT 'null',
+        observation_notes_text TEXT NOT NULL DEFAULT '',
+        checklist_outcomes_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          execution_step_id
+        )
+      );
+    `);
+
+    await database.runAsync(
+      `
+        INSERT INTO user_partitioned_execution_evidence (
+          owner_user_id,
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          draft_report_id,
+          execution_step_id,
+          structured_readings_json,
+          observation_notes_text,
+          checklist_outcomes_json,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+      [
+        'user-technician',
+        'wp-risk-001',
+        'tag-risk-001',
+        'tpl-pressure',
+        '2026-04-v1',
+        'tag-report:wp-risk-001:tag-risk-001',
+        'guidance',
+        'null',
+        'Impulse path checked locally.',
+        '[{"checklistItemId":"pressure-path-check","outcome":"completed"}]',
+        '2026-04-21T09:00:00.000Z',
+        '2026-04-21T09:00:00.000Z',
+      ],
+    );
+
+    const summary = await runMigrations(database);
+    const migratedRow = await database.getFirstAsync<{
+      observation_notes_text: string;
+      checklist_outcomes_json: string;
+      risk_justifications_json: string;
+    }>(
+      `
+        SELECT observation_notes_text, checklist_outcomes_json, risk_justifications_json
+        FROM user_partitioned_execution_evidence
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?
+          AND template_version = ?
+          AND execution_step_id = ?;
+      `,
+      [
+        'user-technician',
+        'wp-risk-001',
+        'tag-risk-001',
+        'tpl-pressure',
+        '2026-04-v1',
+        'guidance',
+      ],
+    );
+
+    expect(summary.currentSchemaVersion).toBe(12);
+    expect(summary.appliedMigrationIds).toEqual(['12']);
+    expect(migratedRow).toEqual({
+      observation_notes_text: 'Impulse path checked locally.',
+      checklist_outcomes_json:
+        '[{"checklistItemId":"pressure-path-check","outcome":"completed"}]',
+      risk_justifications_json: '[]',
     });
 
     await database.closeAsync?.();

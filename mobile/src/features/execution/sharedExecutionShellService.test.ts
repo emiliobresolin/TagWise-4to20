@@ -229,6 +229,61 @@ const noHistorySnapshot: AssignedWorkPackageSnapshot = {
   ],
 };
 
+const missingContextAndHistorySnapshot: AssignedWorkPackageSnapshot = {
+  ...baseSnapshot,
+  summary: {
+    ...baseSnapshot.summary,
+    id: 'wp-local-005',
+    title: 'Assigned package with missing context',
+  },
+  tags: [
+    {
+      ...baseSnapshot.tags[0]!,
+      id: 'tag-missing-context',
+      area: '',
+      parentAssetReference: '',
+      instrumentSubtype: '',
+      measuredVariable: '',
+      signalType: '',
+      tolerance: '',
+      historySummaryId: '',
+    },
+  ],
+};
+
+const unmappedEvidenceSnapshot: AssignedWorkPackageSnapshot = {
+  ...baseSnapshot,
+  summary: {
+    ...baseSnapshot.summary,
+    id: 'wp-local-006',
+    title: 'Assigned package with unmapped evidence label',
+  },
+  tags: [
+    {
+      ...baseSnapshot.tags[0]!,
+      id: 'tag-unmapped-evidence',
+      tagCode: 'PT-106',
+      templateIds: ['tpl-pressure-unmapped-evidence'],
+    },
+  ],
+  templates: [
+    buildTemplate({
+      id: 'tpl-pressure-unmapped-evidence',
+      instrumentFamily: 'pressure transmitter',
+      testPattern: 'unmapped evidence contract check',
+      title: 'Pressure template with unmapped evidence requirement',
+      calculationMode: 'deviation',
+      acceptanceStyle: 'tolerance pass/fail',
+      captureSummary: 'Capture readings while leaving an unmapped evidence hook unsatisfied.',
+      expectedLabel: 'Expected pressure',
+      observedLabel: 'Measured pressure',
+      minimumSubmissionEvidence: ['field sketch'],
+      expectedEvidence: [],
+      historyComparisonExpectation: 'compare last approved result',
+    }),
+  ],
+};
+
 const familyPackSnapshot: AssignedWorkPackageSnapshot = {
   contractVersion: '2026-04-v1',
   generatedAt: '2026-04-19T10:00:00.000Z',
@@ -595,7 +650,8 @@ describe('SharedExecutionShellService', () => {
 
     expect(shell).toMatchObject({
       guidance: {
-        riskState: 'clear',
+        riskState: 'flagged',
+        submitReadiness: 'blocked',
         checklistItems: [
           expect.objectContaining({
             id: 'pressure-path-check',
@@ -620,6 +676,18 @@ describe('SharedExecutionShellService', () => {
             sourceReference: 'ISA local practice',
           }),
         ],
+        riskItems: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'expected-evidence:supporting-photo',
+            title: 'Expected evidence missing: supporting photo',
+            severity: 'warning',
+          }),
+          expect.objectContaining({
+            id: 'minimum-evidence:readings',
+            title: 'Minimum evidence missing: readings',
+            severity: 'submit-block',
+          }),
+        ]),
       },
     });
     expect(shell?.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
@@ -635,6 +703,10 @@ describe('SharedExecutionShellService', () => {
         expect.objectContaining({
           label: 'Linked guidance',
           value: 'Pressure verification guidance',
+        }),
+        expect.objectContaining({
+          label: 'Submit readiness',
+          value: 'Blocked by rule hooks',
         }),
       ]),
     );
@@ -1301,6 +1373,364 @@ describe('SharedExecutionShellService', () => {
     await runtime.database.closeAsync?.();
   });
 
+  it('creates visible risk state for missing context and unavailable history while surfacing submit-block hooks separately', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-risk-state-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(
+        missingContextAndHistorySnapshot,
+        '2026-04-19T10:15:00.000Z',
+      );
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      missingContextAndHistorySnapshot.summary.id,
+      'tag-missing-context',
+      'tpl-pressure-as-found',
+    );
+
+    expect(shell).toMatchObject({
+      guidance: {
+        riskState: 'flagged',
+        submitReadiness: 'blocked',
+        riskItems: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'missing-context',
+            reasonType: 'missing-context',
+          }),
+          expect.objectContaining({
+            id: 'history-unavailable',
+            reasonType: 'missing-history',
+          }),
+          expect.objectContaining({
+            id: 'expected-evidence:supporting-photo',
+            reasonType: 'missing-expected-evidence',
+          }),
+          expect.objectContaining({
+            id: 'minimum-evidence:readings',
+            reasonType: 'missing-minimum-evidence',
+          }),
+        ]),
+        submitBlockingHooks: expect.arrayContaining([
+          'Minimum evidence missing: readings.',
+          'Minimum evidence missing: observations.',
+          'Justification required: Missing context.',
+          'Justification required: History is unavailable.',
+        ]),
+      },
+    });
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('keeps observation minimum evidence missing after structured readings are saved without notes', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-risk-observations-missing-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    const calculatedShell = await service.saveCalculation(session, shell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    expect(calculatedShell.guidance.riskItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'minimum-evidence:observations',
+          reasonType: 'missing-minimum-evidence',
+          severity: 'submit-block',
+        }),
+      ]),
+    );
+    expect(calculatedShell.guidance.riskItems.map((item) => item.id)).not.toContain(
+      'minimum-evidence:readings',
+    );
+    expect(calculatedShell.guidance.submitBlockingHooks).toEqual(
+      expect.arrayContaining(['Minimum evidence missing: observations.']),
+    );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('marks observation minimum evidence satisfied once notes are entered', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-risk-observations-satisfied-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    const calculatedShell = await service.saveCalculation(session, shell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+    const shellWithNotes = service.updateObservationNotes(
+      calculatedShell,
+      'Field observations captured locally after the reading set was saved.',
+    );
+
+    expect(shellWithNotes.guidance.riskItems.map((item) => item.id)).not.toContain(
+      'minimum-evidence:observations',
+    );
+    expect(shellWithNotes.guidance.riskItems.map((item) => item.id)).not.toContain(
+      'minimum-evidence:readings',
+    );
+    expect(shellWithNotes.guidance.submitBlockingHooks).toEqual([
+      'Justification required: Expected evidence missing: supporting photo.',
+    ]);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('treats missing expected evidence as a warning once the required justification is saved and restored', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-risk-justification-'));
+    createdDirectories.push(tempDirectory);
+
+    const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
+
+    const firstRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const firstService = new SharedExecutionShellService({
+      userPartitions: firstRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: firstRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const initialShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    const shellWithNotes = firstService.updateObservationNotes(
+      initialShell!,
+      'Recorded the field observation locally so note evidence is present.',
+    );
+    const shellWithCalculation = await firstService.saveCalculation(session, shellWithNotes, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    expect(shellWithCalculation.guidance).toMatchObject({
+      riskState: 'flagged',
+      submitReadiness: 'blocked',
+      riskItems: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'expected-evidence:supporting-photo',
+          title: 'Expected evidence missing: supporting photo',
+          severity: 'warning',
+        }),
+      ]),
+      submitBlockingHooks: [
+        'Justification required: Expected evidence missing: supporting photo.',
+      ],
+    });
+
+    const justifiedShell = firstService.updateRiskJustification(
+      shellWithCalculation,
+      'expected-evidence:supporting-photo',
+      'Photo capture was not possible because the area was inaccessible during the check.',
+    );
+
+    expect(justifiedShell.guidance).toMatchObject({
+      riskState: 'flagged',
+      submitReadiness: 'ready',
+      submitBlockingHooks: [],
+      riskItems: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'expected-evidence:supporting-photo',
+          justificationText:
+            'Photo capture was not possible because the area was inaccessible during the check.',
+        }),
+      ]),
+    });
+
+    const savedShell = await firstService.saveGuidanceEvidence(session, justifiedShell);
+    const savedEvidence = await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .executionEvidence.getEvidenceForStep(
+        baseSnapshot.summary.id,
+        'tag-001',
+        'tpl-pressure-as-found',
+        '2026-04-v1',
+        'guidance',
+      );
+
+    expect(savedEvidence).toMatchObject({
+      riskJustifications: [
+        {
+          riskItemId: 'expected-evidence:supporting-photo',
+          reasonType: 'missing-expected-evidence',
+          justificationText:
+            'Photo capture was not possible because the area was inaccessible during the check.',
+        },
+      ],
+    });
+
+    await firstRuntime.database.closeAsync?.();
+
+    const secondRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    const secondService = new SharedExecutionShellService({
+      userPartitions: secondRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: secondRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:15:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:15:00.000Z'),
+    });
+
+    const reloadedShell = await secondService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    expect(reloadedShell).toMatchObject({
+      guidance: {
+        riskState: 'flagged',
+        submitReadiness: 'ready',
+        submitBlockingHooks: [],
+        riskItems: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'expected-evidence:supporting-photo',
+            justificationText:
+              'Photo capture was not possible because the area was inaccessible during the check.',
+          }),
+        ]),
+      },
+    });
+
+    await secondRuntime.database.closeAsync?.();
+  });
+
+  it('does not auto-satisfy unmapped evidence labels from saved calculation evidence alone', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-risk-unmapped-evidence-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(unmappedEvidenceSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      unmappedEvidenceSnapshot.summary.id,
+      'tag-unmapped-evidence',
+      'tpl-pressure-unmapped-evidence',
+    );
+
+    const calculatedShell = await service.saveCalculation(session, shell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    expect(calculatedShell.guidance.riskItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'minimum-evidence:field-sketch',
+          reasonType: 'missing-minimum-evidence',
+          severity: 'submit-block',
+        }),
+      ]),
+    );
+    expect(calculatedShell.guidance.submitBlockingHooks).toEqual(
+      expect.arrayContaining(['Minimum evidence missing: field sketch.']),
+    );
+
+    await runtime.database.closeAsync?.();
+  });
+
   it('preserves unsaved calculation inputs when guidance evidence is saved', async () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-execution-evidence-dirty-calc-'));
     createdDirectories.push(tempDirectory);
@@ -1684,6 +2114,7 @@ describe('SharedExecutionShellService', () => {
 
     expect(riskFlaggedShell.guidance).toMatchObject({
       riskState: 'flagged',
+      submitReadiness: 'blocked',
       checklistItems: [
         expect.objectContaining({
           id: 'pressure-path-check',
@@ -1694,10 +2125,10 @@ describe('SharedExecutionShellService', () => {
           outcome: 'incomplete',
         }),
       ],
-      riskHooks: [
-        expect.stringContaining('Skipped: Confirm impulse path'),
-        expect.stringContaining('Incomplete: Confirm the applied reference'),
-      ],
+      riskHooks: expect.arrayContaining([
+        expect.stringContaining('Checklist skipped: Confirm impulse path'),
+        expect.stringContaining('Checklist incomplete: Confirm the applied reference'),
+      ]),
     });
     expect(riskFlaggedShell.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
       expect.arrayContaining([
@@ -1708,7 +2139,12 @@ describe('SharedExecutionShellService', () => {
         }),
         expect.objectContaining({
           label: 'Risk hooks',
-          value: expect.stringContaining('Skipped: Confirm impulse path'),
+          value: expect.stringContaining('Checklist skipped: Confirm impulse path'),
+          state: 'missing',
+        }),
+        expect.objectContaining({
+          label: 'Submit readiness',
+          value: 'Blocked by rule hooks',
           state: 'missing',
         }),
       ]),

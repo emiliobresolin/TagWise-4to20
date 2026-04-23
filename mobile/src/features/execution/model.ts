@@ -110,6 +110,11 @@ export interface SharedExecutionCalculationState {
   updatedAt: string | null;
 }
 
+export interface SharedExecutionRiskInputs {
+  historyState: 'available' | 'stale' | 'age-unknown' | 'missing' | 'unavailable';
+  missingContextFieldLabels: string[];
+}
+
 export interface SharedExecutionShell {
   workPackageId: string;
   workPackageTitle: string;
@@ -119,6 +124,7 @@ export interface SharedExecutionShell {
   steps: SharedExecutionStepView[];
   progress: SharedExecutionProgressState;
   calculation: SharedExecutionCalculationState | null;
+  riskInputs: SharedExecutionRiskInputs;
   guidance: SharedExecutionGuidanceState;
   evidence: SharedExecutionEvidenceState;
 }
@@ -149,12 +155,34 @@ export interface SharedExecutionLinkedGuidanceSnippet {
   sourceReference: string;
 }
 
+export type SharedExecutionRiskReasonType =
+  | 'missing-history'
+  | 'missing-context'
+  | 'checklist-skipped'
+  | 'checklist-incomplete'
+  | 'missing-expected-evidence'
+  | 'missing-minimum-evidence';
+
+export interface SharedExecutionRiskItem {
+  id: string;
+  reasonType: SharedExecutionRiskReasonType;
+  severity: 'warning' | 'submit-block';
+  title: string;
+  detail: string;
+  justificationRequired: boolean;
+  justificationPrompt: string | null;
+  justificationText: string;
+}
+
 export interface SharedExecutionGuidanceState {
   checklistItems: SharedExecutionChecklistItem[];
   guidedDiagnosisPrompts: SharedExecutionGuidanceItem[];
   linkedGuidance: SharedExecutionLinkedGuidanceSnippet[];
   riskState: 'clear' | 'flagged';
   riskHooks: string[];
+  riskItems: SharedExecutionRiskItem[];
+  submitReadiness: 'ready' | 'blocked';
+  submitBlockingHooks: string[];
 }
 
 export type SharedExecutionPhotoAttachmentSource = 'camera' | 'library';
@@ -237,6 +265,12 @@ export interface StoredExecutionChecklistOutcomeRecord {
   outcome: SharedExecutionChecklistOutcome;
 }
 
+export interface StoredExecutionRiskJustificationRecord {
+  riskItemId: string;
+  reasonType: SharedExecutionRiskReasonType;
+  justificationText: string;
+}
+
 export interface StoredExecutionEvidenceRecord {
   workPackageId: string;
   tagId: string;
@@ -247,6 +281,7 @@ export interface StoredExecutionEvidenceRecord {
   structuredReadings: StoredExecutionStructuredReadingsEvidence | null;
   observationNotes: string;
   checklistOutcomes: StoredExecutionChecklistOutcomeRecord[];
+  riskJustifications: StoredExecutionRiskJustificationRecord[];
   createdAt: string;
   updatedAt: string;
 }

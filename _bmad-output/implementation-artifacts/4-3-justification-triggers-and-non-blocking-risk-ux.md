@@ -1,6 +1,6 @@
 ﻿# Story 4.3: Justification Triggers and Non-Blocking Risk UX
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 4-3-justification-triggers-and-non-blocking-risk-ux
@@ -41,3 +41,32 @@ implement deterministic rule hooks from template and workflow state; separate "w
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a deterministic local risk layer to the shared execution shell so visible risk now comes from missing history, missing context, skipped or incomplete checklist items, missing expected evidence, and missing minimum submission evidence without introducing a new workflow engine.
+- Kept warn-versus-block explicit: expected-evidence and context/history/checklist gaps stay visible warnings, while minimum-evidence gaps and any missing required justifications surface as submit-blocking hooks only.
+- Persisted risk justifications inside the existing execution-evidence store for the guidance step, so they survive reopen/restart and stay linked to the same tag, template version, and technician-owned draft report context from Story 4.1.
+- Preserved non-blocking field flow by keeping risk and justification edits local to the current shell, and by reusing the existing reload-and-merge pattern so calculation inputs, notes, checklist outcomes, and photo evidence keep working together.
+- Replaced the Story 4.3 evidence-readiness shortcut with explicit evidence-kind mapping for approved v1 labels, so saved readings no longer clear observation-style requirements and unmapped labels no longer collapse into generic calculation satisfaction.
+
+### Tests Run
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- sharedExecutionShellService bootstrap userPartitionedLocalStoreFactory`
+- `cd mobile && npm test`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/src/data/local/repositories/userPartitionedExecutionEvidenceRepository.ts`
+- `mobile/src/data/local/repositories/userPartitionedLocalStoreFactory.test.ts`
+- `mobile/src/data/local/sqlite/bootstrap.test.ts`
+- `mobile/src/data/local/sqlite/migrations.ts`
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/4-3-justification-triggers-and-non-blocking-risk-ux.md`

@@ -411,6 +411,15 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 12,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        ALTER TABLE user_partitioned_execution_evidence
+        ADD COLUMN risk_justifications_json TEXT NOT NULL DEFAULT '[]';
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

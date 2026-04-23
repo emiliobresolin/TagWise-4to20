@@ -19,6 +19,8 @@ import type {
   SharedExecutionLinkedGuidanceSnippet,
   SharedExecutionPhotoAttachment,
   SharedExecutionPhotoAttachmentInput,
+  SharedExecutionRiskInputs,
+  SharedExecutionRiskItem,
   SharedExecutionShell,
   SharedExecutionStepKind,
   SharedExecutionCalculationRawInputs,
@@ -39,6 +41,51 @@ import {
 
 const LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE = 'per-tag-report';
 const TECHNICIAN_OWNED_DRAFT_REPORT_STATE = 'technician-owned-draft';
+type SharedExecutionEvidenceRequirementKind =
+  | 'structured-readings'
+  | 'observation-notes'
+  | 'photo-evidence';
+
+const STRUCTURED_READINGS_EVIDENCE_LABELS = new Set([
+  'readings',
+  'as-found readings',
+  'as-left readings',
+  'loop checkpoints',
+  'measured outputs',
+  'simulated inputs',
+  'reported outputs',
+  'calibration checkpoints',
+  'range checkpoints',
+  'measured current values',
+  'validated current points',
+  'expected current reference',
+  'level checkpoints',
+  'output values',
+  'expected references',
+  'observed outputs',
+  'commanded points',
+  'observed travel responses',
+  'observed feedback responses',
+]);
+
+const OBSERVATION_NOTES_EVIDENCE_LABELS = new Set([
+  'observations',
+  'instrument note',
+  'loop condition note',
+  'adjustment note',
+  'adjustment reference note',
+  'reference source note',
+  'input source note',
+  'configuration note',
+  'supply/continuity note',
+  'process reference note',
+  'conversion basis note',
+  'reference setup note',
+  'actuator note',
+  'positioner note',
+]);
+
+const PHOTO_EVIDENCE_LABELS = new Set(['supporting photo']);
 
 interface SharedExecutionShellServiceDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
@@ -210,6 +257,7 @@ export class SharedExecutionShellService {
       structuredReadings: buildStructuredReadingsEvidence(shell, rawInputs, result),
       observationNotes: '',
       checklistOutcomes: [],
+      riskJustifications: [],
       createdAt: updatedAt,
       updatedAt,
     });
@@ -258,6 +306,15 @@ export class SharedExecutionShellService {
         checklistItemId: item.id,
         outcome: item.outcome,
       })),
+      riskJustifications: shell.guidance.riskItems
+        .filter(
+          (item) => item.justificationRequired && item.justificationText.trim().length > 0,
+        )
+        .map((item) => ({
+          riskItemId: item.id,
+          reasonType: item.reasonType,
+          justificationText: item.justificationText.trim(),
+        })),
       createdAt: updatedAt,
       updatedAt,
     });
@@ -371,13 +428,33 @@ export class SharedExecutionShellService {
       return shell;
     }
 
-    return applyGuidanceState(
-      shell,
-      normalizeGuidanceState({
-        ...shell.guidance,
-        checklistItems,
-      }),
+    return applyGuidanceState(shell, {
+      ...shell.guidance,
+      checklistItems,
+    });
+  }
+
+  updateRiskJustification(
+    shell: SharedExecutionShell,
+    riskItemId: string,
+    justificationText: string,
+  ): SharedExecutionShell {
+    const riskItems = shell.guidance.riskItems.map((item) =>
+      item.id === riskItemId ? { ...item, justificationText } : item,
     );
+
+    const didChange = riskItems.some(
+      (item, index) => item.justificationText !== shell.guidance.riskItems[index]?.justificationText,
+    );
+
+    if (!didChange) {
+      return shell;
+    }
+
+    return applyGuidanceState(shell, {
+      ...shell.guidance,
+      riskItems,
+    });
   }
 }
 
@@ -391,6 +468,7 @@ function buildExecutionShell(
   storedEvidence: StoredExecutionEvidenceRecord[],
   storedPhotoAttachments: SharedExecutionPhotoAttachment[],
 ): SharedExecutionShell {
+  const riskInputs = buildRiskInputs(tagContext);
   const evidence = buildEvidenceState(
     snapshot.summary.id,
     tag.id,
@@ -398,7 +476,14 @@ function buildExecutionShell(
     storedPhotoAttachments,
   );
   const calculation = buildCalculationState(tag, template, storedCalculation);
-  const guidance = buildGuidanceState(snapshot, tag, template, storedEvidence);
+  const guidance = buildGuidanceState(
+    snapshot,
+    tag,
+    template,
+    storedEvidence,
+    riskInputs,
+    evidence,
+  );
 
   return {
     workPackageId: snapshot.summary.id,
@@ -407,6 +492,7 @@ function buildExecutionShell(
     tagCode: tag.tagCode,
     template,
     calculation,
+    riskInputs,
     guidance,
     evidence,
     steps: [
@@ -573,6 +659,8 @@ function buildGuidanceState(
   tag: AssignedWorkPackageTagSnapshot,
   template: SharedExecutionShell['template'],
   storedEvidence: StoredExecutionEvidenceRecord[],
+  riskInputs: SharedExecutionRiskInputs,
+  evidence: SharedExecutionEvidenceState,
 ): SharedExecutionGuidanceState {
   const savedGuidanceEvidence = storedEvidence.find(
     (item) => item.executionStepId === 'guidance',
@@ -583,17 +671,34 @@ function buildGuidanceState(
       item.outcome,
     ]),
   );
+  const riskJustificationById = new Map(
+    (savedGuidanceEvidence?.riskJustifications ?? []).map((item) => [
+      item.riskItemId,
+      item.justificationText,
+    ]),
+  );
 
-  return normalizeGuidanceState({
-    checklistItems: template.checklistSteps.map((item) => ({
-      ...item,
-      outcome: checklistOutcomeById.get(item.id) ?? 'pending',
-    })),
-    guidedDiagnosisPrompts: template.guidedDiagnosisPrompts,
-    linkedGuidance: buildLinkedGuidance(snapshot, tag),
-    riskState: 'clear',
-    riskHooks: [],
-  });
+  return deriveGuidanceState(
+    {
+      checklistItems: template.checklistSteps.map((item) => ({
+        ...item,
+        outcome: checklistOutcomeById.get(item.id) ?? 'pending',
+      })),
+      guidedDiagnosisPrompts: template.guidedDiagnosisPrompts,
+      linkedGuidance: buildLinkedGuidance(snapshot, tag),
+      riskState: 'clear',
+      riskHooks: [],
+      riskItems: [],
+      submitReadiness: 'ready',
+      submitBlockingHooks: [],
+    },
+    {
+      template,
+      riskInputs,
+      evidence,
+      riskJustificationById,
+    },
+  );
 }
 
 function buildLinkedGuidance(
@@ -611,46 +716,316 @@ function buildLinkedGuidance(
     }));
 }
 
-function normalizeGuidanceState(
-  guidance: SharedExecutionGuidanceState,
-): SharedExecutionGuidanceState {
-  const riskHooks = guidance.checklistItems
-    .map(buildChecklistRiskHook)
-    .filter((item): item is string => item !== null);
-
+function buildRiskInputs(tagContext: LocalTagContext): SharedExecutionRiskInputs {
   return {
-    ...guidance,
-    riskState: riskHooks.length > 0 ? 'flagged' : 'clear',
-    riskHooks,
+    historyState: tagContext.historyPreview.state,
+    missingContextFieldLabels: [
+      tagContext.area,
+      tagContext.parentAssetReference,
+      tagContext.instrumentFamily,
+      tagContext.instrumentSubtype,
+      tagContext.measuredVariable,
+      tagContext.signalType,
+      tagContext.range,
+      tagContext.tolerance,
+      tagContext.criticality,
+      tagContext.dueIndicator,
+    ]
+      .filter((field) => field.state === 'missing')
+      .map((field) => field.label),
   };
 }
 
-function buildChecklistRiskHook(item: SharedExecutionChecklistItem): string | null {
+function deriveGuidanceState(
+  guidance: SharedExecutionGuidanceState,
+  context: {
+    template: SharedExecutionShell['template'];
+    riskInputs: SharedExecutionRiskInputs;
+    evidence: SharedExecutionEvidenceState;
+    riskJustificationById?: Map<string, string>;
+  },
+): SharedExecutionGuidanceState {
+  const riskJustificationById =
+    context.riskJustificationById ??
+    new Map(guidance.riskItems.map((item) => [item.id, item.justificationText]));
+  const riskItems = buildRiskItems(guidance, context).map((item) => ({
+    ...item,
+    justificationText: riskJustificationById.get(item.id) ?? item.justificationText,
+  }));
+  const riskHooks = riskItems.map((item) => formatRiskHook(item));
+  const submitBlockingHooks = buildSubmitBlockingHooks(riskItems);
+
+  return {
+    ...guidance,
+    riskState: riskItems.length > 0 ? 'flagged' : 'clear',
+    riskHooks,
+    riskItems,
+    submitReadiness: submitBlockingHooks.length > 0 ? 'blocked' : 'ready',
+    submitBlockingHooks,
+  };
+}
+
+function buildRiskItems(
+  guidance: SharedExecutionGuidanceState,
+  context: {
+    template: SharedExecutionShell['template'];
+    riskInputs: SharedExecutionRiskInputs;
+    evidence: SharedExecutionEvidenceState;
+  },
+): SharedExecutionRiskItem[] {
+  const riskItems: SharedExecutionRiskItem[] = [];
+
+  if (context.riskInputs.missingContextFieldLabels.length > 0) {
+    riskItems.push({
+      id: 'missing-context',
+      reasonType: 'missing-context',
+      severity: 'warning',
+      title: 'Missing context',
+      detail: `Missing locally cached context: ${context.riskInputs.missingContextFieldLabels.join(', ')}.`,
+      justificationRequired: true,
+      justificationPrompt:
+        'Explain how you verified the work safely even though some field context was missing.',
+      justificationText: '',
+    });
+  }
+
+  const historyRiskItem = buildHistoryRiskItem(context.riskInputs.historyState);
+  if (historyRiskItem) {
+    riskItems.push(historyRiskItem);
+  }
+
+  for (const item of guidance.checklistItems) {
+    const checklistRiskItem = buildChecklistRiskItem(item);
+    if (checklistRiskItem) {
+      riskItems.push(checklistRiskItem);
+    }
+  }
+
+  for (const label of resolveMissingEvidenceLabels(
+    context.template.expectedEvidence,
+    context.evidence,
+  )) {
+    riskItems.push({
+      id: buildEvidenceRiskId('expected-evidence', label),
+      reasonType: 'missing-expected-evidence',
+      severity: 'warning',
+      title: `Expected evidence missing: ${label}`,
+      detail:
+        'The template marks this evidence as expected for a complete package. Work can continue, but the gap stays visible.',
+      justificationRequired: true,
+      justificationPrompt:
+        'Explain why this expected evidence could not be captured in the field.',
+      justificationText: '',
+    });
+  }
+
+  for (const label of resolveMissingEvidenceLabels(
+    context.template.minimumSubmissionEvidence,
+    context.evidence,
+  )) {
+    riskItems.push({
+      id: buildEvidenceRiskId('minimum-evidence', label),
+      reasonType: 'missing-minimum-evidence',
+      severity: 'submit-block',
+      title: `Minimum evidence missing: ${label}`,
+      detail:
+        'This evidence is part of the template minimum and will need to be captured before submission.',
+      justificationRequired: false,
+      justificationPrompt: null,
+      justificationText: '',
+    });
+  }
+
+  return riskItems;
+}
+
+function buildHistoryRiskItem(
+  historyState: SharedExecutionRiskInputs['historyState'],
+): SharedExecutionRiskItem | null {
+  switch (historyState) {
+    case 'stale':
+      return {
+        id: 'history-stale',
+        reasonType: 'missing-history',
+        severity: 'warning',
+        title: 'Cached history is stale',
+        detail: 'History is present but flagged as stale, so the comparison may not reflect the latest upstream work.',
+        justificationRequired: true,
+        justificationPrompt:
+          'Explain how you proceeded with a stale history reference in the field.',
+        justificationText: '',
+      };
+    case 'age-unknown':
+      return {
+        id: 'history-age-unknown',
+        reasonType: 'missing-history',
+        severity: 'warning',
+        title: 'Cached history age is unknown',
+        detail: 'History is present, but the package cannot confirm its freshness.',
+        justificationRequired: true,
+        justificationPrompt:
+          'Explain how you handled the age-unknown history reference during execution.',
+        justificationText: '',
+      };
+    case 'missing':
+      return {
+        id: 'history-missing',
+        reasonType: 'missing-history',
+        severity: 'warning',
+        title: 'History reference is missing',
+        detail: 'The cached package points to missing history data for this tag.',
+        justificationRequired: true,
+        justificationPrompt:
+          'Explain how you proceeded without the expected local history reference.',
+        justificationText: '',
+      };
+    case 'unavailable':
+      return {
+        id: 'history-unavailable',
+        reasonType: 'missing-history',
+        severity: 'warning',
+        title: 'History is unavailable',
+        detail: 'This cached package does not include local history for the selected tag.',
+        justificationRequired: true,
+        justificationPrompt:
+          'Explain how you proceeded without local history in the package.',
+        justificationText: '',
+      };
+    default:
+      return null;
+  }
+}
+
+function buildChecklistRiskItem(
+  item: SharedExecutionChecklistItem,
+): SharedExecutionRiskItem | null {
   if (item.outcome === 'skipped') {
-    return `Skipped: ${item.prompt} This leaves ${item.helpsRuleOut} unresolved.`;
+    return {
+      id: `checklist:${item.id}`,
+      reasonType: 'checklist-skipped',
+      severity: 'warning',
+      title: `Checklist skipped: ${item.prompt}`,
+      detail: `This leaves ${item.helpsRuleOut} unresolved until the technician explains why the step was skipped.`,
+      justificationRequired: true,
+      justificationPrompt: 'Explain why this checklist step was skipped.',
+      justificationText: '',
+    };
   }
 
   if (item.outcome === 'incomplete') {
-    return `Incomplete: ${item.prompt} Recheck it because it helps rule out ${item.helpsRuleOut}.`;
+    return {
+      id: `checklist:${item.id}`,
+      reasonType: 'checklist-incomplete',
+      severity: 'warning',
+      title: `Checklist incomplete: ${item.prompt}`,
+      detail: `This step still helps rule out ${item.helpsRuleOut}, so the incomplete state must stay visible.`,
+      justificationRequired: true,
+      justificationPrompt: 'Explain why this checklist step is still incomplete.',
+      justificationText: '',
+    };
   }
 
   return null;
+}
+
+function resolveMissingEvidenceLabels(
+  labels: string[],
+  evidence: SharedExecutionEvidenceState,
+): string[] {
+  return labels.filter((label) => !isEvidenceLabelSatisfied(label, evidence));
+}
+
+function isEvidenceLabelSatisfied(
+  label: string,
+  evidence: SharedExecutionEvidenceState,
+): boolean {
+  const evidenceKind = resolveEvidenceRequirementKind(label);
+  return evidenceKind ? isEvidenceKindSatisfied(evidenceKind, evidence) : false;
+}
+
+function resolveEvidenceRequirementKind(
+  label: string,
+): SharedExecutionEvidenceRequirementKind | null {
+  const normalizedLabel = normalizeEvidenceRequirementLabel(label);
+
+  if (STRUCTURED_READINGS_EVIDENCE_LABELS.has(normalizedLabel)) {
+    return 'structured-readings';
+  }
+
+  if (OBSERVATION_NOTES_EVIDENCE_LABELS.has(normalizedLabel)) {
+    return 'observation-notes';
+  }
+
+  if (PHOTO_EVIDENCE_LABELS.has(normalizedLabel)) {
+    return 'photo-evidence';
+  }
+
+  return null;
+}
+
+function isEvidenceKindSatisfied(
+  evidenceKind: SharedExecutionEvidenceRequirementKind,
+  evidence: SharedExecutionEvidenceState,
+): boolean {
+  switch (evidenceKind) {
+    case 'structured-readings':
+      return evidence.calculationEvidenceUpdatedAt !== null;
+    case 'observation-notes':
+      return evidence.observationNotes.trim().length > 0;
+    case 'photo-evidence':
+      return evidence.photoAttachments.length > 0;
+  }
+}
+
+function normalizeEvidenceRequirementLabel(label: string): string {
+  return label.trim().toLowerCase();
+}
+
+function buildEvidenceRiskId(
+  prefix: 'expected-evidence' | 'minimum-evidence',
+  label: string,
+): string {
+  return `${prefix}:${label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+}
+
+function formatRiskHook(item: SharedExecutionRiskItem): string {
+  return `${item.severity === 'submit-block' ? 'Submit-block' : 'Visible risk'}: ${item.title}.`;
+}
+
+function buildSubmitBlockingHooks(riskItems: SharedExecutionRiskItem[]): string[] {
+  const hooks = riskItems
+    .filter((item) => item.severity === 'submit-block')
+    .map((item) => `${item.title}.`);
+
+  for (const item of riskItems) {
+    if (item.justificationRequired && item.justificationText.trim().length === 0) {
+      hooks.push(`Justification required: ${item.title}.`);
+    }
+  }
+
+  return hooks;
 }
 
 function applyGuidanceState(
   shell: SharedExecutionShell,
   guidance: SharedExecutionGuidanceState,
 ): SharedExecutionShell {
+  const derivedGuidance = deriveGuidanceState(guidance, {
+    template: shell.template,
+    riskInputs: shell.riskInputs,
+    evidence: shell.evidence,
+  });
+
   return {
     ...shell,
-    guidance,
+    guidance: derivedGuidance,
     steps: shell.steps.map((step) =>
       step.id === 'guidance'
         ? {
             ...step,
-            summary: buildGuidanceStepSummary(guidance),
-            detail: buildGuidanceStepDetail(guidance),
-            fields: buildGuidanceFields(guidance, shell.evidence),
+            summary: buildGuidanceStepSummary(derivedGuidance),
+            detail: buildGuidanceStepDetail(derivedGuidance),
+            fields: buildGuidanceFields(derivedGuidance, shell.evidence),
           }
         : step,
     ),
@@ -668,14 +1043,21 @@ function mergeGuidanceOutcomesIntoShell(
 
     return previousItem ? { ...item, outcome: previousItem.outcome } : item;
   });
+  const riskItems = shell.guidance.riskItems.map((item) => {
+    const previousItem = previousGuidance.riskItems.find(
+      (candidate) => candidate.id === item.id,
+    );
 
-  return applyGuidanceState(
-    shell,
-    normalizeGuidanceState({
-      ...shell.guidance,
-      checklistItems,
-    }),
-  );
+    return previousItem
+      ? { ...item, justificationText: previousItem.justificationText }
+      : item;
+  });
+
+  return applyGuidanceState(shell, {
+    ...shell.guidance,
+    checklistItems,
+    riskItems,
+  });
 }
 
 function mergeInSessionEvidenceIntoShell(
@@ -716,8 +1098,12 @@ function mergeInSessionCalculationIntoShell(
 }
 
 function buildGuidanceStepSummary(guidance: SharedExecutionGuidanceState): string {
+  if (guidance.submitReadiness === 'blocked') {
+    return 'Visible risk is flagged locally. Missing minimum evidence or required justification would block submission later.';
+  }
+
   if (guidance.riskState === 'flagged') {
-    return 'Checklist risk is flagged locally. Review the incomplete or skipped items before moving on.';
+    return 'Visible risk is flagged locally. Capture justification where needed, but keep moving in the field.';
   }
 
   if (
@@ -732,8 +1118,12 @@ function buildGuidanceStepSummary(guidance: SharedExecutionGuidanceState): strin
 }
 
 function buildGuidanceStepDetail(guidance: SharedExecutionGuidanceState): string {
+  if (guidance.submitReadiness === 'blocked') {
+    return 'The shell stays non-blocking, but the current draft still has submit-blocking hooks that should be resolved before review.';
+  }
+
   if (guidance.riskState === 'flagged') {
-    return 'The shell remains non-blocking, but the flagged checklist items stay visible until you review them.';
+    return 'The shell remains non-blocking, and visible risks stay explicit so the technician can justify messy field conditions without abandoning the draft.';
   }
 
   return 'Guidance stays lightweight in the shared shell: what to do, why it matters, what it helps rule out, and the cached source reference.';
@@ -816,8 +1206,37 @@ function buildGuidanceFields(
       value:
         guidance.riskHooks.length > 0
           ? guidance.riskHooks.join(' ')
-          : 'No checklist risk is currently flagged.',
+          : 'No visible risk is currently flagged.',
       state: guidance.riskHooks.length > 0 ? 'missing' : 'available',
+    },
+    {
+      label: 'Submit readiness',
+      value: guidance.submitReadiness === 'blocked' ? 'Blocked by rule hooks' : 'Ready',
+      state: guidance.submitReadiness === 'blocked' ? 'missing' : 'available',
+    },
+    {
+      label: 'Submit blocking hooks',
+      value:
+        guidance.submitBlockingHooks.length > 0
+          ? guidance.submitBlockingHooks.join(' ')
+          : 'No submit-blocking hooks are active.',
+      state: guidance.submitBlockingHooks.length > 0 ? 'missing' : 'available',
+    },
+    {
+      label: 'Required justifications',
+      value:
+        guidance.riskItems.filter((item) => item.justificationRequired).length > 0
+          ? `${guidance.riskItems.filter((item) => item.justificationRequired).length} required / ${
+              guidance.riskItems.filter((item) => item.justificationRequired && item.justificationText.trim().length > 0).length
+            } entered`
+          : 'None required',
+      state:
+        guidance.riskItems.some(
+          (item) =>
+            item.justificationRequired && item.justificationText.trim().length === 0,
+        )
+          ? 'missing'
+          : 'available',
     },
   ];
 }
@@ -854,14 +1273,23 @@ function applyEvidenceState(
   shell: SharedExecutionShell,
   evidence: SharedExecutionEvidenceState,
 ): SharedExecutionShell {
+  const guidance = deriveGuidanceState(shell.guidance, {
+    template: shell.template,
+    riskInputs: shell.riskInputs,
+    evidence,
+  });
+
   return {
     ...shell,
     evidence,
+    guidance,
     steps: shell.steps.map((step) =>
       step.id === 'guidance'
         ? {
             ...step,
-            fields: buildGuidanceFields(shell.guidance, evidence),
+            summary: buildGuidanceStepSummary(guidance),
+            detail: buildGuidanceStepDetail(guidance),
+            fields: buildGuidanceFields(guidance, evidence),
           }
         : step,
     ),
@@ -895,19 +1323,6 @@ function mapHistoryFieldState(
     case 'available':
     case 'stale':
     case 'age-unknown':
-      return 'available';
-    case 'missing':
-      return 'missing';
-    default:
-      return 'unavailable';
-  }
-}
-
-function mapReferenceFieldState(
-  state: LocalTagContext['referencePointers']['state'],
-): SharedExecutionField['state'] {
-  switch (state) {
-    case 'available':
       return 'available';
     case 'missing':
       return 'missing';
