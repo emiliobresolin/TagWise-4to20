@@ -17,10 +17,14 @@ import type {
   SharedExecutionField,
   SharedExecutionGuidanceState,
   SharedExecutionLinkedGuidanceSnippet,
+  SharedExecutionPhotoAttachment,
+  SharedExecutionPhotoAttachmentInput,
   SharedExecutionShell,
+  SharedExecutionStepKind,
   SharedExecutionCalculationRawInputs,
   StoredExecutionCalculationRecord,
   StoredExecutionEvidenceRecord,
+  StoredExecutionPhotoAttachmentPayload,
   StoredExecutionProgressRecord,
   StoredExecutionStructuredReadingsEvidence,
 } from './model';
@@ -96,6 +100,15 @@ export class SharedExecutionShellService {
       template.id,
       template.version,
     );
+    const storedPhotoAttachments = await buildPhotoAttachments(
+      store,
+      await store.evidenceMetadata.listEvidenceByBusinessObject({
+        businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+        businessObjectId: buildDraftReportId(workPackageId, tagId),
+      }),
+      workPackageId,
+      tagId,
+    );
 
     if (!progress) {
       progress = {
@@ -121,6 +134,7 @@ export class SharedExecutionShellService {
       progress,
       storedCalculation,
       storedEvidence,
+      storedPhotoAttachments,
     );
   }
 
@@ -260,6 +274,86 @@ export class SharedExecutionShellService {
       : shell;
   }
 
+  async attachPhotoEvidence(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+    photo: SharedExecutionPhotoAttachmentInput,
+  ): Promise<SharedExecutionShell> {
+    const updatedAt = this.now().toISOString();
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const draftReportId = await ensureDraftReportLink(store, shell, updatedAt);
+    const sandboxFile = await store.mediaSandbox.copyFile({
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: draftReportId,
+      fileName: buildPhotoAttachmentFileName(shell, photo, updatedAt),
+      sourceUri: photo.uri,
+    });
+
+    await store.evidenceMetadata.saveEvidenceMetadata({
+      evidenceId: buildPhotoEvidenceId(updatedAt),
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: draftReportId,
+      fileName: sandboxFile.fileName,
+      mediaRelativePath: sandboxFile.relativePath,
+      mimeType: photo.mimeType,
+      payloadJson: JSON.stringify({
+        kind: 'photo',
+        workPackageId: shell.workPackageId,
+        tagId: shell.tagId,
+        templateId: shell.template.id,
+        templateVersion: shell.template.version,
+        draftReportId,
+        executionStepId: toExecutionStepKind(shell.progress.currentStepId),
+        source: photo.source,
+        width: photo.width,
+        height: photo.height,
+        fileSize: photo.fileSize,
+      } satisfies StoredExecutionPhotoAttachmentPayload),
+    });
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell
+      ? mergeInSessionWorkingStateIntoShell(reloadedShell, shell)
+      : shell;
+  }
+
+  async removePhotoEvidence(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+    evidenceId: string,
+  ): Promise<SharedExecutionShell> {
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const metadata = await store.evidenceMetadata.getEvidenceById(evidenceId);
+
+    if (
+      !metadata ||
+      metadata.businessObjectType !== LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE ||
+      metadata.businessObjectId !== shell.evidence.draftReportId
+    ) {
+      return shell;
+    }
+
+    await store.mediaSandbox.deleteFile(metadata.mediaRelativePath);
+    await store.evidenceMetadata.deleteEvidenceMetadata(evidenceId);
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell
+      ? mergeInSessionWorkingStateIntoShell(reloadedShell, shell)
+      : shell;
+  }
+
   updateChecklistOutcome(
     shell: SharedExecutionShell,
     checklistItemId: string,
@@ -295,8 +389,14 @@ function buildExecutionShell(
   progress: StoredExecutionProgressRecord,
   storedCalculation: StoredExecutionCalculationRecord | null,
   storedEvidence: StoredExecutionEvidenceRecord[],
+  storedPhotoAttachments: SharedExecutionPhotoAttachment[],
 ): SharedExecutionShell {
-  const evidence = buildEvidenceState(snapshot.summary.id, tag.id, storedEvidence);
+  const evidence = buildEvidenceState(
+    snapshot.summary.id,
+    tag.id,
+    storedEvidence,
+    storedPhotoAttachments,
+  );
   const calculation = buildCalculationState(tag, template, storedCalculation);
   const guidance = buildGuidanceState(snapshot, tag, template, storedEvidence);
 
@@ -591,6 +691,16 @@ function mergeInSessionEvidenceIntoShell(
   );
 }
 
+function mergeInSessionWorkingStateIntoShell(
+  shell: SharedExecutionShell,
+  previousShell: SharedExecutionShell,
+): SharedExecutionShell {
+  return mergeInSessionCalculationIntoShell(
+    mergeInSessionEvidenceIntoShell(shell, previousShell),
+    previousShell,
+  );
+}
+
 function mergeInSessionCalculationIntoShell(
   shell: SharedExecutionShell,
   previousShell: SharedExecutionShell,
@@ -645,6 +755,7 @@ function buildGuidanceFields(
   const pendingCount = guidance.checklistItems.filter(
     (item) => item.outcome === 'pending',
   ).length;
+  const latestPhotoAttachment = evidence.photoAttachments.at(-1);
 
   return [
     availableField('Draft report', evidence.draftReportId),
@@ -661,6 +772,21 @@ function buildGuidanceFields(
         ? evidence.observationNotes.trim()
         : 'No local observation notes saved yet.',
       state: evidence.observationNotes.trim().length > 0 ? 'available' : 'missing',
+    },
+    {
+      label: 'Photo attachments',
+      value:
+        evidence.photoAttachments.length > 0
+          ? `${evidence.photoAttachments.length} photo attachment(s) linked to the draft report`
+          : 'No local draft-report photos attached yet.',
+      state: evidence.photoAttachments.length > 0 ? 'available' : 'missing',
+    },
+    {
+      label: 'Latest photo saved',
+      value: latestPhotoAttachment
+        ? new Date(latestPhotoAttachment.updatedAt).toLocaleString()
+        : 'Not saved yet',
+      state: latestPhotoAttachment ? 'available' : 'missing',
     },
     availableField(
       'Checklist status',
@@ -700,6 +826,7 @@ function buildEvidenceState(
   workPackageId: string,
   tagId: string,
   storedEvidence: StoredExecutionEvidenceRecord[],
+  storedPhotoAttachments: SharedExecutionPhotoAttachment[],
 ): SharedExecutionEvidenceState {
   const calculationEvidence = storedEvidence.find(
     (item) => item.executionStepId === 'calculation',
@@ -707,6 +834,7 @@ function buildEvidenceState(
   const guidanceEvidence = storedEvidence.find(
     (item) => item.executionStepId === 'guidance',
   );
+  const latestPhotoAttachment = storedPhotoAttachments.at(-1);
 
   return {
     draftReportId:
@@ -717,6 +845,8 @@ function buildEvidenceState(
     observationNotes: guidanceEvidence?.observationNotes ?? '',
     calculationEvidenceUpdatedAt: calculationEvidence?.updatedAt ?? null,
     guidanceEvidenceUpdatedAt: guidanceEvidence?.updatedAt ?? null,
+    photoAttachments: storedPhotoAttachments,
+    photoEvidenceUpdatedAt: latestPhotoAttachment?.updatedAt ?? null,
   };
 }
 
@@ -977,6 +1107,82 @@ function buildStructuredReadingsEvidence(
   };
 }
 
+async function buildPhotoAttachments(
+  store: UserPartitionedLocalStore,
+  storedMetadata: Awaited<ReturnType<UserPartitionedLocalStore['evidenceMetadata']['listEvidenceByBusinessObject']>>,
+  workPackageId: string,
+  tagId: string,
+): Promise<SharedExecutionPhotoAttachment[]> {
+  const attachments = await Promise.all(
+    storedMetadata.map(async (record) => {
+      const payload = parsePhotoAttachmentPayload(record.payloadJson);
+      if (
+        !payload ||
+        payload.kind !== 'photo' ||
+        payload.workPackageId !== workPackageId ||
+        payload.tagId !== tagId
+      ) {
+        return null;
+      }
+
+      return {
+        evidenceId: record.evidenceId,
+        executionStepId: payload.executionStepId,
+        fileName: record.fileName,
+        mimeType: record.mimeType,
+        previewUri: await store.mediaSandbox.resolveFileUri(record.mediaRelativePath),
+        mediaRelativePath: record.mediaRelativePath,
+        source: payload.source,
+        width: payload.width,
+        height: payload.height,
+        fileSize: payload.fileSize,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      } satisfies SharedExecutionPhotoAttachment;
+    }),
+  );
+
+  return attachments
+    .filter((item): item is SharedExecutionPhotoAttachment => item !== null)
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function parsePhotoAttachmentPayload(
+  payloadJson: string,
+): StoredExecutionPhotoAttachmentPayload | null {
+  try {
+    const parsed = JSON.parse(payloadJson) as Partial<StoredExecutionPhotoAttachmentPayload>;
+    if (
+      parsed.kind !== 'photo' ||
+      typeof parsed.workPackageId !== 'string' ||
+      typeof parsed.tagId !== 'string' ||
+      typeof parsed.templateId !== 'string' ||
+      typeof parsed.templateVersion !== 'string' ||
+      typeof parsed.draftReportId !== 'string' ||
+      !isExecutionStepKind(parsed.executionStepId) ||
+      (parsed.source !== 'camera' && parsed.source !== 'library')
+    ) {
+      return null;
+    }
+
+    return {
+      kind: 'photo',
+      workPackageId: parsed.workPackageId,
+      tagId: parsed.tagId,
+      templateId: parsed.templateId,
+      templateVersion: parsed.templateVersion,
+      draftReportId: parsed.draftReportId,
+      executionStepId: parsed.executionStepId,
+      source: parsed.source,
+      width: typeof parsed.width === 'number' ? parsed.width : null,
+      height: typeof parsed.height === 'number' ? parsed.height : null,
+      fileSize: typeof parsed.fileSize === 'number' ? parsed.fileSize : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function ensureDraftReportLink(
   store: UserPartitionedLocalStore,
   shell: SharedExecutionShell,
@@ -1004,6 +1210,55 @@ async function ensureDraftReportLink(
 
 function buildDraftReportId(workPackageId: string, tagId: string): string {
   return `tag-report:${workPackageId}:${tagId}`;
+}
+
+function buildPhotoAttachmentFileName(
+  shell: SharedExecutionShell,
+  photo: SharedExecutionPhotoAttachmentInput,
+  timestamp: string,
+): string {
+  const extension = resolvePhotoFileExtension(photo);
+  return [
+    shell.tagCode,
+    shell.progress.currentStepId,
+    compactTimestamp(timestamp),
+    Math.random().toString(36).slice(2, 8),
+  ].join('-') + extension;
+}
+
+function buildPhotoEvidenceId(timestamp: string): string {
+  return `photo:${compactTimestamp(timestamp)}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function resolvePhotoFileExtension(photo: SharedExecutionPhotoAttachmentInput): string {
+  const source = photo.fileName ?? photo.uri;
+  const explicitExtensionMatch = source.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
+  if (explicitExtensionMatch) {
+    return `.${explicitExtensionMatch[1]!.toLowerCase()}`;
+  }
+
+  switch (photo.mimeType) {
+    case 'image/png':
+      return '.png';
+    case 'image/heic':
+      return '.heic';
+    case 'image/webp':
+      return '.webp';
+    default:
+      return '.jpg';
+  }
+}
+
+function compactTimestamp(timestamp: string): string {
+  return timestamp.replace(/[^0-9]/g, '').slice(0, 14);
+}
+
+function toExecutionStepKind(stepId: string): SharedExecutionStepKind {
+  return isExecutionStepKind(stepId) ? stepId : 'guidance';
+}
+
+function isExecutionStepKind(value: unknown): value is SharedExecutionStepKind {
+  return value === 'context' || value === 'calculation' || value === 'history' || value === 'guidance';
 }
 
 function toDisplayAcceptance(

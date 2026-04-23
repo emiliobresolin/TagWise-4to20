@@ -28,11 +28,22 @@ export interface UserOwnedTextFileWriteRequest {
   contents: string;
 }
 
+export interface UserOwnedBinaryFileCopyRequest {
+  ownerUserId: string;
+  businessObjectType: string;
+  businessObjectId: string;
+  fileName: string;
+  sourceUri: string;
+}
+
 export interface AppSandboxBoundary {
   ensureUserOwnedMediaDirectory(
     request: Omit<UserOwnedTextFileWriteRequest, 'fileName' | 'contents'>,
   ): Promise<UserOwnedMediaDirectory>;
   writeUserOwnedTextFile(request: UserOwnedTextFileWriteRequest): Promise<UserOwnedSandboxFile>;
+  copyUserOwnedMediaFile(request: UserOwnedBinaryFileCopyRequest): Promise<UserOwnedSandboxFile>;
+  deleteUserOwnedMediaFile(relativePath: string): Promise<void>;
+  resolveUserOwnedMediaFileUri(relativePath: string): Promise<string>;
 }
 
 interface ExpoFileSystemModule {
@@ -44,6 +55,8 @@ interface ExpoFileSystemModule {
     },
   ): Promise<void>;
   writeAsStringAsync(uri: string, contents: string): Promise<void>;
+  copyAsync(options: { from: string; to: string }): Promise<void>;
+  deleteAsync(uri: string, options?: { idempotent?: boolean }): Promise<void>;
 }
 
 export interface UserOwnedMediaSandbox {
@@ -52,6 +65,11 @@ export interface UserOwnedMediaSandbox {
     businessObjectType: string;
     businessObjectId: string;
   }): Promise<UserOwnedMediaDirectory>;
+  copyFile(
+    request: Omit<UserOwnedBinaryFileCopyRequest, 'ownerUserId'>,
+  ): Promise<UserOwnedSandboxFile>;
+  deleteFile(relativePath: string): Promise<void>;
+  resolveFileUri(relativePath: string): Promise<string>;
   writeTextFile(
     request: Omit<UserOwnedTextFileWriteRequest, 'ownerUserId'>,
   ): Promise<UserOwnedSandboxFile>;
@@ -105,6 +123,48 @@ export function createAppSandboxBoundary(
         uri,
       };
     },
+
+    async copyUserOwnedMediaFile(request) {
+      const fileSystem = await fileSystemLoader();
+      const documentDirectory = requireDocumentDirectory(fileSystem.documentDirectory);
+      const directory = await this.ensureUserOwnedMediaDirectory(request);
+      const sanitizedFileName = sanitizeSandboxSegment(request.fileName);
+      const relativePath = buildUserOwnedMediaRelativePath(
+        request.ownerUserId,
+        request.businessObjectType,
+        request.businessObjectId,
+        sanitizedFileName,
+      );
+      const uri = joinUriSegments(documentDirectory, relativePath);
+
+      await fileSystem.copyAsync({
+        from: request.sourceUri,
+        to: uri,
+      });
+
+      return {
+        ownerUserId: request.ownerUserId,
+        businessObjectType: request.businessObjectType,
+        businessObjectId: request.businessObjectId,
+        fileName: sanitizedFileName,
+        relativePath,
+        uri,
+      };
+    },
+
+    async deleteUserOwnedMediaFile(relativePath) {
+      const fileSystem = await fileSystemLoader();
+      const documentDirectory = requireDocumentDirectory(fileSystem.documentDirectory);
+      const uri = joinUriSegments(documentDirectory, relativePath);
+
+      await fileSystem.deleteAsync(uri, { idempotent: true });
+    },
+
+    async resolveUserOwnedMediaFileUri(relativePath) {
+      const fileSystem = await fileSystemLoader();
+      const documentDirectory = requireDocumentDirectory(fileSystem.documentDirectory);
+      return joinUriSegments(documentDirectory, relativePath);
+    },
   };
 }
 
@@ -119,6 +179,18 @@ export function createUserOwnedMediaSandbox(
         ownerUserId,
         ...request,
       });
+    },
+    copyFile(request) {
+      return boundary.copyUserOwnedMediaFile({
+        ownerUserId,
+        ...request,
+      });
+    },
+    deleteFile(relativePath) {
+      return boundary.deleteUserOwnedMediaFile(relativePath);
+    },
+    resolveFileUri(relativePath) {
+      return boundary.resolveUserOwnedMediaFileUri(relativePath);
     },
     writeTextFile(request) {
       return boundary.writeUserOwnedTextFile({

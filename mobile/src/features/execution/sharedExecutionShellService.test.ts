@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -1369,6 +1369,280 @@ describe('SharedExecutionShellService', () => {
         }),
       ]),
     );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('captures a local photo attachment into the draft report and restores its preview after reopen', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-photo-evidence-'));
+    createdDirectories.push(tempDirectory);
+
+    const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
+    const sourcePhotoPath = join(tempDirectory, 'captured-photo.jpg');
+    const draftReportId = `tag-report:${baseSnapshot.summary.id}:tag-001`;
+    writeFileSync(sourcePhotoPath, 'fake-jpeg-binary');
+
+    const firstRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const firstService = new SharedExecutionShellService({
+      userPartitions: firstRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: firstRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const initialShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const guidanceShell = await firstService.selectStep(session, initialShell!, 'guidance');
+    const attachedShell = await firstService.attachPhotoEvidence(session, guidanceShell, {
+      source: 'camera',
+      uri: sourcePhotoPath,
+      fileName: 'captured-photo.jpg',
+      mimeType: 'image/jpeg',
+      width: 1024,
+      height: 768,
+      fileSize: 2048,
+    });
+
+    expect(attachedShell.evidence).toMatchObject({
+      draftReportId,
+      photoAttachments: [
+        expect.objectContaining({
+          executionStepId: 'guidance',
+          fileName: expect.stringContaining('.jpg'),
+          mimeType: 'image/jpeg',
+          source: 'camera',
+          width: 1024,
+          height: 768,
+          fileSize: 2048,
+        }),
+      ],
+    });
+    expect(attachedShell.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Photo attachments',
+          value: '1 photo attachment(s) linked to the draft report',
+        }),
+      ]),
+    );
+
+    const firstStore = firstRuntime.repositories.userPartitions.forUser(session.userId);
+    const savedMetadata = await firstStore.evidenceMetadata.listEvidenceByBusinessObject({
+      businessObjectType: 'per-tag-report',
+      businessObjectId: draftReportId,
+    });
+    expect(savedMetadata).toHaveLength(1);
+    expect(JSON.parse(savedMetadata[0]!.payloadJson)).toMatchObject({
+      kind: 'photo',
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      templateVersion: '2026-04-v1',
+      draftReportId,
+      executionStepId: 'guidance',
+      source: 'camera',
+    });
+    expect(readFileSync(attachedShell.evidence.photoAttachments[0]!.previewUri, 'utf-8')).toBe(
+      'fake-jpeg-binary',
+    );
+
+    await firstRuntime.database.closeAsync?.();
+
+    const secondRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    const secondService = new SharedExecutionShellService({
+      userPartitions: secondRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: secondRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:10:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:10:00.000Z'),
+    });
+
+    await expect(
+      secondService.loadShell(
+        session,
+        baseSnapshot.summary.id,
+        'tag-001',
+        'tpl-pressure-as-found',
+      ),
+    ).resolves.toMatchObject({
+      evidence: {
+        draftReportId,
+        photoAttachments: [
+          expect.objectContaining({
+            mimeType: 'image/jpeg',
+            source: 'camera',
+          }),
+        ],
+      },
+    });
+
+    await secondRuntime.database.closeAsync?.();
+  });
+
+  it('removes a draft photo attachment from metadata and local file storage consistently', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-photo-remove-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    const sourcePhotoPath = join(tempDirectory, 'selected-photo.jpg');
+    writeFileSync(sourcePhotoPath, 'selected-fake-jpeg');
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const initialShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const attachedShell = await service.attachPhotoEvidence(
+      session,
+      await service.selectStep(session, initialShell!, 'guidance'),
+      {
+        source: 'library',
+        uri: sourcePhotoPath,
+        fileName: 'selected-photo.jpg',
+        mimeType: 'image/jpeg',
+        width: 800,
+        height: 600,
+        fileSize: 1024,
+      },
+    );
+
+    const [photoAttachment] = attachedShell.evidence.photoAttachments;
+    expect(photoAttachment).toBeDefined();
+    expect(existsSync(photoAttachment!.previewUri)).toBe(true);
+
+    const removedShell = await service.removePhotoEvidence(
+      session,
+      attachedShell,
+      photoAttachment!.evidenceId,
+    );
+
+    expect(removedShell.evidence.photoAttachments).toEqual([]);
+    expect(existsSync(photoAttachment!.previewUri)).toBe(false);
+    await expect(
+      runtime.repositories.userPartitions.forUser(session.userId).evidenceMetadata.listEvidenceByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      }),
+    ).resolves.toEqual([]);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('preserves dirty calculation and guidance state when a photo attachment is saved', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-photo-preserve-state-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const sourcePhotoPath = join(tempDirectory, 'state-photo.jpg');
+    writeFileSync(sourcePhotoPath, 'state-fake-jpeg');
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const dirtyShell = {
+      ...service.updateObservationNotes(
+        service.updateChecklistOutcome(shell!, 'pressure-path-check', 'completed'),
+        'Keep this note while the photo is linked.',
+      ),
+      calculation: {
+        ...shell!.calculation!,
+        rawInputs: {
+          expectedValue: '7',
+          observedValue: '7.08',
+        },
+      },
+    };
+
+    const attachedShell = await service.attachPhotoEvidence(
+      session,
+      await service.selectStep(session, dirtyShell, 'guidance'),
+      {
+        source: 'camera',
+        uri: sourcePhotoPath,
+        fileName: 'state-photo.jpg',
+        mimeType: 'image/jpeg',
+        width: 640,
+        height: 480,
+        fileSize: 900,
+      },
+    );
+
+    expect(attachedShell).toMatchObject({
+      calculation: {
+        rawInputs: {
+          expectedValue: '7',
+          observedValue: '7.08',
+        },
+      },
+      evidence: {
+        observationNotes: 'Keep this note while the photo is linked.',
+      },
+      guidance: {
+        checklistItems: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'pressure-path-check',
+            outcome: 'completed',
+          }),
+        ]),
+      },
+    });
 
     await runtime.database.closeAsync?.();
   });

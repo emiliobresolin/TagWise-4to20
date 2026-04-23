@@ -124,12 +124,23 @@ export class UserPartitionedEvidenceMetadataRepository {
         WHERE owner_user_id = ?
           AND business_object_type = ?
           AND business_object_id = ?
-        ORDER BY evidence_id ASC;
+        ORDER BY created_at ASC, evidence_id ASC;
       `,
       [this.ownerUserId, input.businessObjectType, input.businessObjectId],
     );
 
     return rows.map(mapEvidenceRow);
+  }
+
+  async deleteEvidenceMetadata(evidenceId: string): Promise<void> {
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_evidence_metadata
+        WHERE owner_user_id = ?
+          AND evidence_id = ?;
+      `,
+      [this.ownerUserId, evidenceId],
+    );
   }
 }
 

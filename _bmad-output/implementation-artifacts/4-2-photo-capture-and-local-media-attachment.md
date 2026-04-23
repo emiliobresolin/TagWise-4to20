@@ -1,6 +1,6 @@
 ﻿# Story 4.2: Photo Capture and Local Media Attachment
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 4-2-photo-capture-and-local-media-attachment
@@ -41,3 +41,34 @@ store binaries in sandbox filesystem; keep metadata in SQLite; defer remote uplo
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a bounded mobile photo acquisition seam for both camera capture and local-library attach so Story 4.2 can stay offline-first without embedding picker logic into the execution service.
+- Reused the approved per-tag draft-report anchor from Story 4.1: photo binaries now copy into the user-owned sandbox under the draft report, while attachment metadata stays in SQLite and carries tag, template version, execution step, and report linkage.
+- Kept the shared execution shell generic by surfacing draft-linked photo attachment preview and removal inside the existing guidance/evidence area, without creating a new report screen or introducing report-generation behavior early.
+- Preserved non-blocking field flow by merging in-session calculation inputs, notes, and checklist outcomes back into the shell after attachment add/remove reloads.
+
+### Tests Run
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- photoAcquisitionBoundary sharedExecutionShellService`
+- `cd mobile && npm test`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/package.json`
+- `mobile/package-lock.json`
+- `mobile/src/data/local/repositories/userPartitionedEvidenceMetadataRepository.ts`
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/platform/files/appSandboxBoundary.ts`
+- `mobile/src/platform/media/photoAcquisitionBoundary.ts`
+- `mobile/src/platform/media/photoAcquisitionBoundary.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `mobile/tests/helpers/createNodeAppSandboxBoundary.ts`
+- `_bmad-output/implementation-artifacts/4-2-photo-capture-and-local-media-attachment.md`

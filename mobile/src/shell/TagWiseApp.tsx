@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -41,6 +42,7 @@ import type {
   SharedExecutionField,
   SharedExecutionGuidanceItem,
   SharedExecutionLinkedGuidanceSnippet,
+  SharedExecutionPhotoAttachment,
   SharedExecutionShell,
 } from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
@@ -61,7 +63,10 @@ import type {
 } from '../features/work-packages/model';
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
+import { createPhotoAcquisitionBoundary } from '../platform/media/photoAcquisitionBoundary';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
+
+const photoAcquisitionBoundary = createPhotoAcquisitionBoundary();
 
 type BootstrapStatus =
   | { type: 'loading' }
@@ -818,6 +823,73 @@ export function TagWiseApp() {
             ...current,
             executionShell,
             authMessage: `Structured execution evidence saved locally for ${executionShell.tagCode}.`,
+          },
+    );
+  }
+
+  async function handleAttachExecutionPhoto(source: 'camera' | 'library') {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    try {
+      const photo =
+        source === 'camera'
+          ? await photoAcquisitionBoundary.capturePhoto()
+          : await photoAcquisitionBoundary.selectPhoto();
+
+      if (!photo) {
+        return;
+      }
+
+      const executionShell = await readyState.executionShellService.attachPhotoEvidence(
+        readyState.session,
+        readyState.executionShell,
+        photo,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              executionShell,
+              authMessage: `Photo attachment saved locally for ${executionShell.tagCode}.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Photo attachment failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  async function handleRemoveExecutionPhoto(evidenceId: string) {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    const executionShell = await readyState.executionShellService.removePhotoEvidence(
+      readyState.session,
+      readyState.executionShell,
+      evidenceId,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+            authMessage: `Photo attachment removed locally for ${executionShell.tagCode}.`,
           },
     );
   }
@@ -1774,8 +1846,13 @@ export function TagWiseApp() {
                           <ExecutionGuidancePanel
                             evidence={readyState.executionShell.evidence}
                             guidance={readyState.executionShell.guidance}
+                            onAttachPhotoFromCamera={() => void handleAttachExecutionPhoto('camera')}
+                            onAttachPhotoFromLibrary={() => void handleAttachExecutionPhoto('library')}
                             onChecklistOutcomeChange={handleChecklistOutcomeChange}
                             onObservationNotesChange={handleObservationNotesChange}
+                            onRemovePhotoAttachment={(evidenceId) =>
+                              void handleRemoveExecutionPhoto(evidenceId)
+                            }
                             onSaveEvidence={() => void handleSaveExecutionEvidence()}
                           />
                         ) : null}
@@ -2061,17 +2138,23 @@ function ExecutionFieldCard({
 function ExecutionGuidancePanel({
   evidence,
   guidance,
+  onAttachPhotoFromCamera,
+  onAttachPhotoFromLibrary,
   onChecklistOutcomeChange,
   onObservationNotesChange,
+  onRemovePhotoAttachment,
   onSaveEvidence,
 }: {
   evidence: SharedExecutionShell['evidence'];
   guidance: SharedExecutionShell['guidance'];
+  onAttachPhotoFromCamera: () => void;
+  onAttachPhotoFromLibrary: () => void;
   onChecklistOutcomeChange: (
     checklistItemId: string,
     outcome: SharedExecutionChecklistOutcome,
   ) => void;
   onObservationNotesChange: (value: string) => void;
+  onRemovePhotoAttachment: (evidenceId: string) => void;
   onSaveEvidence: () => void;
 }) {
   return (
@@ -2130,6 +2213,40 @@ function ExecutionGuidancePanel({
           ? formatTimestamp(evidence.guidanceEvidenceUpdatedAt)
           : 'Not saved yet'}
       </Text>
+
+      <Text style={styles.sectionTitle}>Draft report photo attachments</Text>
+      <View style={styles.metricGrid}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onAttachPhotoFromCamera}
+          style={styles.primaryButton}
+        >
+          <Text style={styles.primaryButtonLabel}>Capture photo</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onAttachPhotoFromLibrary}
+          style={styles.secondaryButton}
+        >
+          <Text style={styles.secondaryButtonLabel}>Attach photo</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.helperText}>
+        Photos are stored locally in the app sandbox and linked to the technician-owned draft
+        report before sync.
+      </Text>
+      {evidence.photoAttachments.length > 0 ? (
+        evidence.photoAttachments.map((attachment) => (
+          <ExecutionPhotoAttachmentCard
+            key={attachment.evidenceId}
+            attachment={attachment}
+            onRemove={() => onRemovePhotoAttachment(attachment.evidenceId)}
+          />
+        ))
+      ) : (
+        <Text style={styles.helperText}>No draft-report photo attachments have been saved yet.</Text>
+      )}
+
       <Pressable
         accessibilityRole="button"
         onPress={onSaveEvidence}
@@ -2168,6 +2285,39 @@ function ExecutionGuidancePanel({
       ) : (
         <Text style={styles.helperText}>No linked guidance references were cached for this tag.</Text>
       )}
+    </View>
+  );
+}
+
+function ExecutionPhotoAttachmentCard({
+  attachment,
+  onRemove,
+}: {
+  attachment: SharedExecutionPhotoAttachment;
+  onRemove: () => void;
+}) {
+  return (
+    <View style={styles.photoAttachmentCard}>
+      <Image source={{ uri: attachment.previewUri }} style={styles.photoAttachmentPreview} />
+      <Text style={styles.metricLabel}>Draft report photo</Text>
+      <Text style={styles.metricValue}>{attachment.fileName}</Text>
+      <Text style={styles.helperText}>
+        Source: {attachment.source === 'camera' ? 'Captured in app' : 'Attached from library'}.
+      </Text>
+      <Text style={styles.helperText}>
+        Saved: {formatTimestamp(attachment.updatedAt)}
+      </Text>
+      <Text style={styles.helperText}>
+        Step: {attachment.executionStepId}. Resolution:{' '}
+        {attachment.width && attachment.height
+          ? `${attachment.width} x ${attachment.height}`
+          : 'Unknown'}
+        . Size:{' '}
+        {attachment.fileSize !== null ? `${attachment.fileSize} bytes` : 'Unknown'}.
+      </Text>
+      <Pressable accessibilityRole="button" onPress={onRemove} style={styles.secondaryButton}>
+        <Text style={styles.secondaryButtonLabel}>Remove photo</Text>
+      </Pressable>
     </View>
   );
 }
@@ -2529,6 +2679,20 @@ const styles = StyleSheet.create({
     gap: 10,
     borderWidth: 1,
     borderColor: '#e5ece8',
+  },
+  photoAttachmentCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#dce3da',
+  },
+  photoAttachmentPreview: {
+    width: '100%',
+    height: 180,
+    borderRadius: 14,
+    backgroundColor: '#e5ece8',
   },
   listCardTitle: {
     fontSize: 17,

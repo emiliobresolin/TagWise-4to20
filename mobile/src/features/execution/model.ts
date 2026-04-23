@@ -157,12 +157,41 @@ export interface SharedExecutionGuidanceState {
   riskHooks: string[];
 }
 
+export type SharedExecutionPhotoAttachmentSource = 'camera' | 'library';
+
+export interface SharedExecutionPhotoAttachmentInput {
+  source: SharedExecutionPhotoAttachmentSource;
+  uri: string;
+  fileName: string | null;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  fileSize: number | null;
+}
+
+export interface SharedExecutionPhotoAttachment {
+  evidenceId: string;
+  executionStepId: SharedExecutionStepKind;
+  fileName: string;
+  mimeType: string | null;
+  previewUri: string;
+  mediaRelativePath: string;
+  source: SharedExecutionPhotoAttachmentSource;
+  width: number | null;
+  height: number | null;
+  fileSize: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SharedExecutionEvidenceState {
   draftReportId: string;
   draftReportState: 'technician-owned-draft';
   observationNotes: string;
   calculationEvidenceUpdatedAt: string | null;
   guidanceEvidenceUpdatedAt: string | null;
+  photoAttachments: SharedExecutionPhotoAttachment[];
+  photoEvidenceUpdatedAt: string | null;
 }
 
 export interface StoredExecutionProgressRecord {
@@ -220,4 +249,18 @@ export interface StoredExecutionEvidenceRecord {
   checklistOutcomes: StoredExecutionChecklistOutcomeRecord[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface StoredExecutionPhotoAttachmentPayload {
+  kind: 'photo';
+  workPackageId: string;
+  tagId: string;
+  templateId: string;
+  templateVersion: string;
+  draftReportId: string;
+  executionStepId: SharedExecutionStepKind;
+  source: SharedExecutionPhotoAttachmentSource;
+  width: number | null;
+  height: number | null;
+  fileSize: number | null;
 }
