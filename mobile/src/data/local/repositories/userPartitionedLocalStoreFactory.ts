@@ -5,6 +5,7 @@ import { AssignedWorkPackageRepository } from './assignedWorkPackageRepository';
 import { UserPartitionedExecutionCalculationRepository } from './userPartitionedExecutionCalculationRepository';
 import { UserPartitionedDraftRepository } from './userPartitionedDraftRepository';
 import { UserPartitionedEvidenceMetadataRepository } from './userPartitionedEvidenceMetadataRepository';
+import { UserPartitionedExecutionEvidenceRepository } from './userPartitionedExecutionEvidenceRepository';
 import { UserPartitionedExecutionProgressRepository } from './userPartitionedExecutionProgressRepository';
 import { UserPartitionedQueueItemRepository } from './userPartitionedQueueItemRepository';
 
@@ -12,6 +13,7 @@ export interface UserPartitionedLocalStore {
   ownerUserId: string;
   workPackages: AssignedWorkPackageRepository;
   executionCalculations: UserPartitionedExecutionCalculationRepository;
+  executionEvidence: UserPartitionedExecutionEvidenceRepository;
   executionProgress: UserPartitionedExecutionProgressRepository;
   drafts: UserPartitionedDraftRepository;
   evidenceMetadata: UserPartitionedEvidenceMetadataRepository;
@@ -30,6 +32,10 @@ export class UserPartitionedLocalStoreFactory {
       ownerUserId,
       workPackages: new AssignedWorkPackageRepository(this.database, ownerUserId),
       executionCalculations: new UserPartitionedExecutionCalculationRepository(
+        this.database,
+        ownerUserId,
+      ),
+      executionEvidence: new UserPartitionedExecutionEvidenceRepository(
         this.database,
         ownerUserId,
       ),

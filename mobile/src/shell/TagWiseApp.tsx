@@ -749,6 +749,20 @@ export function TagWiseApp() {
     );
   }
 
+  function handleObservationNotesChange(value: string) {
+    setStatus((current) =>
+      current.type !== 'ready' || !current.executionShell
+        ? current
+        : {
+            ...current,
+            executionShell: current.executionShellService.updateObservationNotes(
+              current.executionShell,
+              value,
+            ),
+          },
+    );
+  }
+
   async function handleSaveExecutionCalculation() {
     if (status.type !== 'ready' || !readyState.session || !readyState.executionShell?.calculation) {
       return;
@@ -785,6 +799,27 @@ export function TagWiseApp() {
             },
       );
     }
+  }
+
+  async function handleSaveExecutionEvidence() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    const executionShell = await readyState.executionShellService.saveGuidanceEvidence(
+      readyState.session,
+      readyState.executionShell,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+            authMessage: `Structured execution evidence saved locally for ${executionShell.tagCode}.`,
+          },
+    );
   }
 
   async function handleStartQrScanner() {
@@ -1737,8 +1772,11 @@ export function TagWiseApp() {
 
                         {selectedExecutionStep.kind === 'guidance' ? (
                           <ExecutionGuidancePanel
+                            evidence={readyState.executionShell.evidence}
                             guidance={readyState.executionShell.guidance}
                             onChecklistOutcomeChange={handleChecklistOutcomeChange}
+                            onObservationNotesChange={handleObservationNotesChange}
+                            onSaveEvidence={() => void handleSaveExecutionEvidence()}
                           />
                         ) : null}
 
@@ -2021,14 +2059,20 @@ function ExecutionFieldCard({
 }
 
 function ExecutionGuidancePanel({
+  evidence,
   guidance,
   onChecklistOutcomeChange,
+  onObservationNotesChange,
+  onSaveEvidence,
 }: {
+  evidence: SharedExecutionShell['evidence'];
   guidance: SharedExecutionShell['guidance'];
   onChecklistOutcomeChange: (
     checklistItemId: string,
     outcome: SharedExecutionChecklistOutcome,
   ) => void;
+  onObservationNotesChange: (value: string) => void;
+  onSaveEvidence: () => void;
 }) {
   return (
     <View style={styles.listCard}>
@@ -2061,6 +2105,38 @@ function ExecutionGuidancePanel({
             : 'Checklist items can still be skipped or left incomplete without blocking the shell.'}
         </Text>
       </View>
+
+      <View style={styles.metricCard}>
+        <Text style={styles.metricLabel}>Linked draft report</Text>
+        <Text style={styles.metricValue}>{evidence.draftReportId}</Text>
+        <Text style={styles.helperText}>
+          State: technician-owned draft. Guidance evidence remains editable locally in this story.
+        </Text>
+      </View>
+
+      <Text style={styles.sectionTitle}>Observation notes</Text>
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        multiline
+        onChangeText={onObservationNotesChange}
+        placeholder="Capture field observations, setup details, or anything the draft report should carry forward."
+        style={styles.input}
+        value={evidence.observationNotes}
+      />
+      <Text style={styles.helperText}>
+        Last saved:{' '}
+        {evidence.guidanceEvidenceUpdatedAt
+          ? formatTimestamp(evidence.guidanceEvidenceUpdatedAt)
+          : 'Not saved yet'}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onSaveEvidence}
+        style={styles.primaryButton}
+      >
+        <Text style={styles.primaryButtonLabel}>Save notes and checklist evidence</Text>
+      </Pressable>
 
       <Text style={styles.sectionTitle}>Checklist steps</Text>
       {guidance.checklistItems.length > 0 ? (

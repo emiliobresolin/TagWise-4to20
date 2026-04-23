@@ -1,6 +1,6 @@
 ﻿# Story 4.1: Structured Execution Evidence Capture
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 4-1-structured-execution-evidence-capture
@@ -41,3 +41,32 @@ store evidence metadata in SQLite linked to tag, step, and draft report ids; sup
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a dedicated local `user_partitioned_execution_evidence` store so structured readings, free-text notes, and checklist outcomes can be linked to tag, execution step, and draft report without introducing backend/runtime coupling.
+- Kept the shared shell generic: deterministic calculation save now also snapshots structured readings evidence for the `calculation` step, while a new guidance-evidence save path persists notes and checklist outcomes for the `guidance` step.
+- Added a lightweight per-tag draft-report anchor using the existing local draft repository so every captured evidence item now links to a stable technician-owned draft report id without starting full report generation early.
+- Preserved non-blocking execution and existing Epic 3 behavior: checklist and note editing remain local-first, restart-safe, and editable while the linked report stays in technician-owned draft state.
+
+### Tests Run
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- sharedExecutionShellService bootstrap userPartitionedLocalStoreFactory`
+- `cd mobile && npm test`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/src/data/local/repositories/userPartitionedExecutionEvidenceRepository.ts`
+- `mobile/src/data/local/repositories/userPartitionedLocalStoreFactory.ts`
+- `mobile/src/data/local/repositories/userPartitionedLocalStoreFactory.test.ts`
+- `mobile/src/data/local/sqlite/migrations.ts`
+- `mobile/src/data/local/sqlite/bootstrap.test.ts`
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/4-1-structured-execution-evidence-capture.md`

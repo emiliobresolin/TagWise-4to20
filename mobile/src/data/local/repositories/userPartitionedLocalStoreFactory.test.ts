@@ -105,6 +105,25 @@ describe('UserPartitionedLocalStoreFactory', () => {
       updatedAt: '2026-04-20T10:16:00.000Z',
     });
 
+    await technicianStore.executionEvidence.saveEvidence({
+      workPackageId: 'wp-101',
+      tagId: 'tag-101',
+      templateId: 'tpl-pressure',
+      templateVersion: '2026-04-v1',
+      draftReportId: 'tag-report:wp-101:tag-101',
+      executionStepId: 'guidance',
+      structuredReadings: null,
+      observationNotes: 'Impulse path checked locally.',
+      checklistOutcomes: [
+        {
+          checklistItemId: 'pressure-path-check',
+          outcome: 'completed',
+        },
+      ],
+      createdAt: '2026-04-20T10:17:00.000Z',
+      updatedAt: '2026-04-20T10:17:00.000Z',
+    });
+
     await technicianStore.workPackages.upsertCatalog([
       {
         id: 'wp-101',
@@ -148,6 +167,14 @@ describe('UserPartitionedLocalStoreFactory', () => {
         '2026-04-v1',
       ),
     ).toBeNull();
+    expect(
+      await supervisorStore.executionEvidence.listEvidence(
+        'wp-101',
+        'tag-101',
+        'tpl-pressure',
+        '2026-04-v1',
+      ),
+    ).toEqual([]);
     expect(await supervisorStore.workPackages.listSummaries()).toEqual([]);
 
     expect(
@@ -191,6 +218,26 @@ describe('UserPartitionedLocalStoreFactory', () => {
         acceptance: 'fail',
       },
     });
+    expect(
+      await technicianStore.executionEvidence.listEvidence(
+        'wp-101',
+        'tag-101',
+        'tpl-pressure',
+        '2026-04-v1',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        draftReportId: 'tag-report:wp-101:tag-101',
+        executionStepId: 'guidance',
+        observationNotes: 'Impulse path checked locally.',
+        checklistOutcomes: [
+          {
+            checklistItemId: 'pressure-path-check',
+            outcome: 'completed',
+          },
+        ],
+      }),
+    ]);
     expect(await technicianStore.workPackages.listSummaries()).toHaveLength(1);
 
     expect(sandboxFile.relativePath).toContain('evidence/users/user-technician/tag/tag-101');

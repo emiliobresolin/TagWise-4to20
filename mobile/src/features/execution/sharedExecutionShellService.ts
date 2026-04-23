@@ -8,23 +8,33 @@ import type {
 import { LocalExecutionTemplateRegistry } from './localExecutionTemplateRegistry';
 import type {
   SharedExecutionCalculationAcceptance,
+  SharedExecutionCalculationResult,
   SharedExecutionCalculationState,
   SharedExecutionChecklistItem,
   SharedExecutionChecklistOutcome,
   SharedExecutionCaptureFieldId,
+  SharedExecutionEvidenceState,
   SharedExecutionField,
   SharedExecutionGuidanceState,
   SharedExecutionLinkedGuidanceSnippet,
   SharedExecutionShell,
   SharedExecutionCalculationRawInputs,
   StoredExecutionCalculationRecord,
+  StoredExecutionEvidenceRecord,
   StoredExecutionProgressRecord,
+  StoredExecutionStructuredReadingsEvidence,
 } from './model';
-import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
+import type {
+  UserPartitionedLocalStore,
+  UserPartitionedLocalStoreFactory,
+} from '../../data/local/repositories/userPartitionedLocalStoreFactory';
 import {
   computeDeterministicCalculation,
   resolveDeterministicCalculationDefinition,
 } from './deterministicCalculationEngine';
+
+const LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE = 'per-tag-report';
+const TECHNICIAN_OWNED_DRAFT_REPORT_STATE = 'technician-owned-draft';
 
 interface SharedExecutionShellServiceDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
@@ -80,6 +90,12 @@ export class SharedExecutionShellService {
       template.id,
       template.version,
     );
+    const storedEvidence = await store.executionEvidence.listEvidence(
+      workPackageId,
+      tagId,
+      template.id,
+      template.version,
+    );
 
     if (!progress) {
       progress = {
@@ -97,7 +113,15 @@ export class SharedExecutionShellService {
       await store.executionProgress.saveProgress(progress);
     }
 
-    return buildExecutionShell(snapshot, tag, tagContext, template, progress, storedCalculation);
+    return buildExecutionShell(
+      snapshot,
+      tag,
+      tagContext,
+      template,
+      progress,
+      storedCalculation,
+      storedEvidence,
+    );
   }
 
   async selectStep(
@@ -159,6 +183,23 @@ export class SharedExecutionShellService {
       .forUser(session.userId)
       .executionCalculations.saveCalculation(record);
 
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const draftReportId = await ensureDraftReportLink(store, shell, updatedAt);
+
+    await store.executionEvidence.saveEvidence({
+      workPackageId: shell.workPackageId,
+      tagId: shell.tagId,
+      templateId: shell.template.id,
+      templateVersion: shell.template.version,
+      draftReportId,
+      executionStepId: 'calculation',
+      structuredReadings: buildStructuredReadingsEvidence(shell, rawInputs, result),
+      observationNotes: '',
+      checklistOutcomes: [],
+      createdAt: updatedAt,
+      updatedAt,
+    });
+
     const reloadedShell = await this.loadShell(
       session,
       shell.workPackageId,
@@ -166,7 +207,57 @@ export class SharedExecutionShellService {
       shell.template.id,
     );
 
-    return reloadedShell ? mergeGuidanceOutcomesIntoShell(reloadedShell, shell.guidance) : shell;
+    return reloadedShell
+      ? mergeInSessionEvidenceIntoShell(reloadedShell, shell)
+      : shell;
+  }
+
+  updateObservationNotes(shell: SharedExecutionShell, observationNotes: string): SharedExecutionShell {
+    if (shell.evidence.observationNotes === observationNotes) {
+      return shell;
+    }
+
+    return applyEvidenceState(shell, {
+      ...shell.evidence,
+      observationNotes,
+    });
+  }
+
+  async saveGuidanceEvidence(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+  ): Promise<SharedExecutionShell> {
+    const updatedAt = this.now().toISOString();
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const draftReportId = await ensureDraftReportLink(store, shell, updatedAt);
+
+    await store.executionEvidence.saveEvidence({
+      workPackageId: shell.workPackageId,
+      tagId: shell.tagId,
+      templateId: shell.template.id,
+      templateVersion: shell.template.version,
+      draftReportId,
+      executionStepId: 'guidance',
+      structuredReadings: null,
+      observationNotes: shell.evidence.observationNotes.trim(),
+      checklistOutcomes: shell.guidance.checklistItems.map((item) => ({
+        checklistItemId: item.id,
+        outcome: item.outcome,
+      })),
+      createdAt: updatedAt,
+      updatedAt,
+    });
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell
+      ? mergeInSessionCalculationIntoShell(reloadedShell, shell)
+      : shell;
   }
 
   updateChecklistOutcome(
@@ -203,9 +294,11 @@ function buildExecutionShell(
   template: SharedExecutionShell['template'],
   progress: StoredExecutionProgressRecord,
   storedCalculation: StoredExecutionCalculationRecord | null,
+  storedEvidence: StoredExecutionEvidenceRecord[],
 ): SharedExecutionShell {
+  const evidence = buildEvidenceState(snapshot.summary.id, tag.id, storedEvidence);
   const calculation = buildCalculationState(tag, template, storedCalculation);
-  const guidance = buildGuidanceState(snapshot, tag, template);
+  const guidance = buildGuidanceState(snapshot, tag, template, storedEvidence);
 
   return {
     workPackageId: snapshot.summary.id,
@@ -215,6 +308,7 @@ function buildExecutionShell(
     template,
     calculation,
     guidance,
+    evidence,
     steps: [
       {
         id: 'context',
@@ -266,6 +360,14 @@ function buildExecutionShell(
               ? template.expectedEvidence.join(', ')
               : 'None declared',
           ),
+          availableField('Draft report', evidence.draftReportId),
+          {
+            label: 'Structured readings saved',
+            value: evidence.calculationEvidenceUpdatedAt
+              ? new Date(evidence.calculationEvidenceUpdatedAt).toLocaleString()
+              : 'Not saved yet',
+            state: evidence.calculationEvidenceUpdatedAt ? 'available' : 'missing',
+          },
         ],
       },
       {
@@ -282,7 +384,7 @@ function buildExecutionShell(
         kind: 'guidance',
         summary: buildGuidanceStepSummary(guidance),
         detail: buildGuidanceStepDetail(guidance),
-        fields: buildGuidanceFields(guidance),
+        fields: buildGuidanceFields(guidance, evidence),
       },
     ],
     progress: normalizeProgress(progress, template.steps.map((step) => step.id)),
@@ -370,11 +472,22 @@ function buildGuidanceState(
   snapshot: AssignedWorkPackageSnapshot,
   tag: AssignedWorkPackageTagSnapshot,
   template: SharedExecutionShell['template'],
+  storedEvidence: StoredExecutionEvidenceRecord[],
 ): SharedExecutionGuidanceState {
+  const savedGuidanceEvidence = storedEvidence.find(
+    (item) => item.executionStepId === 'guidance',
+  );
+  const checklistOutcomeById = new Map(
+    (savedGuidanceEvidence?.checklistOutcomes ?? []).map((item) => [
+      item.checklistItemId,
+      item.outcome,
+    ]),
+  );
+
   return normalizeGuidanceState({
     checklistItems: template.checklistSteps.map((item) => ({
       ...item,
-      outcome: 'pending',
+      outcome: checklistOutcomeById.get(item.id) ?? 'pending',
     })),
     guidedDiagnosisPrompts: template.guidedDiagnosisPrompts,
     linkedGuidance: buildLinkedGuidance(snapshot, tag),
@@ -437,7 +550,7 @@ function applyGuidanceState(
             ...step,
             summary: buildGuidanceStepSummary(guidance),
             detail: buildGuidanceStepDetail(guidance),
-            fields: buildGuidanceFields(guidance),
+            fields: buildGuidanceFields(guidance, shell.evidence),
           }
         : step,
     ),
@@ -463,6 +576,33 @@ function mergeGuidanceOutcomesIntoShell(
       checklistItems,
     }),
   );
+}
+
+function mergeInSessionEvidenceIntoShell(
+  shell: SharedExecutionShell,
+  previousShell: SharedExecutionShell,
+): SharedExecutionShell {
+  return applyEvidenceState(
+    mergeGuidanceOutcomesIntoShell(shell, previousShell.guidance),
+    {
+      ...shell.evidence,
+      observationNotes: previousShell.evidence.observationNotes,
+    },
+  );
+}
+
+function mergeInSessionCalculationIntoShell(
+  shell: SharedExecutionShell,
+  previousShell: SharedExecutionShell,
+): SharedExecutionShell {
+  if (!shell.calculation || !previousShell.calculation) {
+    return shell;
+  }
+
+  return {
+    ...shell,
+    calculation: previousShell.calculation,
+  };
 }
 
 function buildGuidanceStepSummary(guidance: SharedExecutionGuidanceState): string {
@@ -491,6 +631,7 @@ function buildGuidanceStepDetail(guidance: SharedExecutionGuidanceState): string
 
 function buildGuidanceFields(
   guidance: SharedExecutionGuidanceState,
+  evidence: SharedExecutionEvidenceState,
 ): SharedExecutionField[] {
   const completedCount = guidance.checklistItems.filter(
     (item) => item.outcome === 'completed',
@@ -506,6 +647,21 @@ function buildGuidanceFields(
   ).length;
 
   return [
+    availableField('Draft report', evidence.draftReportId),
+    {
+      label: 'Guidance evidence saved',
+      value: evidence.guidanceEvidenceUpdatedAt
+        ? new Date(evidence.guidanceEvidenceUpdatedAt).toLocaleString()
+        : 'Not saved yet',
+      state: evidence.guidanceEvidenceUpdatedAt ? 'available' : 'missing',
+    },
+    {
+      label: 'Observation notes',
+      value: evidence.observationNotes.trim().length > 0
+        ? evidence.observationNotes.trim()
+        : 'No local observation notes saved yet.',
+      state: evidence.observationNotes.trim().length > 0 ? 'available' : 'missing',
+    },
     availableField(
       'Checklist status',
       guidance.checklistItems.length > 0
@@ -538,6 +694,48 @@ function buildGuidanceFields(
       state: guidance.riskHooks.length > 0 ? 'missing' : 'available',
     },
   ];
+}
+
+function buildEvidenceState(
+  workPackageId: string,
+  tagId: string,
+  storedEvidence: StoredExecutionEvidenceRecord[],
+): SharedExecutionEvidenceState {
+  const calculationEvidence = storedEvidence.find(
+    (item) => item.executionStepId === 'calculation',
+  );
+  const guidanceEvidence = storedEvidence.find(
+    (item) => item.executionStepId === 'guidance',
+  );
+
+  return {
+    draftReportId:
+      guidanceEvidence?.draftReportId ??
+      calculationEvidence?.draftReportId ??
+      buildDraftReportId(workPackageId, tagId),
+    draftReportState: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    observationNotes: guidanceEvidence?.observationNotes ?? '',
+    calculationEvidenceUpdatedAt: calculationEvidence?.updatedAt ?? null,
+    guidanceEvidenceUpdatedAt: guidanceEvidence?.updatedAt ?? null,
+  };
+}
+
+function applyEvidenceState(
+  shell: SharedExecutionShell,
+  evidence: SharedExecutionEvidenceState,
+): SharedExecutionShell {
+  return {
+    ...shell,
+    evidence,
+    steps: shell.steps.map((step) =>
+      step.id === 'guidance'
+        ? {
+            ...step,
+            fields: buildGuidanceFields(shell.guidance, evidence),
+          }
+        : step,
+    ),
+  };
 }
 
 function mapContextField(
@@ -758,6 +956,54 @@ function formatPriorResult(tagContext: LocalTagContext): string {
     default:
       return 'Not included in this package';
   }
+}
+
+function buildStructuredReadingsEvidence(
+  shell: SharedExecutionShell,
+  rawInputs: SharedExecutionCalculationRawInputs,
+  result: SharedExecutionCalculationResult,
+): StoredExecutionStructuredReadingsEvidence {
+  return {
+    expectedLabel: shell.calculation!.definition.expectedLabel,
+    observedLabel: shell.calculation!.definition.observedLabel,
+    expectedValue: rawInputs.expectedValue,
+    observedValue: rawInputs.observedValue,
+    unit: shell.calculation!.definition.unit,
+    signedDeviation: result.signedDeviation,
+    absoluteDeviation: result.absoluteDeviation,
+    percentOfSpan: result.percentOfSpan,
+    acceptance: result.acceptance,
+    acceptanceReason: result.acceptanceReason,
+  };
+}
+
+async function ensureDraftReportLink(
+  store: UserPartitionedLocalStore,
+  shell: SharedExecutionShell,
+  updatedAt: string,
+): Promise<string> {
+  const draftReportId = buildDraftReportId(shell.workPackageId, shell.tagId);
+
+  await store.drafts.saveDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: draftReportId,
+    summaryText: `Technician-owned draft report for ${shell.tagCode}`,
+    payloadJson: JSON.stringify({
+      reportId: draftReportId,
+      workPackageId: shell.workPackageId,
+      tagId: shell.tagId,
+      templateId: shell.template.id,
+      templateVersion: shell.template.version,
+      state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+      updatedAt,
+    }),
+  });
+
+  return draftReportId;
+}
+
+function buildDraftReportId(workPackageId: string, tagId: string): string {
+  return `tag-report:${workPackageId}:${tagId}`;
 }
 
 function toDisplayAcceptance(

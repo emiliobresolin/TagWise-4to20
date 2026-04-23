@@ -120,6 +120,7 @@ export interface SharedExecutionShell {
   progress: SharedExecutionProgressState;
   calculation: SharedExecutionCalculationState | null;
   guidance: SharedExecutionGuidanceState;
+  evidence: SharedExecutionEvidenceState;
 }
 
 export interface SharedExecutionGuidanceItem {
@@ -156,6 +157,14 @@ export interface SharedExecutionGuidanceState {
   riskHooks: string[];
 }
 
+export interface SharedExecutionEvidenceState {
+  draftReportId: string;
+  draftReportState: 'technician-owned-draft';
+  observationNotes: string;
+  calculationEvidenceUpdatedAt: string | null;
+  guidanceEvidenceUpdatedAt: string | null;
+}
+
 export interface StoredExecutionProgressRecord {
   workPackageId: string;
   tagId: string;
@@ -178,5 +187,37 @@ export interface StoredExecutionCalculationRecord {
   executionContext: SharedExecutionCalculationExecutionContext;
   rawInputs: SharedExecutionCalculationRawInputs;
   result: SharedExecutionCalculationResult;
+  updatedAt: string;
+}
+
+export interface StoredExecutionStructuredReadingsEvidence {
+  expectedLabel: string;
+  observedLabel: string;
+  expectedValue: string;
+  observedValue: string;
+  unit: string | null;
+  signedDeviation: number;
+  absoluteDeviation: number;
+  percentOfSpan: number | null;
+  acceptance: SharedExecutionCalculationAcceptance;
+  acceptanceReason: string;
+}
+
+export interface StoredExecutionChecklistOutcomeRecord {
+  checklistItemId: string;
+  outcome: SharedExecutionChecklistOutcome;
+}
+
+export interface StoredExecutionEvidenceRecord {
+  workPackageId: string;
+  tagId: string;
+  templateId: string;
+  templateVersion: string;
+  draftReportId: string;
+  executionStepId: SharedExecutionStepKind;
+  structuredReadings: StoredExecutionStructuredReadingsEvidence | null;
+  observationNotes: string;
+  checklistOutcomes: StoredExecutionChecklistOutcomeRecord[];
+  createdAt: string;
   updatedAt: string;
 }

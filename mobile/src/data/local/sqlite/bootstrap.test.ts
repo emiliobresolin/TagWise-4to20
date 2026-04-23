@@ -42,20 +42,33 @@ describe('runMigrations', () => {
           'local_work_state',
           'user_partitioned_drafts',
           'user_partitioned_evidence_metadata',
-          'user_partitioned_queue_items',
-          'user_partitioned_execution_progress',
-          'user_partitioned_execution_calculations',
-          'mobile_runtime_error_events',
-          'assigned_work_package_summaries',
-          'assigned_work_package_snapshots'
+           'user_partitioned_queue_items',
+           'user_partitioned_execution_progress',
+           'user_partitioned_execution_calculations',
+           'user_partitioned_execution_evidence',
+           'mobile_runtime_error_events',
+           'assigned_work_package_summaries',
+           'assigned_work_package_snapshots'
          );`,
     );
 
-    expect(summary.currentSchemaVersion).toBe(10);
-    expect(summary.appliedMigrationIds).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
+    expect(summary.currentSchemaVersion).toBe(11);
+    expect(summary.appliedMigrationIds).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+      '10',
+      '11',
+    ]);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
-    expect(partitionTables?.count).toBe(10);
+    expect(partitionTables?.count).toBe(11);
 
     await database.closeAsync?.();
   });
@@ -88,6 +101,7 @@ describe('runMigrations', () => {
       { id: 8 },
       { id: 9 },
       { id: 10 },
+      { id: 11 },
     ]);
     expect(record?.count).toBe(1);
 
@@ -188,8 +202,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(10);
-    expect(summary.appliedMigrationIds).toEqual(['9', '10']);
+    expect(summary.currentSchemaVersion).toBe(11);
+    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11']);
     expect(migratedRows).toEqual([
       {
         template_version: '2026-04-v1',
@@ -339,8 +353,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-loop-001', 'tag-loop-001', 'tpl-loop-integrity', '2026-04-v1'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(10);
-    expect(summary.appliedMigrationIds).toEqual(['10']);
+    expect(summary.currentSchemaVersion).toBe(11);
+    expect(summary.appliedMigrationIds).toEqual(['10', '11']);
     expect(migratedRow).toEqual({
       execution_context_json: '{}',
       raw_inputs_json: '{"expectedValue":"12","observedValue":"12.1"}',
