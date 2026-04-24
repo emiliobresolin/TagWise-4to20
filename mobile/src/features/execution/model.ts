@@ -1,4 +1,9 @@
-export type SharedExecutionStepKind = 'context' | 'calculation' | 'history' | 'guidance';
+export type SharedExecutionStepKind =
+  | 'context'
+  | 'calculation'
+  | 'history'
+  | 'guidance'
+  | 'report';
 
 export type SharedExecutionCaptureFieldId = 'expectedValue' | 'observedValue';
 
@@ -127,6 +132,7 @@ export interface SharedExecutionShell {
   riskInputs: SharedExecutionRiskInputs;
   guidance: SharedExecutionGuidanceState;
   evidence: SharedExecutionEvidenceState;
+  report: SharedExecutionReportDraftState;
 }
 
 export interface SharedExecutionGuidanceItem {
@@ -220,6 +226,52 @@ export interface SharedExecutionEvidenceState {
   guidanceEvidenceUpdatedAt: string | null;
   photoAttachments: SharedExecutionPhotoAttachment[];
   photoEvidenceUpdatedAt: string | null;
+}
+
+export type SharedExecutionReportLifecycleState =
+  | 'In Progress'
+  | 'Ready to Submit';
+
+export type SharedExecutionReportEvidenceRequirementLevel =
+  | 'minimum'
+  | 'expected';
+
+export type SharedExecutionReportEvidenceKind =
+  | 'structured-readings'
+  | 'observation-notes'
+  | 'photo-evidence'
+  | 'unmapped';
+
+export interface SharedExecutionReportEvidenceReference {
+  label: string;
+  requirementLevel: SharedExecutionReportEvidenceRequirementLevel;
+  evidenceKind: SharedExecutionReportEvidenceKind;
+  satisfied: boolean;
+  detail: string;
+}
+
+export interface SharedExecutionReportChecklistOutcome {
+  id: string;
+  prompt: string;
+  outcome: SharedExecutionChecklistOutcome;
+  sourceReference: string;
+}
+
+export interface SharedExecutionReportDraftState {
+  reportId: string;
+  state: 'technician-owned-draft';
+  lifecycleState: SharedExecutionReportLifecycleState;
+  technicianName: string;
+  technicianEmail: string;
+  tagContextSummary: string;
+  executionSummary: string;
+  historySummary: string;
+  draftDiagnosisSummary: string;
+  checklistOutcomes: SharedExecutionReportChecklistOutcome[];
+  evidenceReferences: SharedExecutionReportEvidenceReference[];
+  riskFlags: SharedExecutionRiskItem[];
+  reviewNotes: string;
+  savedAt: string | null;
 }
 
 export interface StoredExecutionProgressRecord {

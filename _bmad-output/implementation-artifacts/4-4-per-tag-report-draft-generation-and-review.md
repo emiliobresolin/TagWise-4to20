@@ -1,6 +1,6 @@
 ﻿# Story 4.4: Per-Tag Report Draft Generation and Review
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 4-4-per-tag-report-draft-generation-and-review
@@ -41,3 +41,30 @@ create a local report projection from execution/evidence/justification tables; p
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Agent Model Used
+GPT-5 Codex
+
+### Completion Notes List
+- Added a generic `report` step to the shared execution shell so every execution now ends with a local per-tag report draft review instead of a second clerical flow.
+- Built the report draft as a local projection from captured execution, evidence, history, and risk state, including evidence references, risk flags, justifications, lifecycle state, and a generated draft diagnosis summary.
+- Added explicit checklist outcome projection and report-draft rendering so FR-09’s guidance/checklist outcome requirement is now visible in the draft itself instead of only indirectly through risk hooks.
+- Kept editability narrow by persisting only the report-review slice (`final notes / corrections` plus saved timestamp) into the existing technician-owned draft record while the rest of the report continues to derive from already captured local work.
+- Preserved reopen/update behavior by merging existing draft payload when calculation, guidance, or photo saves refresh the draft anchor, so later evidence saves do not wipe previously saved report-review notes.
+- Kept the story local-first and pre-submission only: no backend/report-generation API, no queue transition, no approval flow, and no new durable workflow engine were introduced.
+
+### Tests Run
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- sharedExecutionShellService`
+- `cd mobile && npm test`
+- `cd mobile && npx expo export --platform android`
+
+### File List
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/localExecutionTemplateRegistry.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/4-4-per-tag-report-draft-generation-and-review.md`

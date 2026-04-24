@@ -783,6 +783,20 @@ export function TagWiseApp() {
     );
   }
 
+  function handleReportReviewNotesChange(value: string) {
+    setStatus((current) =>
+      current.type !== 'ready' || !current.executionShell
+        ? current
+        : {
+            ...current,
+            executionShell: current.executionShellService.updateReportReviewNotes(
+              current.executionShell,
+              value,
+            ),
+          },
+    );
+  }
+
   async function handleSaveExecutionCalculation() {
     if (status.type !== 'ready' || !readyState.session || !readyState.executionShell?.calculation) {
       return;
@@ -905,6 +919,27 @@ export function TagWiseApp() {
             ...current,
             executionShell,
             authMessage: `Photo attachment removed locally for ${executionShell.tagCode}.`,
+          },
+    );
+  }
+
+  async function handleSaveReportDraft() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    const executionShell = await readyState.executionShellService.saveReportDraft(
+      readyState.session,
+      readyState.executionShell,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+            authMessage: `Per-tag report draft saved locally for ${executionShell.tagCode}.`,
           },
     );
   }
@@ -1873,6 +1908,14 @@ export function TagWiseApp() {
                           />
                         ) : null}
 
+                        {selectedExecutionStep.kind === 'report' ? (
+                          <ExecutionReportDraftPanel
+                            report={readyState.executionShell.report}
+                            onReviewNotesChange={handleReportReviewNotesChange}
+                            onSaveReportDraft={() => void handleSaveReportDraft()}
+                          />
+                        ) : null}
+
                         <View style={styles.metricGrid}>
                           <Pressable
                             accessibilityRole="button"
@@ -2147,6 +2190,178 @@ function ExecutionFieldCard({
       >
         {field.value}
       </Text>
+    </View>
+  );
+}
+
+function ExecutionReportDraftPanel({
+  report,
+  onReviewNotesChange,
+  onSaveReportDraft,
+}: {
+  report: SharedExecutionShell['report'];
+  onReviewNotesChange: (value: string) => void;
+  onSaveReportDraft: () => void;
+}) {
+  return (
+    <View style={styles.listCard}>
+      <Text style={styles.metricLabel}>Per-tag report draft</Text>
+      <Text style={styles.helperText}>
+        This summary is assembled from captured local execution work so the technician reviews the
+        draft instead of retyping the field session.
+      </Text>
+
+      <View
+        style={[
+          styles.metricCard,
+          report.lifecycleState === 'Ready to Submit' ? null : styles.missingMetricCard,
+        ]}
+      >
+        <Text style={styles.metricLabel}>Lifecycle</Text>
+        <Text
+          style={[
+            styles.metricValue,
+            report.lifecycleState === 'Ready to Submit' ? null : styles.missingMetricValue,
+          ]}
+        >
+          {report.lifecycleState}
+        </Text>
+        <Text style={styles.helperText}>{report.tagContextSummary}</Text>
+        <Text style={styles.helperText}>
+          Technician: {report.technicianName} ({report.technicianEmail})
+        </Text>
+      </View>
+
+      <View style={styles.metricCard}>
+        <Text style={styles.metricLabel}>Execution summary</Text>
+        <Text style={styles.metricValue}>{report.executionSummary}</Text>
+      </View>
+
+      <View style={styles.metricCard}>
+        <Text style={styles.metricLabel}>History summary</Text>
+        <Text style={styles.metricValue}>{report.historySummary}</Text>
+      </View>
+
+      <View style={styles.metricCard}>
+        <Text style={styles.metricLabel}>Draft diagnosis summary</Text>
+        <Text style={styles.metricValue}>{report.draftDiagnosisSummary}</Text>
+      </View>
+
+      <Text style={styles.sectionTitle}>Checklist outcomes</Text>
+      {report.checklistOutcomes.length > 0 ? (
+        report.checklistOutcomes.map((item) => (
+          <View
+            key={item.id}
+            style={[
+              styles.metricCard,
+              item.outcome === 'completed' ? null : styles.missingMetricCard,
+            ]}
+          >
+            <Text style={styles.metricLabel}>Checklist outcome</Text>
+            <Text
+              style={[
+                styles.metricValue,
+                item.outcome === 'completed' ? null : styles.missingMetricValue,
+              ]}
+            >
+              {item.prompt}
+            </Text>
+            <Text style={styles.helperText}>Status: {toChecklistOutcomeLabel(item.outcome)}</Text>
+            <Text style={styles.helperText}>Source: {item.sourceReference}</Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.helperText}>No checklist outcomes are attached to this report draft.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Evidence references</Text>
+      {report.evidenceReferences.length > 0 ? (
+        report.evidenceReferences.map((reference) => (
+          <View
+            key={`${reference.requirementLevel}:${reference.label}`}
+            style={[
+              styles.metricCard,
+              reference.satisfied ? null : styles.missingMetricCard,
+            ]}
+          >
+            <Text style={styles.metricLabel}>
+              {reference.requirementLevel === 'minimum'
+                ? 'Minimum evidence'
+                : 'Expected evidence'}
+            </Text>
+            <Text
+              style={[
+                styles.metricValue,
+                reference.satisfied ? null : styles.missingMetricValue,
+              ]}
+            >
+              {reference.label}
+            </Text>
+            <Text style={styles.helperText}>Kind: {reference.evidenceKind}</Text>
+            <Text style={styles.helperText}>{reference.detail}</Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.helperText}>No evidence expectations are declared on this template.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Risk flags and justifications</Text>
+      {report.riskFlags.length > 0 ? (
+        report.riskFlags.map((item) => (
+          <View
+            key={item.id}
+            style={[
+              styles.metricCard,
+              item.severity === 'submit-block' ? styles.missingMetricCard : null,
+            ]}
+          >
+            <Text style={styles.metricLabel}>
+              {item.severity === 'submit-block' ? 'Submit-blocking risk' : 'Visible risk'}
+            </Text>
+            <Text
+              style={[
+                styles.metricValue,
+                item.severity === 'submit-block' ? styles.missingMetricValue : null,
+              ]}
+            >
+              {item.title}
+            </Text>
+            <Text style={styles.helperText}>{item.detail}</Text>
+            <Text style={styles.helperText}>
+              Justification:{' '}
+              {item.justificationText.trim().length > 0
+                ? item.justificationText.trim()
+                : item.justificationRequired
+                  ? 'Required but not entered yet.'
+                  : 'Not required.'}
+            </Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.helperText}>No visible risk flags are attached to this draft.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Final notes and corrections</Text>
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        multiline
+        onChangeText={onReviewNotesChange}
+        placeholder="Capture any final notes or corrections for the per-tag report draft."
+        style={styles.input}
+        value={report.reviewNotes}
+      />
+      <Text style={styles.helperText}>
+        Last saved: {report.savedAt ? formatTimestamp(report.savedAt) : 'Not saved yet'}
+      </Text>
+
+      <Pressable
+        accessibilityRole="button"
+        onPress={onSaveReportDraft}
+        style={styles.primaryButton}
+      >
+        <Text style={styles.primaryButtonLabel}>Save draft report review</Text>
+      </Pressable>
     </View>
   );
 }

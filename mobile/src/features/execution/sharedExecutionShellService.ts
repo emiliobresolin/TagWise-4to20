@@ -19,6 +19,10 @@ import type {
   SharedExecutionLinkedGuidanceSnippet,
   SharedExecutionPhotoAttachment,
   SharedExecutionPhotoAttachmentInput,
+  SharedExecutionReportChecklistOutcome,
+  SharedExecutionReportDraftState,
+  SharedExecutionReportEvidenceReference,
+  SharedExecutionReportLifecycleState,
   SharedExecutionRiskInputs,
   SharedExecutionRiskItem,
   SharedExecutionShell,
@@ -34,6 +38,7 @@ import type {
   UserPartitionedLocalStore,
   UserPartitionedLocalStoreFactory,
 } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
+import type { UserOwnedDraftRecord } from '../../data/local/repositories/userPartitionedLocalTypes';
 import {
   computeDeterministicCalculation,
   resolveDeterministicCalculationDefinition,
@@ -45,6 +50,19 @@ type SharedExecutionEvidenceRequirementKind =
   | 'structured-readings'
   | 'observation-notes'
   | 'photo-evidence';
+
+interface StoredPerTagReportDraftPayload {
+  reportId: string;
+  workPackageId: string;
+  tagId: string;
+  templateId: string;
+  templateVersion: string;
+  state: 'technician-owned-draft';
+  lifecycleState?: SharedExecutionReportLifecycleState;
+  reviewNotes?: string;
+  savedAt?: string | null;
+  updatedAt: string;
+}
 
 const STRUCTURED_READINGS_EVIDENCE_LABELS = new Set([
   'readings',
@@ -147,6 +165,10 @@ export class SharedExecutionShellService {
       template.id,
       template.version,
     );
+    const storedDraft = await store.drafts.getDraft({
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: buildDraftReportId(workPackageId, tagId),
+    });
     const storedPhotoAttachments = await buildPhotoAttachments(
       store,
       await store.evidenceMetadata.listEvidenceByBusinessObject({
@@ -182,6 +204,8 @@ export class SharedExecutionShellService {
       storedCalculation,
       storedEvidence,
       storedPhotoAttachments,
+      storedDraft,
+      session,
     );
   }
 
@@ -327,7 +351,10 @@ export class SharedExecutionShellService {
     );
 
     return reloadedShell
-      ? mergeInSessionCalculationIntoShell(reloadedShell, shell)
+      ? mergeInSessionReportDraftIntoShell(
+          mergeInSessionCalculationIntoShell(reloadedShell, shell),
+          shell,
+        )
       : shell;
   }
 
@@ -456,6 +483,43 @@ export class SharedExecutionShellService {
       riskItems,
     });
   }
+
+  updateReportReviewNotes(
+    shell: SharedExecutionShell,
+    reviewNotes: string,
+  ): SharedExecutionShell {
+    if (shell.report.reviewNotes === reviewNotes) {
+      return shell;
+    }
+
+    return applyReportDraftState(shell, {
+      ...shell.report,
+      reviewNotes,
+    });
+  }
+
+  async saveReportDraft(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+  ): Promise<SharedExecutionShell> {
+    const updatedAt = this.now().toISOString();
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const lifecycleState = resolveReportLifecycleState(shell.guidance.submitReadiness);
+    const draftRecord = await saveReportDraftRecord(store, shell, {
+      reviewNotes: shell.report.reviewNotes,
+      savedAt: updatedAt,
+      lifecycleState,
+      updatedAt,
+    });
+    const storedPayload = parseStoredPerTagReportDraftPayload(draftRecord);
+
+    return applyReportDraftState(shell, {
+      ...shell.report,
+      lifecycleState,
+      reviewNotes: storedPayload?.reviewNotes ?? shell.report.reviewNotes,
+      savedAt: storedPayload?.savedAt ?? updatedAt,
+    });
+  }
 }
 
 function buildExecutionShell(
@@ -467,6 +531,8 @@ function buildExecutionShell(
   storedCalculation: StoredExecutionCalculationRecord | null,
   storedEvidence: StoredExecutionEvidenceRecord[],
   storedPhotoAttachments: SharedExecutionPhotoAttachment[],
+  storedDraft: UserOwnedDraftRecord | null,
+  session: ActiveUserSession,
 ): SharedExecutionShell {
   const riskInputs = buildRiskInputs(tagContext);
   const evidence = buildEvidenceState(
@@ -484,6 +550,103 @@ function buildExecutionShell(
     riskInputs,
     evidence,
   );
+  const report = buildReportDraftState({
+    snapshot,
+    tag,
+    tagContext,
+    template,
+    session,
+    calculation,
+    guidance,
+    evidence,
+    storedDraft,
+  });
+  const steps: SharedExecutionShell['steps'] = [
+    {
+      id: 'context',
+      title: 'Context',
+      kind: 'context',
+      summary: 'Field-critical tag context is loaded locally for this execution.',
+      detail: 'Use these local references to confirm what you are about to test before entering values.',
+      fields: [
+        mapContextField(tagContext.instrumentFamily.label, tagContext.instrumentFamily.value, tagContext.instrumentFamily.state),
+        mapContextField(tagContext.measuredVariable.label, tagContext.measuredVariable.value, tagContext.measuredVariable.state),
+        mapContextField(tagContext.signalType.label, tagContext.signalType.value, tagContext.signalType.state),
+        mapContextField(tagContext.range.label, tagContext.range.value, tagContext.range.state),
+        mapContextField(tagContext.tolerance.label, tagContext.tolerance.value, tagContext.tolerance.state),
+      ],
+    },
+    {
+      id: 'calculation',
+      title: 'Calculation setup',
+      kind: 'calculation',
+      summary: template.captureSummary,
+      detail: `${template.calculationMode} using ${template.acceptanceStyle}.`,
+      fields: [
+        availableField('Template', template.title),
+        availableField('Template version', template.version),
+        availableField('Calculation mode', template.calculationMode),
+        availableField('Acceptance style', template.acceptanceStyle),
+        availableField(
+          'Capture fields',
+          template.captureFields.map((field) => field.label).join(', '),
+        ),
+        availableField('Tolerance basis', calculation.definition.toleranceSource),
+        availableField(
+          'Conversion basis',
+          calculation.definition.executionContext.conversionBasisSummary ?? 'Not declared',
+        ),
+        availableField(
+          'Expected range',
+          calculation.definition.executionContext.expectedRangeSummary ?? 'Not declared',
+        ),
+        availableField(
+          'Minimum evidence',
+          template.minimumSubmissionEvidence.length > 0
+            ? template.minimumSubmissionEvidence.join(', ')
+            : 'None declared',
+        ),
+        availableField(
+          'Expected evidence',
+          template.expectedEvidence.length > 0
+            ? template.expectedEvidence.join(', ')
+            : 'None declared',
+        ),
+        availableField('Draft report', evidence.draftReportId),
+        {
+          label: 'Structured readings saved',
+          value: evidence.calculationEvidenceUpdatedAt
+            ? new Date(evidence.calculationEvidenceUpdatedAt).toLocaleString()
+            : 'Not saved yet',
+          state: evidence.calculationEvidenceUpdatedAt ? 'available' : 'missing',
+        },
+      ],
+    },
+    {
+      id: 'history',
+      title: 'History comparison',
+      kind: 'history',
+      summary: tagContext.historyPreview.summary,
+      detail: `${tagContext.historyPreview.detail} Expected comparison: ${template.historyComparisonExpectation}.`,
+      fields: buildHistoryFields(tagContext, calculation, template.historyComparisonExpectation),
+    },
+    {
+      id: 'guidance',
+      title: 'Checklist and guidance',
+      kind: 'guidance',
+      summary: buildGuidanceStepSummary(guidance),
+      detail: buildGuidanceStepDetail(guidance),
+      fields: buildGuidanceFields(guidance, evidence),
+    },
+    {
+      id: 'report',
+      title: 'Report draft review',
+      kind: 'report',
+      summary: buildReportStepSummary(report),
+      detail: buildReportStepDetail(report),
+      fields: buildReportFields(report),
+    },
+  ];
 
   return {
     workPackageId: snapshot.summary.id,
@@ -495,85 +658,9 @@ function buildExecutionShell(
     riskInputs,
     guidance,
     evidence,
-    steps: [
-      {
-        id: 'context',
-        title: 'Context',
-        kind: 'context',
-        summary: 'Field-critical tag context is loaded locally for this execution.',
-        detail: 'Use these local references to confirm what you are about to test before entering values.',
-        fields: [
-          mapContextField(tagContext.instrumentFamily.label, tagContext.instrumentFamily.value, tagContext.instrumentFamily.state),
-          mapContextField(tagContext.measuredVariable.label, tagContext.measuredVariable.value, tagContext.measuredVariable.state),
-          mapContextField(tagContext.signalType.label, tagContext.signalType.value, tagContext.signalType.state),
-          mapContextField(tagContext.range.label, tagContext.range.value, tagContext.range.state),
-          mapContextField(tagContext.tolerance.label, tagContext.tolerance.value, tagContext.tolerance.state),
-        ],
-      },
-      {
-        id: 'calculation',
-        title: 'Calculation setup',
-        kind: 'calculation',
-        summary: template.captureSummary,
-        detail: `${template.calculationMode} using ${template.acceptanceStyle}.`,
-        fields: [
-          availableField('Template', template.title),
-          availableField('Template version', template.version),
-          availableField('Calculation mode', template.calculationMode),
-          availableField('Acceptance style', template.acceptanceStyle),
-          availableField(
-            'Capture fields',
-            template.captureFields.map((field) => field.label).join(', '),
-          ),
-          availableField('Tolerance basis', calculation.definition.toleranceSource),
-          availableField(
-            'Conversion basis',
-            calculation.definition.executionContext.conversionBasisSummary ?? 'Not declared',
-          ),
-          availableField(
-            'Expected range',
-            calculation.definition.executionContext.expectedRangeSummary ?? 'Not declared',
-          ),
-          availableField(
-            'Minimum evidence',
-            template.minimumSubmissionEvidence.length > 0
-              ? template.minimumSubmissionEvidence.join(', ')
-              : 'None declared',
-          ),
-          availableField(
-            'Expected evidence',
-            template.expectedEvidence.length > 0
-              ? template.expectedEvidence.join(', ')
-              : 'None declared',
-          ),
-          availableField('Draft report', evidence.draftReportId),
-          {
-            label: 'Structured readings saved',
-            value: evidence.calculationEvidenceUpdatedAt
-              ? new Date(evidence.calculationEvidenceUpdatedAt).toLocaleString()
-              : 'Not saved yet',
-            state: evidence.calculationEvidenceUpdatedAt ? 'available' : 'missing',
-          },
-        ],
-      },
-      {
-        id: 'history',
-        title: 'History comparison',
-        kind: 'history',
-        summary: tagContext.historyPreview.summary,
-        detail: `${tagContext.historyPreview.detail} Expected comparison: ${template.historyComparisonExpectation}.`,
-        fields: buildHistoryFields(tagContext, calculation, template.historyComparisonExpectation),
-      },
-      {
-        id: 'guidance',
-        title: 'Checklist and guidance',
-        kind: 'guidance',
-        summary: buildGuidanceStepSummary(guidance),
-        detail: buildGuidanceStepDetail(guidance),
-        fields: buildGuidanceFields(guidance, evidence),
-      },
-    ],
-    progress: normalizeProgress(progress, template.steps.map((step) => step.id)),
+    report,
+    steps,
+    progress: normalizeProgress(progress, steps.map((step) => step.id)),
   } satisfies SharedExecutionShell;
 }
 
@@ -1006,6 +1093,445 @@ function buildSubmitBlockingHooks(riskItems: SharedExecutionRiskItem[]): string[
   return hooks;
 }
 
+function buildReportDraftState(input: {
+  snapshot: AssignedWorkPackageSnapshot;
+  tag: AssignedWorkPackageTagSnapshot;
+  tagContext: LocalTagContext;
+  template: SharedExecutionShell['template'];
+  session: ActiveUserSession;
+  calculation: SharedExecutionCalculationState | null;
+  guidance: SharedExecutionGuidanceState;
+  evidence: SharedExecutionEvidenceState;
+  storedDraft: UserOwnedDraftRecord | null;
+}): SharedExecutionReportDraftState {
+  const storedPayload = parseStoredPerTagReportDraftPayload(input.storedDraft);
+
+  return {
+    reportId: input.evidence.draftReportId,
+    state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    lifecycleState: resolveReportLifecycleState(input.guidance.submitReadiness),
+    technicianName: input.session.displayName,
+    technicianEmail: input.session.email,
+    tagContextSummary: buildReportTagContextSummary(
+      input.snapshot.summary.title,
+      input.tag,
+      input.template.testPattern,
+    ),
+    executionSummary: buildReportExecutionSummary(input.calculation),
+    historySummary: buildReportHistorySummary(input.tagContext),
+    draftDiagnosisSummary: buildReportDiagnosisSummary({
+      calculation: input.calculation,
+      historySummary: buildReportHistorySummary(input.tagContext),
+      guidance: input.guidance,
+      evidence: input.evidence,
+    }),
+    checklistOutcomes: buildReportChecklistOutcomes(input.guidance),
+    evidenceReferences: buildReportEvidenceReferences(input.template, input.evidence),
+    riskFlags: input.guidance.riskItems,
+    reviewNotes: storedPayload?.reviewNotes ?? '',
+    savedAt: storedPayload?.savedAt ?? null,
+  };
+}
+
+function deriveReportDraftState(
+  shell: SharedExecutionShell,
+  overrides?: Partial<
+    Pick<
+      SharedExecutionReportDraftState,
+      'technicianName' | 'technicianEmail' | 'tagContextSummary' | 'reviewNotes' | 'savedAt'
+    >
+  >,
+): SharedExecutionReportDraftState {
+  const historySummary = buildReportHistorySummaryFromShell(shell);
+
+  return {
+    reportId: shell.evidence.draftReportId,
+    state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    lifecycleState: resolveReportLifecycleState(shell.guidance.submitReadiness),
+    technicianName: overrides?.technicianName ?? shell.report.technicianName,
+    technicianEmail: overrides?.technicianEmail ?? shell.report.technicianEmail,
+    tagContextSummary: overrides?.tagContextSummary ?? shell.report.tagContextSummary,
+    executionSummary: buildReportExecutionSummary(shell.calculation),
+    historySummary,
+    draftDiagnosisSummary: buildReportDiagnosisSummary({
+      calculation: shell.calculation,
+      historySummary,
+      guidance: shell.guidance,
+      evidence: shell.evidence,
+    }),
+    checklistOutcomes: buildReportChecklistOutcomes(shell.guidance),
+    evidenceReferences: buildReportEvidenceReferences(shell.template, shell.evidence),
+    riskFlags: shell.guidance.riskItems,
+    reviewNotes: overrides?.reviewNotes ?? shell.report.reviewNotes,
+    savedAt: overrides?.savedAt ?? shell.report.savedAt,
+  };
+}
+
+function applyReportDraftState(
+  shell: SharedExecutionShell,
+  report: SharedExecutionReportDraftState,
+): SharedExecutionShell {
+  return {
+    ...shell,
+    report,
+    steps: shell.steps.map((step) =>
+      step.id === 'report'
+        ? {
+            ...step,
+            summary: buildReportStepSummary(report),
+            detail: buildReportStepDetail(report),
+            fields: buildReportFields(report),
+          }
+        : step,
+    ),
+  };
+}
+
+function mergeInSessionReportDraftIntoShell(
+  shell: SharedExecutionShell,
+  previousShell: SharedExecutionShell,
+): SharedExecutionShell {
+  return applyReportDraftState(shell, {
+    ...shell.report,
+    reviewNotes: previousShell.report.reviewNotes,
+  });
+}
+
+function buildReportTagContextSummary(
+  workPackageTitle: string,
+  tag: AssignedWorkPackageTagSnapshot,
+  testPattern: string,
+): string {
+  return [
+    workPackageTitle,
+    `${tag.tagCode} ${tag.shortDescription}`.trim(),
+    tag.area.trim().length > 0 ? `Area: ${tag.area}` : null,
+    `Family: ${tag.instrumentFamily}`,
+    `Pattern: ${testPattern}`,
+  ]
+    .filter((value): value is string => value !== null && value.length > 0)
+    .join(' / ');
+}
+
+function buildReportExecutionSummary(
+  calculation: SharedExecutionCalculationState | null,
+): string {
+  if (!calculation?.result) {
+    return 'Structured readings have not been saved yet for this draft report.';
+  }
+
+  const checkpoint = formatCurrentCheckpoint(calculation);
+  const signedDeviation = formatCurrentSignedDeviation(calculation);
+  const absoluteDeviation = formatCurrentAbsoluteDeviation(calculation);
+  const percentOfSpan = formatCurrentPercentOfSpan(calculation);
+
+  return [
+    `Current result: ${toDisplayAcceptance(calculation.result.acceptance)}.`,
+    checkpoint,
+    `Signed deviation: ${signedDeviation}.`,
+    `Absolute deviation: ${absoluteDeviation}.`,
+    `Percent of span: ${percentOfSpan}.`,
+    calculation.result.acceptanceReason,
+  ].join(' ');
+}
+
+function buildReportHistorySummary(tagContext: LocalTagContext): string {
+  return buildHistorySummaryText({
+    historyState: tagContext.historyPreview.state,
+    currentVsPrior: null,
+    priorResult: formatPriorResult(tagContext),
+    recurrenceCue: tagContext.historyPreview.recurrenceCue,
+    lastObservedAt: tagContext.historyPreview.lastObservedAt,
+  });
+}
+
+function buildReportHistorySummaryFromShell(shell: SharedExecutionShell): string {
+  const historyStep = shell.steps.find((step) => step.id === 'history');
+  const currentVsPrior = getStepFieldValue(historyStep, 'Current vs prior');
+  const priorResult = getStepFieldValue(historyStep, 'Prior result') ?? 'Not available';
+  const recurrenceCue = getStepFieldValue(historyStep, 'Recurrence cue');
+  const lastObserved = getStepFieldValue(historyStep, 'Last observed');
+
+  return buildHistorySummaryText({
+    historyState: shell.riskInputs.historyState,
+    currentVsPrior,
+    priorResult,
+    recurrenceCue:
+      recurrenceCue && recurrenceCue !== 'No recurrence cue attached.'
+        ? recurrenceCue
+        : null,
+    lastObservedAt:
+      lastObserved && lastObserved !== 'Missing' && lastObserved !== 'Not included in this package'
+        ? lastObserved
+        : null,
+  });
+}
+
+function buildHistorySummaryText(input: {
+  historyState: LocalTagContext['historyPreview']['state'];
+  currentVsPrior: string | null;
+  priorResult: string;
+  recurrenceCue: string | null;
+  lastObservedAt: string | null;
+}): string {
+  const segments = [`History state: ${toDisplayState(input.historyState)}.`];
+
+  if (input.currentVsPrior && input.currentVsPrior !== 'Enter current values to compare them with cached history.') {
+    segments.push(input.currentVsPrior);
+  }
+
+  segments.push(`Prior result: ${input.priorResult}.`);
+
+  if (input.recurrenceCue) {
+    segments.push(`Recurrence cue: ${input.recurrenceCue}.`);
+  }
+
+  if (input.lastObservedAt) {
+    segments.push(`Last observed: ${input.lastObservedAt}.`);
+  }
+
+  return segments.join(' ');
+}
+
+function buildReportDiagnosisSummary(input: {
+  calculation: SharedExecutionCalculationState | null;
+  historySummary: string;
+  guidance: SharedExecutionGuidanceState;
+  evidence: SharedExecutionEvidenceState;
+}): string {
+  const segments: string[] = [];
+
+  if (!input.calculation?.result) {
+    segments.push('Draft diagnosis summary is still incomplete because no deterministic result has been saved yet.');
+  } else {
+    segments.push(
+      `Saved deterministic outcome is ${toDisplayAcceptance(input.calculation.result.acceptance)}.`,
+    );
+  }
+
+  if (input.guidance.riskItems.length > 0) {
+    segments.push(`${input.guidance.riskItems.length} visible risk flag(s) remain on the draft.`);
+  } else {
+    segments.push('No visible risk flags are currently active.');
+  }
+
+  if (input.evidence.observationNotes.trim().length > 0) {
+    segments.push('Observation notes were captured locally and will carry into the report draft.');
+  }
+
+  if (input.historySummary.length > 0) {
+    segments.push(input.historySummary);
+  }
+
+  return segments.join(' ');
+}
+
+function buildReportChecklistOutcomes(
+  guidance: SharedExecutionGuidanceState,
+): SharedExecutionReportChecklistOutcome[] {
+  return guidance.checklistItems.map((item) => ({
+    id: item.id,
+    prompt: item.prompt,
+    outcome: item.outcome,
+    sourceReference: item.sourceReference,
+  }));
+}
+
+function buildReportEvidenceReferences(
+  template: SharedExecutionShell['template'],
+  evidence: SharedExecutionEvidenceState,
+): SharedExecutionReportEvidenceReference[] {
+  return [
+    ...template.minimumSubmissionEvidence.map((label) =>
+      buildReportEvidenceReference(label, 'minimum', evidence),
+    ),
+    ...template.expectedEvidence.map((label) =>
+      buildReportEvidenceReference(label, 'expected', evidence),
+    ),
+  ];
+}
+
+function buildReportEvidenceReference(
+  label: string,
+  requirementLevel: SharedExecutionReportEvidenceReference['requirementLevel'],
+  evidence: SharedExecutionEvidenceState,
+): SharedExecutionReportEvidenceReference {
+  const evidenceKind = resolveEvidenceRequirementKind(label);
+
+  if (!evidenceKind) {
+    return {
+      label,
+      requirementLevel,
+      evidenceKind: 'unmapped',
+      satisfied: false,
+      detail: 'No explicit evidence kind mapping is defined for this requirement label yet.',
+    };
+  }
+
+  return {
+    label,
+    requirementLevel,
+    evidenceKind,
+    satisfied: isEvidenceKindSatisfied(evidenceKind, evidence),
+    detail: buildEvidenceReferenceDetail(evidenceKind, evidence),
+  };
+}
+
+function buildEvidenceReferenceDetail(
+  evidenceKind: SharedExecutionEvidenceRequirementKind,
+  evidence: SharedExecutionEvidenceState,
+): string {
+  switch (evidenceKind) {
+    case 'structured-readings':
+      return evidence.calculationEvidenceUpdatedAt
+        ? `Structured readings saved ${new Date(evidence.calculationEvidenceUpdatedAt).toLocaleString()}.`
+        : 'Structured readings have not been saved yet.';
+    case 'observation-notes':
+      return evidence.observationNotes.trim().length > 0
+        ? 'Observation notes are captured locally.'
+        : 'Observation notes have not been captured yet.';
+    case 'photo-evidence':
+      return evidence.photoAttachments.length > 0
+        ? `${evidence.photoAttachments.length} photo attachment(s) are linked locally.`
+        : 'No local photo attachment is linked yet.';
+  }
+}
+
+function buildReportStepSummary(report: SharedExecutionReportDraftState): string {
+  if (report.lifecycleState === 'Ready to Submit') {
+    return 'Per-tag report draft is assembled locally and ready for submission review.';
+  }
+
+  return 'Per-tag report draft is assembled locally and still in progress while readiness hooks remain active.';
+}
+
+function buildReportStepDetail(report: SharedExecutionReportDraftState): string {
+  return report.savedAt
+    ? 'Review the generated draft, add final notes or corrections, and save locally for later completion without retyping the field session.'
+    : 'Review the generated draft, add final notes or corrections, and save locally when you want to keep this per-tag report for later completion.';
+}
+
+function buildReportFields(
+  report: SharedExecutionReportDraftState,
+): SharedExecutionField[] {
+  const completedChecklistCount = report.checklistOutcomes.filter(
+    (item) => item.outcome === 'completed',
+  ).length;
+  const incompleteChecklistCount = report.checklistOutcomes.filter(
+    (item) => item.outcome === 'incomplete',
+  ).length;
+  const skippedChecklistCount = report.checklistOutcomes.filter(
+    (item) => item.outcome === 'skipped',
+  ).length;
+  const pendingChecklistCount = report.checklistOutcomes.filter(
+    (item) => item.outcome === 'pending',
+  ).length;
+  const minimumEvidence = report.evidenceReferences.filter(
+    (item) => item.requirementLevel === 'minimum',
+  );
+  const expectedEvidence = report.evidenceReferences.filter(
+    (item) => item.requirementLevel === 'expected',
+  );
+  const requiredJustificationCount = report.riskFlags.filter(
+    (item) => item.justificationRequired,
+  ).length;
+  const enteredJustificationCount = report.riskFlags.filter(
+    (item) => item.justificationRequired && item.justificationText.trim().length > 0,
+  ).length;
+
+  return [
+    {
+      label: 'Report lifecycle',
+      value: report.lifecycleState,
+      state: report.lifecycleState === 'Ready to Submit' ? 'available' : 'missing',
+    },
+    availableField('Draft report', report.reportId),
+    availableField('Technician', `${report.technicianName} (${report.technicianEmail})`),
+    {
+      label: 'Draft review saved',
+      value: report.savedAt ? new Date(report.savedAt).toLocaleString() : 'Not saved yet',
+      state: report.savedAt ? 'available' : 'missing',
+    },
+    availableField('Tag context', report.tagContextSummary),
+    {
+      label: 'Execution summary',
+      value: report.executionSummary,
+      state: report.executionSummary.includes('not been saved yet') ? 'missing' : 'available',
+    },
+    availableField('History summary', report.historySummary),
+    {
+      label: 'Checklist outcomes',
+      value:
+        report.checklistOutcomes.length > 0
+          ? `Pending ${pendingChecklistCount}; Completed ${completedChecklistCount}; Incomplete ${incompleteChecklistCount}; Skipped ${skippedChecklistCount}`
+          : 'None declared',
+      state:
+        incompleteChecklistCount > 0 ||
+        skippedChecklistCount > 0 ||
+        pendingChecklistCount > 0
+          ? 'missing'
+          : 'available',
+    },
+    {
+      label: 'Minimum evidence coverage',
+      value:
+        minimumEvidence.length > 0
+          ? `${minimumEvidence.filter((item) => item.satisfied).length} / ${minimumEvidence.length} satisfied`
+          : 'None declared',
+      state:
+        minimumEvidence.some((item) => !item.satisfied) ? 'missing' : 'available',
+    },
+    {
+      label: 'Expected evidence coverage',
+      value:
+        expectedEvidence.length > 0
+          ? `${expectedEvidence.filter((item) => item.satisfied).length} / ${expectedEvidence.length} satisfied`
+          : 'None declared',
+      state:
+        expectedEvidence.some((item) => !item.satisfied) ? 'missing' : 'available',
+    },
+    {
+      label: 'Risk flags',
+      value:
+        report.riskFlags.length > 0
+          ? `${report.riskFlags.length} visible risk flag(s)`
+          : 'No visible risk flags',
+      state: report.riskFlags.length > 0 ? 'missing' : 'available',
+    },
+    {
+      label: 'Required justifications',
+      value:
+        requiredJustificationCount > 0
+          ? `${enteredJustificationCount} / ${requiredJustificationCount} entered`
+          : 'None required',
+      state:
+        requiredJustificationCount > enteredJustificationCount ? 'missing' : 'available',
+    },
+    availableField('Draft diagnosis summary', report.draftDiagnosisSummary),
+    {
+      label: 'Final notes / corrections',
+      value:
+        report.reviewNotes.trim().length > 0
+          ? report.reviewNotes.trim()
+          : 'No final notes or corrections saved yet.',
+      state: report.reviewNotes.trim().length > 0 ? 'available' : 'missing',
+    },
+  ];
+}
+
+function resolveReportLifecycleState(
+  submitReadiness: SharedExecutionGuidanceState['submitReadiness'],
+): SharedExecutionReportLifecycleState {
+  return submitReadiness === 'ready' ? 'Ready to Submit' : 'In Progress';
+}
+
+function getStepFieldValue(
+  step: SharedExecutionShell['steps'][number] | undefined,
+  label: string,
+): string | null {
+  return step?.fields.find((field) => field.label === label)?.value ?? null;
+}
+
 function applyGuidanceState(
   shell: SharedExecutionShell,
   guidance: SharedExecutionGuidanceState,
@@ -1016,7 +1542,7 @@ function applyGuidanceState(
     evidence: shell.evidence,
   });
 
-  return {
+  const shellWithGuidance = {
     ...shell,
     guidance: derivedGuidance,
     steps: shell.steps.map((step) =>
@@ -1030,6 +1556,8 @@ function applyGuidanceState(
         : step,
     ),
   };
+
+  return applyReportDraftState(shellWithGuidance, deriveReportDraftState(shellWithGuidance));
 }
 
 function mergeGuidanceOutcomesIntoShell(
@@ -1064,12 +1592,15 @@ function mergeInSessionEvidenceIntoShell(
   shell: SharedExecutionShell,
   previousShell: SharedExecutionShell,
 ): SharedExecutionShell {
-  return applyEvidenceState(
+  return mergeInSessionReportDraftIntoShell(
+    applyEvidenceState(
     mergeGuidanceOutcomesIntoShell(shell, previousShell.guidance),
     {
       ...shell.evidence,
       observationNotes: previousShell.evidence.observationNotes,
     },
+    ),
+    previousShell,
   );
 }
 
@@ -1077,8 +1608,11 @@ function mergeInSessionWorkingStateIntoShell(
   shell: SharedExecutionShell,
   previousShell: SharedExecutionShell,
 ): SharedExecutionShell {
-  return mergeInSessionCalculationIntoShell(
-    mergeInSessionEvidenceIntoShell(shell, previousShell),
+  return mergeInSessionReportDraftIntoShell(
+    mergeInSessionCalculationIntoShell(
+      mergeInSessionEvidenceIntoShell(shell, previousShell),
+      previousShell,
+    ),
     previousShell,
   );
 }
@@ -1279,7 +1813,7 @@ function applyEvidenceState(
     evidence,
   });
 
-  return {
+  const shellWithEvidence = {
     ...shell,
     evidence,
     guidance,
@@ -1294,6 +1828,8 @@ function applyEvidenceState(
         : step,
     ),
   };
+
+  return applyReportDraftState(shellWithEvidence, deriveReportDraftState(shellWithEvidence));
 }
 
 function mapContextField(
@@ -1603,24 +2139,134 @@ async function ensureDraftReportLink(
   shell: SharedExecutionShell,
   updatedAt: string,
 ): Promise<string> {
-  const draftReportId = buildDraftReportId(shell.workPackageId, shell.tagId);
-
-  await store.drafts.saveDraft({
-    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
-    businessObjectId: draftReportId,
-    summaryText: `Technician-owned draft report for ${shell.tagCode}`,
-    payloadJson: JSON.stringify({
-      reportId: draftReportId,
-      workPackageId: shell.workPackageId,
-      tagId: shell.tagId,
-      templateId: shell.template.id,
-      templateVersion: shell.template.version,
-      state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
-      updatedAt,
-    }),
+  const draft = await persistPerTagReportDraft(store, shell, {
+    reviewNotes: shell.report.reviewNotes,
+    savedAt: shell.report.savedAt,
+    lifecycleState: resolveReportLifecycleState(shell.guidance.submitReadiness),
+    updatedAt,
   });
 
-  return draftReportId;
+  return draft.businessObjectId;
+}
+
+async function saveReportDraftRecord(
+  store: UserPartitionedLocalStore,
+  shell: SharedExecutionShell,
+  input: {
+    reviewNotes: string;
+    savedAt: string | null;
+    lifecycleState: SharedExecutionReportLifecycleState;
+    updatedAt: string;
+  },
+): Promise<UserOwnedDraftRecord> {
+  return persistPerTagReportDraft(store, shell, input);
+}
+
+async function persistPerTagReportDraft(
+  store: UserPartitionedLocalStore,
+  shell: SharedExecutionShell,
+  input: {
+    reviewNotes: string;
+    savedAt: string | null;
+    lifecycleState: SharedExecutionReportLifecycleState;
+    updatedAt: string;
+  },
+): Promise<UserOwnedDraftRecord> {
+  const draftReportId = buildDraftReportId(shell.workPackageId, shell.tagId);
+  const existingDraft = await store.drafts.getDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: draftReportId,
+  });
+  const existingPayload = parseStoredPerTagReportDraftPayload(existingDraft);
+  const reviewNotes = input.reviewNotes;
+  const savedAt = input.savedAt ?? existingPayload?.savedAt ?? null;
+  const payload = buildStoredPerTagReportDraftPayload(shell, {
+    reviewNotes,
+    savedAt,
+    lifecycleState: input.lifecycleState,
+    updatedAt: input.updatedAt,
+  });
+
+  return store.drafts.saveDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: draftReportId,
+    summaryText: buildDraftSummaryText(shell, input.lifecycleState),
+    payloadJson: JSON.stringify(payload),
+  });
+}
+
+function parseStoredPerTagReportDraftPayload(
+  draft: UserOwnedDraftRecord | null,
+): StoredPerTagReportDraftPayload | null {
+  if (!draft) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(draft.payloadJson) as Partial<StoredPerTagReportDraftPayload>;
+    if (
+      typeof parsed.reportId !== 'string' ||
+      typeof parsed.workPackageId !== 'string' ||
+      typeof parsed.tagId !== 'string' ||
+      typeof parsed.templateId !== 'string' ||
+      typeof parsed.templateVersion !== 'string' ||
+      parsed.state !== TECHNICIAN_OWNED_DRAFT_REPORT_STATE ||
+      typeof parsed.updatedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      reportId: parsed.reportId,
+      workPackageId: parsed.workPackageId,
+      tagId: parsed.tagId,
+      templateId: parsed.templateId,
+      templateVersion: parsed.templateVersion,
+      state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+      lifecycleState:
+        parsed.lifecycleState === 'Ready to Submit' || parsed.lifecycleState === 'In Progress'
+          ? parsed.lifecycleState
+          : undefined,
+      reviewNotes: typeof parsed.reviewNotes === 'string' ? parsed.reviewNotes : undefined,
+      savedAt:
+        typeof parsed.savedAt === 'string' || parsed.savedAt === null
+          ? parsed.savedAt
+          : undefined,
+      updatedAt: parsed.updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildStoredPerTagReportDraftPayload(
+  shell: SharedExecutionShell,
+  input: {
+    reviewNotes: string;
+    savedAt: string | null;
+    lifecycleState: SharedExecutionReportLifecycleState;
+    updatedAt: string;
+  },
+): StoredPerTagReportDraftPayload {
+  return {
+    reportId: buildDraftReportId(shell.workPackageId, shell.tagId),
+    workPackageId: shell.workPackageId,
+    tagId: shell.tagId,
+    templateId: shell.template.id,
+    templateVersion: shell.template.version,
+    state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    lifecycleState: input.lifecycleState,
+    reviewNotes: input.reviewNotes,
+    savedAt: input.savedAt,
+    updatedAt: input.updatedAt,
+  };
+}
+
+function buildDraftSummaryText(
+  shell: SharedExecutionShell,
+  lifecycleState: SharedExecutionReportLifecycleState,
+): string {
+  return `Technician-owned draft report for ${shell.tagCode} (${lifecycleState})`;
 }
 
 function buildDraftReportId(workPackageId: string, tagId: string): string {
@@ -1673,7 +2319,13 @@ function toExecutionStepKind(stepId: string): SharedExecutionStepKind {
 }
 
 function isExecutionStepKind(value: unknown): value is SharedExecutionStepKind {
-  return value === 'context' || value === 'calculation' || value === 'history' || value === 'guidance';
+  return (
+    value === 'context' ||
+    value === 'calculation' ||
+    value === 'history' ||
+    value === 'guidance' ||
+    value === 'report'
+  );
 }
 
 function toDisplayAcceptance(

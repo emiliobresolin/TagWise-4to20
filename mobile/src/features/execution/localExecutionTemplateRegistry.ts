@@ -11,6 +11,7 @@ const sharedExecutionSteps = [
   { id: 'calculation', title: 'Calculation setup', kind: 'calculation' as const },
   { id: 'history', title: 'History comparison', kind: 'history' as const },
   { id: 'guidance', title: 'Checklist and guidance', kind: 'guidance' as const },
+  { id: 'report', title: 'Report draft review', kind: 'report' as const },
 ];
 
 export class LocalExecutionTemplateRegistry {

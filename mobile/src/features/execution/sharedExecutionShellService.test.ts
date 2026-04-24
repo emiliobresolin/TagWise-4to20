@@ -10,6 +10,7 @@ import { bootstrapLocalDatabase } from '../../data/local/bootstrapLocalDatabase'
 import type { ActiveUserSession } from '../auth/model';
 import { LocalTagContextService } from '../work-packages/localTagContextService';
 import type { AssignedWorkPackageSnapshot } from '../work-packages/model';
+import type { SharedExecutionShell } from './model';
 import { SharedExecutionShellService } from './sharedExecutionShellService';
 
 const createdDirectories: string[] = [];
@@ -89,6 +90,22 @@ function buildTemplate(definition: {
     expectedEvidence: definition.expectedEvidence,
     historyComparisonExpectation: definition.historyComparisonExpectation,
   };
+}
+
+function serviceUpdateChecklistToCompleted(
+  service: SharedExecutionShellService,
+  shell: SharedExecutionShell,
+  observationNotes: string,
+) {
+  return service.updateChecklistOutcome(
+    service.updateChecklistOutcome(
+      service.updateObservationNotes(shell, observationNotes),
+      'pressure-path-check',
+      'completed',
+    ),
+    'pressure-reference-check',
+    'completed',
+  );
 }
 
 const baseSnapshot: AssignedWorkPackageSnapshot = {
@@ -609,6 +626,7 @@ describe('SharedExecutionShellService', () => {
         { id: 'calculation', title: 'Calculation setup' },
         { id: 'history', title: 'History comparison' },
         { id: 'guidance', title: 'Checklist and guidance' },
+        { id: 'report', title: 'Report draft review' },
       ],
       progress: {
         currentStepId: 'context',
@@ -2272,6 +2290,389 @@ describe('SharedExecutionShellService', () => {
         expect.objectContaining({
           label: 'Current vs prior',
           value: 'Enter current values to compare them with cached history.',
+        }),
+      ]),
+    );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('assembles a ready per-tag report draft from captured local execution data', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-report-draft-ready-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const photoSourcePath = join(tempDirectory, 'ready-report-photo.jpg');
+    writeFileSync(photoSourcePath, 'ready-report-photo-binary');
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const loadedShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const calculatedShell = await service.saveCalculation(session, loadedShell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+    const guidanceReadyShell = service.updateChecklistOutcome(
+      service.updateChecklistOutcome(
+        service.updateObservationNotes(
+          await service.selectStep(session, calculatedShell, 'guidance'),
+          'Impulse path verified locally before finalizing the as-found checkpoint.',
+        ),
+        'pressure-path-check',
+        'completed',
+      ),
+      'pressure-reference-check',
+      'completed',
+    );
+    const savedGuidanceShell = await service.saveGuidanceEvidence(session, guidanceReadyShell);
+    const reportReadyShell = await service.attachPhotoEvidence(session, savedGuidanceShell, {
+      source: 'camera',
+      uri: photoSourcePath,
+      fileName: 'ready-report-photo.jpg',
+      mimeType: 'image/jpeg',
+      width: 1200,
+      height: 900,
+      fileSize: 4096,
+    });
+
+    expect(reportReadyShell.report).toMatchObject({
+      reportId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      lifecycleState: 'Ready to Submit',
+      technicianName: session.displayName,
+      technicianEmail: session.email,
+      executionSummary: expect.stringContaining('Current result: Pass.'),
+      checklistOutcomes: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'pressure-path-check',
+          outcome: 'completed',
+        }),
+        expect.objectContaining({
+          id: 'pressure-reference-check',
+          outcome: 'completed',
+        }),
+      ]),
+      evidenceReferences: expect.arrayContaining([
+        expect.objectContaining({
+          label: 'readings',
+          requirementLevel: 'minimum',
+          evidenceKind: 'structured-readings',
+          satisfied: true,
+        }),
+        expect.objectContaining({
+          label: 'observations',
+          requirementLevel: 'minimum',
+          evidenceKind: 'observation-notes',
+          satisfied: true,
+        }),
+        expect.objectContaining({
+          label: 'supporting photo',
+          requirementLevel: 'expected',
+          evidenceKind: 'photo-evidence',
+          satisfied: true,
+        }),
+      ]),
+      riskFlags: [],
+    });
+    expect(reportReadyShell.steps.find((step) => step.id === 'report')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Report lifecycle',
+          value: 'Ready to Submit',
+          state: 'available',
+        }),
+        expect.objectContaining({
+          label: 'Minimum evidence coverage',
+          value: '2 / 2 satisfied',
+          state: 'available',
+        }),
+        expect.objectContaining({
+          label: 'Checklist outcomes',
+          value: 'Pending 0; Completed 2; Incomplete 0; Skipped 0',
+          state: 'available',
+        }),
+        expect.objectContaining({
+          label: 'Expected evidence coverage',
+          value: '1 / 1 satisfied',
+          state: 'available',
+        }),
+      ]),
+    );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('includes checklist outcomes in the report draft projection, not only through risk flags', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-report-draft-checklist-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const loadedShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const shellWithChecklistOutcomes = service.updateChecklistOutcome(
+      service.updateChecklistOutcome(
+        await service.selectStep(session, loadedShell!, 'guidance'),
+        'pressure-path-check',
+        'completed',
+      ),
+      'pressure-reference-check',
+      'skipped',
+    );
+    const savedShell = await service.saveGuidanceEvidence(session, shellWithChecklistOutcomes);
+
+    expect(savedShell.report.checklistOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'pressure-path-check',
+          prompt:
+            'Confirm impulse path and vent condition before treating deviation as transmitter drift.',
+          outcome: 'completed',
+        }),
+        expect.objectContaining({
+          id: 'pressure-reference-check',
+          prompt: 'Confirm the applied reference is stable before saving the checkpoint.',
+          outcome: 'skipped',
+        }),
+      ]),
+    );
+    expect(savedShell.steps.find((step) => step.id === 'report')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Checklist outcomes',
+          value: 'Pending 0; Completed 1; Incomplete 0; Skipped 1',
+          state: 'missing',
+        }),
+      ]),
+    );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('persists report review notes locally and restores them after later evidence updates and reopen', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-report-draft-reopen-'));
+    createdDirectories.push(tempDirectory);
+
+    const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
+    const photoSourcePath = join(tempDirectory, 'saved-report-photo.jpg');
+    writeFileSync(photoSourcePath, 'saved-report-photo-binary');
+
+    const firstRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const firstService = new SharedExecutionShellService({
+      userPartitions: firstRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: firstRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const loadedShell = await firstService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const calculatedShell = await firstService.saveCalculation(session, loadedShell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+    const preparedGuidanceShell = serviceUpdateChecklistToCompleted(
+      firstService,
+      await firstService.selectStep(session, calculatedShell, 'guidance'),
+      'Initial local observation note before report review.',
+    );
+    const savedGuidanceShell = await firstService.saveGuidanceEvidence(
+      session,
+      preparedGuidanceShell,
+    );
+    const attachedShell = await firstService.attachPhotoEvidence(session, savedGuidanceShell, {
+      source: 'library',
+      uri: photoSourcePath,
+      fileName: 'saved-report-photo.jpg',
+      mimeType: 'image/jpeg',
+      width: 1024,
+      height: 768,
+      fileSize: 2048,
+    });
+    const reportReviewedShell = await firstService.saveReportDraft(
+      session,
+      firstService.updateReportReviewNotes(
+        attachedShell,
+        'Final draft note: verify the manifold condition in the supervisor review summary.',
+      ),
+    );
+
+    const updatedGuidanceShell = await firstService.saveGuidanceEvidence(
+      session,
+      firstService.updateObservationNotes(
+        reportReviewedShell,
+        'Updated local observation note after one last field recheck.',
+      ),
+    );
+
+    const draftRecord = await firstRuntime.repositories.userPartitions.forUser(session.userId).drafts.getDraft({
+      businessObjectType: 'per-tag-report',
+      businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+    });
+    expect(JSON.parse(draftRecord!.payloadJson)).toMatchObject({
+      reportId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      reviewNotes:
+        'Final draft note: verify the manifold condition in the supervisor review summary.',
+      state: 'technician-owned-draft',
+    });
+
+    await firstRuntime.database.closeAsync?.();
+
+    const secondRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    const secondService = new SharedExecutionShellService({
+      userPartitions: secondRuntime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: secondRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:20:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:20:00.000Z'),
+    });
+
+    const reopenedShell = await secondService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    expect(updatedGuidanceShell.report.savedAt).not.toBeNull();
+    expect(reopenedShell).toMatchObject({
+      evidence: {
+        observationNotes: 'Updated local observation note after one last field recheck.',
+      },
+      report: {
+        reviewNotes:
+          'Final draft note: verify the manifold condition in the supervisor review summary.',
+        savedAt: expect.any(String),
+        lifecycleState: 'Ready to Submit',
+      },
+    });
+    expect(reopenedShell?.steps.find((step) => step.id === 'report')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Final notes / corrections',
+          value:
+            'Final draft note: verify the manifold condition in the supervisor review summary.',
+        }),
+      ]),
+    );
+
+    await secondRuntime.database.closeAsync?.();
+  });
+
+  it('keeps the report draft in progress and carries visible risk justifications into the report projection', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-report-draft-risk-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(missingContextAndHistorySnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const loadedShell = await service.loadShell(
+      session,
+      missingContextAndHistorySnapshot.summary.id,
+      'tag-missing-context',
+      'tpl-pressure-as-found',
+    );
+    const shellWithJustification = service.updateRiskJustification(
+      loadedShell!,
+      'history-unavailable',
+      'History was not packaged for this intervention, so the local draft carries a technician note instead.',
+    );
+    const savedShell = await service.saveGuidanceEvidence(session, shellWithJustification);
+
+    expect(savedShell.report).toMatchObject({
+      lifecycleState: 'In Progress',
+      riskFlags: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'history-unavailable',
+          justificationText:
+            'History was not packaged for this intervention, so the local draft carries a technician note instead.',
+        }),
+      ]),
+    });
+    expect(savedShell.steps.find((step) => step.id === 'report')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Report lifecycle',
+          value: 'In Progress',
+          state: 'missing',
+        }),
+        expect.objectContaining({
+          label: 'Risk flags',
+          value: expect.stringContaining('visible risk flag'),
+          state: 'missing',
         }),
       ]),
     );
