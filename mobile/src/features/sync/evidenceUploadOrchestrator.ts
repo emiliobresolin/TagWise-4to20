@@ -7,7 +7,10 @@ import type {
 import type { UserOwnedEvidenceMetadataRecord, UserOwnedQueueItemRecord } from '../../data/local/repositories/userPartitionedLocalTypes';
 import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
 import type { EvidenceBinaryUploadBoundary } from '../../platform/files/evidenceBinaryUploadBoundary';
-import type { EvidenceUploadApiClient } from './evidenceUploadApiClient';
+import {
+  EVIDENCE_SYNC_API_CONTRACT_VERSION,
+  type EvidenceUploadApiClient,
+} from './evidenceUploadApiClient';
 import {
   buildUploadEvidenceBinaryQueueItemId,
   buildUploadEvidenceMetadataQueueItemId,
@@ -70,6 +73,7 @@ export class EvidenceUploadOrchestrator {
 
       try {
         const synced = await this.dependencies.apiClient.syncEvidenceMetadata({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
           reportId: shell.report.reportId,
           workPackageId: shell.workPackageId,
           tagId: shell.tagId,
@@ -121,6 +125,7 @@ export class EvidenceUploadOrchestrator {
 
     try {
       const authorization = await this.dependencies.apiClient.authorizeEvidenceBinaryUpload({
+        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
         reportId: shell.report.reportId,
         evidenceId: attachment.evidenceId,
       });
@@ -143,6 +148,7 @@ export class EvidenceUploadOrchestrator {
       });
 
       const finalized = await this.dependencies.apiClient.finalizeEvidenceBinaryUpload({
+        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
         serverEvidenceId: authorization.serverEvidenceId,
       });
 
@@ -160,7 +166,10 @@ export class EvidenceUploadOrchestrator {
       await store.queueItems.deleteQueueItem(binaryQueueItemId);
     } catch (error) {
       await bumpQueueRetryCount(store, binaryQueueItemId);
-      await updatePhotoMetadataRecord(store, refreshedMetadataRecord, (payload) => ({
+      const latestMetadataRecord =
+        (await store.evidenceMetadata.getEvidenceById(attachment.evidenceId)) ??
+        refreshedMetadataRecord;
+      await updatePhotoMetadataRecord(store, latestMetadataRecord, (payload) => ({
         ...payload,
         syncState: 'sync-issue',
         syncIssue: error instanceof Error ? error.message : 'Evidence binary upload failed.',

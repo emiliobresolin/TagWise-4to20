@@ -8,6 +8,7 @@ import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
+import { EVIDENCE_SYNC_API_CONTRACT_VERSION } from '../modules/evidence-sync/model';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createServiceRuntime, type ServiceRuntimeHandle } from '../runtime/serviceRuntime';
@@ -373,6 +374,7 @@ describe('createApiRequestHandler', () => {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
+        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
         reportId: 'tag-report:wp-seed-1001:tag-001',
         workPackageId: 'wp-seed-1001',
         tagId: 'tag-001',
@@ -405,6 +407,7 @@ describe('createApiRequestHandler', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
           reportId: 'tag-report:wp-seed-1001:tag-001',
           evidenceId: 'photo:20260423143000:test',
         }),
@@ -435,6 +438,7 @@ describe('createApiRequestHandler', () => {
           'content-type': 'application/json',
         },
         body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
           serverEvidenceId: metadataBody.serverEvidenceId,
         }),
       },
@@ -450,6 +454,157 @@ describe('createApiRequestHandler', () => {
       serverEvidenceId: metadataBody.serverEvidenceId,
       presenceStatus: 'binary-finalized',
       presenceFinalizedAt: '2026-04-23T14:30:00.000Z',
+    });
+
+    await pool.end();
+  });
+
+  it('keeps evidence metadata accepted but rejects unsupported contracts and missing binary finalization', async () => {
+    const database = newDb();
+    const adapter = database.adapters.createPg();
+    const pool = new adapter.Pool();
+    await runPostgresMigrations(pool);
+
+    const authRepository = new AuthRepository(pool);
+    const authService = new AuthService(
+      authRepository,
+      authConfig,
+      new AuditEventService(new AuditEventRepository(pool)),
+    );
+    await authService.ensureSeedUsers();
+    const technician = await authRepository.findByEmail(authConfig.seedUsers.technician.email);
+    if (!technician) {
+      throw new Error('Missing seeded technician for evidence failure test.');
+    }
+
+    const assignedWorkPackageService = new AssignedWorkPackageService(
+      new AssignedWorkPackageRepository(pool),
+    );
+    await assignedWorkPackageService.ensureSeedPackages(technician.id);
+    const evidenceSyncService = new EvidenceSyncService(
+      new EvidenceSyncRepository(pool),
+      createTestEvidenceObjectStorageClient(),
+      () => new Date('2026-04-23T15:00:00.000Z'),
+    );
+
+    const runtime = createServiceRuntime({
+      serviceName: 'api-service',
+      serviceRole: 'api',
+      host: '127.0.0.1',
+      port: 0,
+      verifyDatabaseReadiness: async () => undefined,
+      handleRequest: createApiRequestHandler({
+        authService,
+        assignedWorkPackageService,
+        evidenceSyncService,
+      }),
+    });
+    runtimes.push(runtime);
+
+    const { port } = await runtime.start();
+    const login = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-evidence-failure-login',
+      },
+    );
+
+    const unsupportedContractResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-metadata`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: '2026-03-v0',
+          reportId: 'tag-report:wp-seed-1001:tag-001',
+          workPackageId: 'wp-seed-1001',
+          tagId: 'tag-001',
+          templateId: 'tpl-pressure-as-found',
+          templateVersion: '2026-04-v1',
+          evidenceId: 'photo:20260423150000:bad-contract',
+          fileName: 'field-photo.jpg',
+          mimeType: 'image/jpeg',
+          executionStepId: 'guidance',
+          source: 'camera',
+          localCapturedAt: '2026-04-23T14:55:00.000Z',
+          metadataIdempotencyKey:
+            'upload-evidence-metadata:photo:20260423150000:bad-contract:2026-04-23T14:55:00.000Z',
+        }),
+      },
+    );
+
+    expect(unsupportedContractResponse.status).toBe(400);
+    expect(await unsupportedContractResponse.json()).toEqual({
+      message: `Evidence sync contractVersion must be ${EVIDENCE_SYNC_API_CONTRACT_VERSION}.`,
+    });
+
+    const metadataResponse = await fetch(`http://127.0.0.1:${port}/sync/evidence-metadata`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${login.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+        reportId: 'tag-report:wp-seed-1001:tag-001',
+        workPackageId: 'wp-seed-1001',
+        tagId: 'tag-001',
+        templateId: 'tpl-pressure-as-found',
+        templateVersion: '2026-04-v1',
+        evidenceId: 'photo:20260423150000:missing-binary',
+        fileName: 'field-photo.jpg',
+        mimeType: 'image/jpeg',
+        executionStepId: 'guidance',
+        source: 'camera',
+        localCapturedAt: '2026-04-23T14:55:00.000Z',
+        metadataIdempotencyKey:
+          'upload-evidence-metadata:photo:20260423150000:missing-binary:2026-04-23T14:55:00.000Z',
+      }),
+    });
+    const metadataBody = (await metadataResponse.json()) as { serverEvidenceId: string };
+    expect(metadataResponse.status).toBe(200);
+
+    const authorizationResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-upload-authorizations`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+          reportId: 'tag-report:wp-seed-1001:tag-001',
+          evidenceId: 'photo:20260423150000:missing-binary',
+        }),
+      },
+    );
+    expect(authorizationResponse.status).toBe(200);
+
+    const finalizationResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-binary-finalizations`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+          serverEvidenceId: metadataBody.serverEvidenceId,
+        }),
+      },
+    );
+
+    expect(finalizationResponse.status).toBe(409);
+    expect(await finalizationResponse.json()).toEqual({
+      message: 'Evidence binary is not present in object storage yet.',
     });
 
     await pool.end();

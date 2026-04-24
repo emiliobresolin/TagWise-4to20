@@ -1,6 +1,9 @@
 import type { AuthenticatedUser } from '../auth/model';
 
+export const EVIDENCE_SYNC_API_CONTRACT_VERSION = '2026-04-v1' as const;
+
 export interface EvidenceMetadataSyncRequest {
+  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
   reportId: string;
   workPackageId: string;
   tagId: string;

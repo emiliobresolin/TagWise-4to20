@@ -2932,15 +2932,19 @@ describe('SharedExecutionShellService', () => {
         businessObjectType: 'per-tag-report',
         businessObjectId: submittedShell.report.reportId,
       });
-    expect(queueItems).toHaveLength(2);
+    expect(queueItems).toHaveLength(3);
 
     const reportQueueItem = queueItems.find((item) => item.itemKind === 'submit-report');
-    const evidenceQueueItem = queueItems.find(
+    const evidenceMetadataQueueItem = queueItems.find(
+      (item) => item.itemKind === 'upload-evidence-metadata',
+    );
+    const evidenceBinaryQueueItem = queueItems.find(
       (item) => item.itemKind === 'upload-evidence-binary',
     );
 
     expect(reportQueueItem).toBeDefined();
-    expect(evidenceQueueItem).toBeDefined();
+    expect(evidenceMetadataQueueItem).toBeDefined();
+    expect(evidenceBinaryQueueItem).toBeDefined();
     expect(JSON.parse(reportQueueItem!.payloadJson)).toMatchObject({
       queueItemSchemaVersion: '2026-04-v1',
       itemType: 'submit-report',
@@ -2956,7 +2960,27 @@ describe('SharedExecutionShellService', () => {
       dependencyStatus: 'ready',
       retryCount: 0,
     });
-    expect(JSON.parse(evidenceQueueItem!.payloadJson)).toMatchObject({
+    expect(JSON.parse(evidenceMetadataQueueItem!.payloadJson)).toMatchObject({
+      queueItemSchemaVersion: '2026-04-v1',
+      itemType: 'upload-evidence-metadata',
+      reportId: submittedShell.report.reportId,
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      templateVersion: baseSnapshot.contractVersion,
+      evidenceId: submittedShell.evidence.photoAttachments[0]?.evidenceId,
+      fileName: submittedShell.evidence.photoAttachments[0]?.fileName,
+      mimeType: 'image/jpeg',
+      executionStepId: 'guidance',
+      source: 'camera',
+      localObjectReference: {
+        businessObjectType: 'per-tag-report',
+        businessObjectId: submittedShell.report.reportId,
+      },
+      dependencyStatus: 'ready',
+      retryCount: 0,
+    });
+    expect(JSON.parse(evidenceBinaryQueueItem!.payloadJson)).toMatchObject({
       queueItemSchemaVersion: '2026-04-v1',
       itemType: 'upload-evidence-binary',
       reportId: submittedShell.report.reportId,
@@ -2968,8 +2992,8 @@ describe('SharedExecutionShellService', () => {
         businessObjectType: 'per-tag-report',
         businessObjectId: submittedShell.report.reportId,
       },
-      dependsOnQueueItemId: reportQueueItem!.queueItemId,
-      dependencyStatus: 'waiting-on-report-submission',
+      dependsOnQueueItemId: evidenceMetadataQueueItem!.queueItemId,
+      dependencyStatus: 'waiting-on-evidence-metadata',
       retryCount: 0,
     });
     expect(await runtime.repositories.localWorkState.getUnsyncedWorkCount()).toBe(1);

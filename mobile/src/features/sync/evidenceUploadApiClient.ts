@@ -1,6 +1,9 @@
 import { secureStorageKeys, type SecureKeyValueStore } from '../../platform/secure-storage/secureStorageBoundary';
 
+export const EVIDENCE_SYNC_API_CONTRACT_VERSION = '2026-04-v1' as const;
+
 export interface EvidenceUploadMetadataRequest {
+  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
   reportId: string;
   workPackageId: string;
   tagId: string;
@@ -16,6 +19,7 @@ export interface EvidenceUploadMetadataRequest {
 }
 
 export interface EvidenceUploadMetadataResponse {
+  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
   serverEvidenceId: string;
   reportId: string;
   evidenceId: string;
@@ -24,6 +28,7 @@ export interface EvidenceUploadMetadataResponse {
 }
 
 export interface EvidenceBinaryUploadAuthorization {
+  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
   serverEvidenceId: string;
   reportId: string;
   evidenceId: string;
@@ -35,6 +40,7 @@ export interface EvidenceBinaryUploadAuthorization {
 }
 
 export interface EvidenceBinaryFinalizationResponse {
+  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
   serverEvidenceId: string;
   reportId: string;
   evidenceId: string;
@@ -47,10 +53,12 @@ export interface EvidenceUploadApiClient {
     request: EvidenceUploadMetadataRequest,
   ): Promise<EvidenceUploadMetadataResponse>;
   authorizeEvidenceBinaryUpload(input: {
+    contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
     reportId: string;
     evidenceId: string;
   }): Promise<EvidenceBinaryUploadAuthorization>;
   finalizeEvidenceBinaryUpload(input: {
+    contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
     serverEvidenceId: string;
   }): Promise<EvidenceBinaryFinalizationResponse>;
 }

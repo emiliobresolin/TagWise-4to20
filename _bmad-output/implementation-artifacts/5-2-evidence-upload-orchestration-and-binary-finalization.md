@@ -1,6 +1,6 @@
 ﻿# Story 5.2: Evidence Upload Orchestration and Binary Finalization
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 5-2-evidence-upload-orchestration-and-binary-finalization
@@ -34,6 +34,32 @@ sync metadata first, then upload binaries using controlled authorization; worker
 
 ## Validation / Test Notes
 - upload integration tests, retry tests for transient failures, object storage finalization tests.
+
+## Dev Agent Record
+### Implementation Summary
+- Fixed backend evidence upload dependency/install state so `@aws-sdk/s3-request-presigner` resolves during backend typecheck.
+- Updated local submit queue test expectations to the Story 5.2 metadata-first model: report queue item, evidence metadata queue item, then evidence binary queue item depending on metadata.
+- Added explicit `2026-04-v1` evidence sync API contract versioning to metadata sync, upload authorization, and finalization payloads/responses.
+- Added focused evidence upload orchestrator coverage for metadata sync, upload authorization, binary upload, finalization, metadata failure preservation, and finalization failure preservation.
+- Preserved local authorization state on binary/finalization failure by reloading the latest evidence metadata before writing the sync issue state.
+- Added backend failure-path coverage for unsupported evidence sync contract versions and finalization before binary presence.
+
+### Files Updated
+- `backend/package-lock.json`
+- `backend/src/api/createApiRequestHandler.ts`
+- `backend/src/api/createApiRequestHandler.test.ts`
+- `backend/src/modules/evidence-sync/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/features/sync/evidenceUploadApiClient.ts`
+- `mobile/src/features/sync/evidenceUploadOrchestrator.ts`
+- `mobile/src/features/sync/evidenceUploadOrchestrator.test.ts`
+
+### Validation Results
+- `cd backend && npm run typecheck`
+- `cd backend && npm test -- createApiRequestHandler`
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- sharedExecutionShellService`
+- `cd mobile && npm test -- evidenceUploadOrchestrator`
 
 ## Source References
 - [product-brief.md](../planning-artifacts/product-brief.md)

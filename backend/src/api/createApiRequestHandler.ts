@@ -2,7 +2,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { AuthenticationError } from '../modules/auth/model';
 import type { AuthService } from '../modules/auth/authService';
-import { EvidenceSyncError } from '../modules/evidence-sync/model';
+import {
+  EVIDENCE_SYNC_API_CONTRACT_VERSION,
+  EvidenceSyncError,
+} from '../modules/evidence-sync/model';
 import type { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
@@ -143,6 +146,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       try {
         const user = await authenticateRequest(request, dependencies.authService);
         const body = await readJsonBody<{
+          contractVersion?: string;
           reportId?: string;
           workPackageId?: string;
           tagId?: string;
@@ -156,6 +160,8 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           localCapturedAt?: string;
           metadataIdempotencyKey?: string;
         }>(request);
+
+        assertEvidenceSyncContractVersion(body.contractVersion);
 
         if (
           !body.reportId ||
@@ -175,6 +181,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
         }
 
         const synced = await dependencies.evidenceSyncService.syncEvidenceMetadata(user, {
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
           reportId: body.reportId,
           workPackageId: body.workPackageId,
           tagId: body.tagId,
@@ -195,7 +202,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           reportId: synced.reportId,
           evidenceId: synced.evidenceId,
         });
-        writeJson(response, 200, synced);
+        writeJson(response, 200, withEvidenceSyncContractVersion(synced));
       } catch (error) {
         context.logger.warn('evidence.metadata-sync.failed', {
           statusCode:
@@ -219,9 +226,12 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       try {
         const user = await authenticateRequest(request, dependencies.authService);
         const body = await readJsonBody<{
+          contractVersion?: string;
           reportId?: string;
           evidenceId?: string;
         }>(request);
+
+        assertEvidenceSyncContractVersion(body.contractVersion);
 
         if (!body.reportId || !body.evidenceId) {
           writeJson(response, 400, { message: 'Evidence upload authorization requires reportId and evidenceId.' });
@@ -239,7 +249,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           reportId: authorization.reportId,
           evidenceId: authorization.evidenceId,
         });
-        writeJson(response, 200, authorization);
+        writeJson(response, 200, withEvidenceSyncContractVersion(authorization));
       } catch (error) {
         context.logger.warn('evidence.binary-upload-authorize.failed', {
           statusCode:
@@ -262,7 +272,12 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
     if (method === 'POST' && url === '/sync/evidence-binary-finalizations') {
       try {
         const user = await authenticateRequest(request, dependencies.authService);
-        const body = await readJsonBody<{ serverEvidenceId?: string }>(request);
+        const body = await readJsonBody<{
+          contractVersion?: string;
+          serverEvidenceId?: string;
+        }>(request);
+
+        assertEvidenceSyncContractVersion(body.contractVersion);
 
         if (!body.serverEvidenceId) {
           writeJson(response, 400, { message: 'Evidence binary finalization requires serverEvidenceId.' });
@@ -279,7 +294,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           reportId: finalized.reportId,
           evidenceId: finalized.evidenceId,
         });
-        writeJson(response, 200, finalized);
+        writeJson(response, 200, withEvidenceSyncContractVersion(finalized));
       } catch (error) {
         context.logger.warn('evidence.binary-finalize.failed', {
           statusCode:
@@ -358,6 +373,22 @@ function writeEvidenceSyncError(response: ServerResponse, error: unknown, fallba
   }
 
   writeJson(response, 500, { message: fallbackMessage });
+}
+
+function assertEvidenceSyncContractVersion(contractVersion: unknown): void {
+  if (contractVersion !== EVIDENCE_SYNC_API_CONTRACT_VERSION) {
+    throw new EvidenceSyncError(
+      `Evidence sync contractVersion must be ${EVIDENCE_SYNC_API_CONTRACT_VERSION}.`,
+      400,
+    );
+  }
+}
+
+function withEvidenceSyncContractVersion<T extends object>(payload: T) {
+  return {
+    contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+    ...payload,
+  };
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {
