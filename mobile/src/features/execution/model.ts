@@ -246,16 +246,22 @@ export interface SharedExecutionEvidenceState {
 
 export type SharedExecutionReportState =
   | 'technician-owned-draft'
-  | 'submitted-pending-sync';
+  | 'submitted-pending-sync'
+  | 'submitted-pending-review';
 
 export type SharedExecutionReportLifecycleState =
   | 'In Progress'
   | 'Ready to Submit'
-  | 'Submitted - Pending Sync';
+  | 'Submitted - Pending Sync'
+  | 'Submitted - Pending Supervisor Review';
 
 export type SharedExecutionSyncState =
   | 'local-only'
-  | 'queued';
+  | 'queued'
+  | 'syncing'
+  | 'pending-validation'
+  | 'synced'
+  | 'sync-issue';
 
 export type SharedExecutionReportEvidenceRequirementLevel =
   | 'minimum'
@@ -299,6 +305,8 @@ export interface SharedExecutionReportDraftState {
   reviewNotes: string;
   savedAt: string | null;
   submittedAt: string | null;
+  syncIssue?: string | null;
+  syncIssueReasonCode?: string | null;
 }
 
 export interface StoredExecutionProgressRecord {

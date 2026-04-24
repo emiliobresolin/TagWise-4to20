@@ -19,8 +19,10 @@ describe('runPostgresMigrations', () => {
       '0002_auth_users',
       '0003_audit_events',
       '0004_assigned_work_packages',
+      '0005_evidence_sync_records',
+      '0006_report_submission_records',
     ]);
-    expect(summary.currentSchemaVersion).toBe(4);
+    expect(summary.currentSchemaVersion).toBe(6);
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
 
     await pool.end();
@@ -38,7 +40,7 @@ describe('runPostgresMigrations', () => {
     )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(Number(rows.rows[0]?.count ?? 0)).toBe(4);
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(6);
 
     await pool.end();
   });

@@ -64,6 +64,16 @@ import type {
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
 import { createFetchEvidenceUploadApiClient } from '../features/sync/evidenceUploadApiClient';
 import { EvidenceUploadOrchestrator } from '../features/sync/evidenceUploadOrchestrator';
+import {
+  buildSyncStateBadgeModel,
+  formatSyncStateLabel,
+  type SyncStateTone,
+} from '../features/sync/syncStateModel';
+import {
+  SyncStateService,
+  type ReportSyncDetail,
+  type WorkPackageSyncSummary,
+} from '../features/sync/syncStateService';
 import { createEvidenceBinaryUploadBoundary } from '../platform/files/evidenceBinaryUploadBoundary';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { createPhotoAcquisitionBoundary } from '../platform/media/photoAcquisitionBoundary';
@@ -91,11 +101,14 @@ type BootstrapStatus =
       localTagContextService: LocalTagContextService;
       executionShellService: SharedExecutionShellService;
       evidenceUploadOrchestrator: EvidenceUploadOrchestrator;
+      syncStateService: SyncStateService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
       packageBusy: boolean;
+      syncBusy: boolean;
       authMessage: string | null;
+      packageSyncSummaries: Record<string, WorkPackageSyncSummary>;
       activeTagPackageId: string | null;
       selectedExecutionTemplateId: string | null;
       tagSearchQuery: string;
@@ -103,6 +116,7 @@ type BootstrapStatus =
       selectedTag: LocalAssignedTagEntry | null;
       selectedTagContext: LocalTagContext | null;
       executionShell: SharedExecutionShell | null;
+      reportSyncDetail: ReportSyncDetail | null;
       qrScannerVisible: boolean;
       qrManualPayload: string;
       qrScanResult: LocalQrScanResult | null;
@@ -168,6 +182,11 @@ export function TagWiseApp() {
           }),
           binaryUploadBoundary: evidenceBinaryUploadBoundary,
         });
+        const syncStateService = new SyncStateService({
+          userPartitions: runtime.repositories.userPartitions,
+          executionShellService,
+          evidenceUploadOrchestrator,
+        });
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
@@ -179,6 +198,13 @@ export function TagWiseApp() {
           : null;
         const diagnostics = await errorCapture.getSnapshot();
         const workPackages = session ? await workPackageCatalog.loadLocalCatalog(session) : [];
+        const retrySummary =
+          session?.connectionMode === 'connected'
+            ? await syncStateService.retryEligibleReports(session)
+            : { attempted: 0, succeeded: 0, failed: 0 };
+        const packageSyncSummaries = session
+          ? await syncStateService.listWorkPackageSyncSummaries(session, workPackages)
+          : {};
 
         if (!isActive) {
           await runtime.database.closeAsync?.();
@@ -201,14 +227,19 @@ export function TagWiseApp() {
           localTagContextService,
           executionShellService,
           evidenceUploadOrchestrator,
+          syncStateService,
           session,
           localOwnership,
           authBusy: false,
           packageBusy: false,
+          syncBusy: false,
           authMessage:
-            restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
+            retrySummary.attempted > 0
+              ? buildRetrySummaryMessage(retrySummary)
+              : restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
               ? 'Offline session restored from cached role metadata.'
               : null,
+          packageSyncSummaries,
           activeTagPackageId: null,
           selectedExecutionTemplateId: null,
           tagSearchQuery: '',
@@ -216,6 +247,7 @@ export function TagWiseApp() {
           selectedTag: null,
           selectedTagContext: null,
           executionShell: null,
+          reportSyncDetail: null,
           qrScannerVisible: false,
           qrManualPayload: '',
           qrScanResult: null,
@@ -349,6 +381,15 @@ export function TagWiseApp() {
           packageError instanceof Error ? packageError.message : 'Unknown package refresh error.'
         }`;
       }
+      const retrySummary = await readyState.syncStateService.retryEligibleReports(session);
+      const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
+        session,
+        workPackages,
+      );
+
+      if (retrySummary.attempted > 0) {
+        authMessage = `${authMessage} ${buildRetrySummaryMessage(retrySummary)}`;
+      }
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -358,6 +399,7 @@ export function TagWiseApp() {
               session,
               localOwnership,
               workPackages,
+              packageSyncSummaries,
               authBusy: false,
               authMessage,
               activeTagPackageId: null,
@@ -367,6 +409,7 @@ export function TagWiseApp() {
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
+              reportSyncDetail: null,
               qrScannerVisible: false,
               qrManualPayload: '',
               qrScanResult: null,
@@ -405,12 +448,17 @@ export function TagWiseApp() {
       const workPackages = await readyState.workPackageCatalog.refreshConnectedCatalog(
         readyState.session,
       );
+      const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        workPackages,
+      );
       setStatus((current) =>
         current.type !== 'ready'
           ? current
           : {
               ...current,
               workPackages,
+              packageSyncSummaries,
               packageBusy: false,
               authMessage: `${workPackages.length} assigned package(s) refreshed for offline use.`,
               activeTagPackageId: null,
@@ -420,6 +468,7 @@ export function TagWiseApp() {
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
+              reportSyncDetail: null,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -460,12 +509,17 @@ export function TagWiseApp() {
         readyState.session,
         workPackageId,
       );
+      const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        result.summaries,
+      );
       setStatus((current) =>
         current.type !== 'ready'
           ? current
           : {
               ...current,
               workPackages: result.summaries,
+              packageSyncSummaries,
               packageBusy: false,
               authMessage: `Assigned package ${result.snapshot.summary.id} snapshot stored locally and freshness updated.`,
               activeTagPackageId: null,
@@ -475,6 +529,7 @@ export function TagWiseApp() {
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
+              reportSyncDetail: null,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -648,6 +703,9 @@ export function TagWiseApp() {
       readyState.selectedTag.tagId,
       selectedTemplateId,
     );
+    const reportSyncDetail = executionShell
+      ? await readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell)
+      : null;
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -655,6 +713,7 @@ export function TagWiseApp() {
           : {
               ...current,
               executionShell,
+              reportSyncDetail,
               authMessage: executionShell
                 ? `Shared execution shell loaded for ${executionShell.tagCode} using ${executionShell.template.testPattern}.`
                 : 'No local template contract is available for this tag.',
@@ -1244,7 +1303,10 @@ export function TagWiseApp() {
             session: result.state === 'cleared' ? null : current.session,
             localOwnership: result.state === 'cleared' ? null : current.localOwnership,
             authBusy: false,
+            syncBusy: false,
             workPackages: result.state === 'cleared' ? [] : current.workPackages,
+            packageSyncSummaries:
+              result.state === 'cleared' ? {} : current.packageSyncSummaries,
             activeTagPackageId: result.state === 'cleared' ? null : current.activeTagPackageId,
             selectedExecutionTemplateId:
               result.state === 'cleared' ? null : current.selectedExecutionTemplateId,
@@ -1253,6 +1315,7 @@ export function TagWiseApp() {
             selectedTag: result.state === 'cleared' ? null : current.selectedTag,
             selectedTagContext: result.state === 'cleared' ? null : current.selectedTagContext,
             executionShell: result.state === 'cleared' ? null : current.executionShell,
+            reportSyncDetail: result.state === 'cleared' ? null : current.reportSyncDetail,
             qrScannerVisible: result.state === 'cleared' ? false : current.qrScannerVisible,
             qrManualPayload: result.state === 'cleared' ? '' : current.qrManualPayload,
             qrScanResult: result.state === 'cleared' ? null : current.qrScanResult,
@@ -1264,7 +1327,7 @@ export function TagWiseApp() {
       );
   }
 
-    async function handleSubmitExecutionReport() {
+  async function handleSubmitExecutionReport() {
       if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
         return;
       }
@@ -1297,6 +1360,13 @@ export function TagWiseApp() {
                 : 'Per-tag report queued locally. Evidence upload hit an issue and remains on-device.';
           }
         }
+        const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+          readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+          readyState.syncStateService.listWorkPackageSyncSummaries(
+            readyState.session,
+            readyState.workPackages,
+          ),
+        ]);
 
         setStatus((current) =>
           current.type !== 'ready'
@@ -1304,6 +1374,8 @@ export function TagWiseApp() {
             : {
                 ...current,
                 executionShell,
+                reportSyncDetail,
+                packageSyncSummaries,
                 authMessage,
               },
         );
@@ -1317,6 +1389,81 @@ export function TagWiseApp() {
                 error instanceof Error
                   ? error.message
                   : 'Local report submission failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  async function handleRetryExecutionReportSync() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            syncBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const executionShell = await readyState.syncStateService.retryReportSync(
+        readyState.session,
+        readyState.executionShell,
+      );
+      const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+        readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+        readyState.syncStateService.listWorkPackageSyncSummaries(
+          readyState.session,
+          readyState.workPackages,
+        ),
+      ]);
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              syncBusy: false,
+              executionShell,
+              reportSyncDetail,
+              packageSyncSummaries,
+              authMessage: `Sync retry processed for ${executionShell.tagCode}.`,
+            },
+      );
+    } catch (error) {
+      const executionShell =
+        (await readyState.executionShellService.loadShell(
+          readyState.session,
+          readyState.executionShell.workPackageId,
+          readyState.executionShell.tagId,
+          readyState.executionShell.template.id,
+        )) ?? readyState.executionShell;
+      const reportSyncDetail = await readyState.syncStateService.getReportSyncDetail(
+        readyState.session,
+        executionShell,
+      );
+      const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        readyState.workPackages,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              syncBusy: false,
+              executionShell,
+              reportSyncDetail,
+              packageSyncSummaries,
+              authMessage:
+                error instanceof Error
+                  ? `Sync retry kept local records queued: ${error.message}`
+                  : 'Sync retry kept local records queued.',
             },
       );
     }
@@ -2037,10 +2184,13 @@ export function TagWiseApp() {
                         {selectedExecutionStep.kind === 'report' ? (
                           <ExecutionReportDraftPanel
                             report={readyState.executionShell.report}
+                            syncDetail={readyState.reportSyncDetail}
+                            syncBusy={readyState.syncBusy}
                             editable={
                               readyState.executionShell.report.state === 'technician-owned-draft'
                             }
                             onReviewNotesChange={handleReportReviewNotesChange}
+                            onRetrySync={() => void handleRetryExecutionReportSync()}
                             onSaveReportDraft={() => void handleSaveReportDraft()}
                             onSubmitReport={() => void handleSubmitExecutionReport()}
                           />
@@ -2120,6 +2270,10 @@ export function TagWiseApp() {
 
                 {readyState.workPackages.map((workPackage) => {
                   const readiness = evaluateAssignedWorkPackageReadiness(workPackage);
+                  const syncSummary =
+                    readyState.packageSyncSummaries[workPackage.id] ??
+                    buildEmptyWorkPackageSyncSummary(workPackage.id);
+                  const syncBadge = buildSyncStateBadgeModel(syncSummary.syncState);
 
                   return (
                     <View key={workPackage.id} style={styles.listCard}>
@@ -2127,6 +2281,7 @@ export function TagWiseApp() {
                     <Text style={styles.helperText}>
                       {workPackage.id} / {workPackage.sourceReference}
                     </Text>
+                    <SyncStateBadge label={syncBadge.label} tone={syncBadge.tone} />
 
                     <View style={styles.metricGrid}>
                       <MetricCard label="Priority" value={workPackage.priority} />
@@ -2159,7 +2314,16 @@ export function TagWiseApp() {
                       />
                     </View>
 
+                    <View style={styles.metricGrid}>
+                      <MetricCard label="Sync" value={syncSummary.label} />
+                      <MetricCard
+                        label="Queued items"
+                        value={String(syncSummary.queueItemCount)}
+                      />
+                    </View>
+
                     <Text style={styles.helperText}>{readiness.detail}</Text>
+                    <Text style={styles.helperText}>{syncSummary.detail}</Text>
 
                     <Pressable
                       accessibilityRole="button"
@@ -2284,6 +2448,44 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SyncStateBadge({ label, tone }: { label: string; tone: SyncStateTone }) {
+  return (
+    <View style={[styles.syncBadge, getSyncBadgeStyle(tone)]}>
+      <Text style={[styles.syncBadgeLabel, getSyncBadgeLabelStyle(tone)]}>{label}</Text>
+    </View>
+  );
+}
+
+function getSyncBadgeStyle(tone: SyncStateTone) {
+  switch (tone) {
+    case 'waiting':
+      return styles.syncBadge_waiting;
+    case 'active':
+      return styles.syncBadge_active;
+    case 'success':
+      return styles.syncBadge_success;
+    case 'attention':
+      return styles.syncBadge_attention;
+    default:
+      return styles.syncBadge_neutral;
+  }
+}
+
+function getSyncBadgeLabelStyle(tone: SyncStateTone) {
+  switch (tone) {
+    case 'waiting':
+      return styles.syncBadgeLabel_waiting;
+    case 'active':
+      return styles.syncBadgeLabel_active;
+    case 'success':
+      return styles.syncBadgeLabel_success;
+    case 'attention':
+      return styles.syncBadgeLabel_attention;
+    default:
+      return styles.syncBadgeLabel_neutral;
+  }
+}
+
 function ContextFieldCard({
   field,
 }: {
@@ -2326,18 +2528,27 @@ function ExecutionFieldCard({
 
 function ExecutionReportDraftPanel({
   report,
+  syncDetail,
+  syncBusy,
   editable,
   onReviewNotesChange,
+  onRetrySync,
   onSaveReportDraft,
   onSubmitReport,
 }: {
   report: SharedExecutionShell['report'];
+  syncDetail: ReportSyncDetail | null;
+  syncBusy: boolean;
   editable: boolean;
   onReviewNotesChange: (value: string) => void;
+  onRetrySync: () => void;
   onSaveReportDraft: () => void;
   onSubmitReport: () => void;
 }) {
   const canSubmit = editable && report.lifecycleState === 'Ready to Submit';
+  const syncBadge = syncDetail
+    ? buildSyncStateBadgeModel(syncDetail.syncState, syncDetail.detail)
+    : buildSyncStateBadgeModel(report.syncState);
 
   return (
     <View style={styles.listCard}>
@@ -2373,11 +2584,36 @@ function ExecutionReportDraftPanel({
           Technician: {report.technicianName} ({report.technicianEmail})
         </Text>
         <Text style={styles.helperText}>
-          Sync state: {report.syncState === 'queued' ? 'Queued' : 'Local Only'}
+          Sync state: {formatSyncStateLabel(report.syncState)}
         </Text>
         <Text style={styles.helperText}>
           Submitted locally: {report.submittedAt ? formatTimestamp(report.submittedAt) : 'Not submitted yet'}
         </Text>
+      </View>
+
+      <View style={styles.metricCard}>
+        <Text style={styles.metricLabel}>Sync detail</Text>
+        <SyncStateBadge label={syncBadge.label} tone={syncBadge.tone} />
+        <Text style={styles.helperText}>{syncBadge.detail}</Text>
+        {syncDetail ? (
+          <Text style={styles.helperText}>
+            Queue items: {syncDetail.queueItemCount}. Retry-ready:{' '}
+            {syncDetail.retryableQueueItemCount}. Issues: {syncDetail.issueCount}.
+          </Text>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          disabled={!syncDetail?.canRetry || syncBusy}
+          onPress={onRetrySync}
+          style={[
+            styles.secondaryButton,
+            !syncDetail?.canRetry || syncBusy ? styles.buttonDisabled : null,
+          ]}
+        >
+          <Text style={styles.secondaryButtonLabel}>
+            {syncBusy ? 'Retrying sync...' : 'Retry sync'}
+          </Text>
+        </Pressable>
       </View>
 
       <View style={styles.metricCard}>
@@ -2748,14 +2984,18 @@ function ExecutionPhotoAttachmentCard({
   editable: boolean;
   onRemove: () => void;
 }) {
+  const syncBadge = buildSyncStateBadgeModel(attachment.syncState, attachment.syncIssue);
+
   return (
     <View style={styles.photoAttachmentCard}>
       <Image source={{ uri: attachment.previewUri }} style={styles.photoAttachmentPreview} />
       <Text style={styles.metricLabel}>Draft report photo</Text>
       <Text style={styles.metricValue}>{attachment.fileName}</Text>
+      <SyncStateBadge label={syncBadge.label} tone={syncBadge.tone} />
       <Text style={styles.helperText}>
         Source: {attachment.source === 'camera' ? 'Captured in app' : 'Attached from library'}.
       </Text>
+      <Text style={styles.helperText}>{syncBadge.detail}</Text>
       <Text style={styles.helperText}>
         Saved: {formatTimestamp(attachment.updatedAt)}
       </Text>
@@ -2985,6 +3225,28 @@ function formatDueWindow(value: string | null) {
   return formatTimestamp(value);
 }
 
+function buildEmptyWorkPackageSyncSummary(workPackageId: string): WorkPackageSyncSummary {
+  const badge = buildSyncStateBadgeModel('local-only');
+
+  return {
+    workPackageId,
+    syncState: 'local-only',
+    label: badge.label,
+    detail: badge.detail,
+    reportCount: 0,
+    queueItemCount: 0,
+    issueCount: 0,
+  };
+}
+
+function buildRetrySummaryMessage(summary: {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}) {
+  return `Sync retry checked ${summary.attempted} queued report(s): ${summary.succeeded} succeeded, ${summary.failed} kept queued.`;
+}
+
 function formatDeviation(value: number, unit: string | null) {
   const formatted = value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
   return unit ? `${formatted} ${unit}` : formatted;
@@ -3163,6 +3425,52 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
   missingMetricValue: {
+    color: '#b91c1c',
+  },
+  syncBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+  },
+  syncBadge_neutral: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#cbd5e1',
+  },
+  syncBadge_waiting: {
+    backgroundColor: '#fffbeb',
+    borderColor: '#fcd34d',
+  },
+  syncBadge_active: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#93c5fd',
+  },
+  syncBadge_success: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#86efac',
+  },
+  syncBadge_attention: {
+    backgroundColor: '#fff7f7',
+    borderColor: '#fca5a5',
+  },
+  syncBadgeLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  syncBadgeLabel_neutral: {
+    color: '#334155',
+  },
+  syncBadgeLabel_waiting: {
+    color: '#92400e',
+  },
+  syncBadgeLabel_active: {
+    color: '#1d4ed8',
+  },
+  syncBadgeLabel_success: {
+    color: '#166534',
+  },
+  syncBadgeLabel_attention: {
     color: '#b91c1c',
   },
   primaryButton: {

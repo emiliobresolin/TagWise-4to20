@@ -58,9 +58,11 @@ import {
   UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
   UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
 } from '../sync/queueContracts';
+import { formatSyncStateLabel, isSharedExecutionSyncState } from '../sync/syncStateModel';
 
 const TECHNICIAN_OWNED_DRAFT_REPORT_STATE = 'technician-owned-draft';
 const SUBMITTED_PENDING_SYNC_REPORT_STATE = 'submitted-pending-sync';
+const SUBMITTED_PENDING_REVIEW_REPORT_STATE = 'submitted-pending-review';
 const LOCAL_ONLY_SYNC_STATE = 'local-only';
 const QUEUED_SYNC_STATE = 'queued';
 type SharedExecutionEvidenceRequirementKind =
@@ -80,6 +82,8 @@ interface StoredPerTagReportDraftPayload {
   reviewNotes?: string;
   savedAt?: string | null;
   submittedAt?: string | null;
+  syncIssue?: string | null;
+  syncIssueReasonCode?: string | null;
   updatedAt: string;
 }
 
@@ -593,7 +597,9 @@ export class SharedExecutionShellService {
         businessObjectId: shell.report.reportId,
       });
       const existingPayload = parseStoredPerTagReportDraftPayload(existingDraft);
-      const alreadySubmitted = existingPayload?.state === SUBMITTED_PENDING_SYNC_REPORT_STATE;
+      const alreadySubmitted =
+        existingPayload?.state === SUBMITTED_PENDING_SYNC_REPORT_STATE ||
+        existingPayload?.state === SUBMITTED_PENDING_REVIEW_REPORT_STATE;
 
       if (!alreadySubmitted && shell.guidance.submitReadiness === 'blocked') {
         throw new Error(
@@ -1317,6 +1323,8 @@ function buildReportDraftState(input: {
     reviewNotes: storedPayload?.reviewNotes ?? '',
     savedAt: storedPayload?.savedAt ?? null,
     submittedAt: storedPayload?.submittedAt ?? null,
+    syncIssue: storedPayload?.syncIssue ?? null,
+    syncIssueReasonCode: storedPayload?.syncIssueReasonCode ?? null,
   };
 }
 
@@ -1335,7 +1343,9 @@ function deriveReportDraftState(
   >,
 ): SharedExecutionReportDraftState {
   const historySummary = buildReportHistorySummaryFromShell(shell);
-  const lifecycleState = isSubmittedReport(shell.report)
+  const lifecycleState = shell.report.state === SUBMITTED_PENDING_REVIEW_REPORT_STATE
+    ? 'Submitted - Pending Supervisor Review'
+    : isSubmittedReport(shell.report)
     ? 'Submitted - Pending Sync'
     : resolveDraftReportLifecycleState(shell.guidance.submitReadiness);
 
@@ -1361,6 +1371,8 @@ function deriveReportDraftState(
     reviewNotes: overrides?.reviewNotes ?? shell.report.reviewNotes,
     savedAt: overrides?.savedAt ?? shell.report.savedAt,
     submittedAt: overrides?.submittedAt ?? shell.report.submittedAt,
+    syncIssue: shell.report.syncIssue ?? null,
+    syncIssueReasonCode: shell.report.syncIssueReasonCode ?? null,
   };
 }
 
@@ -1408,6 +1420,12 @@ function mergeInSessionReportDraftIntoShell(
     submittedAt: preserveSubmittedLifecycle
       ? previousShell.report.submittedAt
       : shell.report.submittedAt,
+    syncIssue: preserveSubmittedLifecycle
+      ? previousShell.report.syncIssue ?? null
+      : shell.report.syncIssue ?? null,
+    syncIssueReasonCode: preserveSubmittedLifecycle
+      ? previousShell.report.syncIssueReasonCode ?? null
+      : shell.report.syncIssueReasonCode ?? null,
   });
 }
 
@@ -1612,7 +1630,27 @@ function buildEvidenceReferenceDetail(
 }
 
 function buildReportStepSummary(report: SharedExecutionReportDraftState): string {
+  if (report.lifecycleState === 'Submitted - Pending Supervisor Review') {
+    return 'Per-tag report was accepted by the server and is ready for supervisor review.';
+  }
+
   if (report.lifecycleState === 'Submitted - Pending Sync') {
+    if (report.syncState === 'sync-issue') {
+      return 'Per-tag report sync needs attention while the submitted field record stays locked.';
+    }
+
+    if (report.syncState === 'syncing') {
+      return 'Per-tag report is syncing in the background while the submitted field record stays locked.';
+    }
+
+    if (report.syncState === 'pending-validation') {
+      return 'Per-tag report reached the server sync boundary and is pending validation.';
+    }
+
+    if (report.syncState === 'synced') {
+      return 'Per-tag report sync is complete and the submitted field record remains locked.';
+    }
+
     return 'Per-tag report was submitted locally and is queued for sync while the field record stays locked.';
   }
 
@@ -1624,8 +1662,24 @@ function buildReportStepSummary(report: SharedExecutionReportDraftState): string
 }
 
 function buildReportStepDetail(report: SharedExecutionReportDraftState): string {
+  if (report.lifecycleState === 'Submitted - Pending Supervisor Review') {
+    return 'Server validation accepted this per-tag report. The local report state now mirrors the server-authoritative review outcome.';
+  }
+
   if (report.lifecycleState === 'Submitted - Pending Sync') {
-    return 'This per-tag report has already been queued locally. Submission remains local-only until a later sync story sends it for server validation.';
+    if (report.syncState === 'sync-issue') {
+      return report.syncIssue ?? 'This per-tag report has queued sync work that needs a retry before server validation can continue.';
+    }
+
+    if (report.syncState === 'pending-validation') {
+      return 'This per-tag report has reached pending validation and must not be treated as approved.';
+    }
+
+    if (report.syncState === 'synced') {
+      return 'This per-tag report has completed sync transport and remains separate from approval lifecycle decisions.';
+    }
+
+    return 'This per-tag report has already been queued locally. Submission remains separate from approval until server validation updates it.';
   }
 
   return report.savedAt
@@ -1669,8 +1723,10 @@ function buildReportFields(
     },
     {
       label: 'Sync state',
-      value: report.syncState === QUEUED_SYNC_STATE ? 'Queued' : 'Local Only',
-      state: report.syncState === QUEUED_SYNC_STATE ? 'missing' : 'available',
+      value: formatSyncStateLabel(report.syncState),
+      state: report.syncState === 'synced' || report.syncState === LOCAL_ONLY_SYNC_STATE
+        ? 'available'
+        : 'missing',
     },
     availableField('Draft report', report.reportId),
     availableField('Technician', `${report.technicianName} (${report.technicianEmail})`),
@@ -1758,7 +1814,14 @@ function resolveDraftReportLifecycleState(
 }
 
 function isSubmittedReport(report: Pick<SharedExecutionReportDraftState, 'state'>): boolean {
-  return report.state === SUBMITTED_PENDING_SYNC_REPORT_STATE;
+  return isPersistedSubmittedReportState(report.state);
+}
+
+function isPersistedSubmittedReportState(state: SharedExecutionReportState): boolean {
+  return (
+    state === SUBMITTED_PENDING_SYNC_REPORT_STATE ||
+    state === SUBMITTED_PENDING_REVIEW_REPORT_STATE
+  );
 }
 
 function getStepFieldValue(
@@ -2427,7 +2490,9 @@ async function ensureDraftReportLink(
     savedAt: shell.report.savedAt,
     submittedAt: shell.report.submittedAt,
     syncState: shell.report.syncState,
-    lifecycleState: isSubmittedReport(shell.report)
+    lifecycleState: shell.report.state === SUBMITTED_PENDING_REVIEW_REPORT_STATE
+      ? 'Submitted - Pending Supervisor Review'
+      : isSubmittedReport(shell.report)
       ? 'Submitted - Pending Sync'
       : resolveDraftReportLifecycleState(shell.guidance.submitReadiness),
     updatedAt,
@@ -2474,7 +2539,7 @@ async function persistPerTagReportDraft(
   const reviewNotes = input.reviewNotes;
   const savedAt = input.savedAt ?? existingPayload?.savedAt ?? null;
   const submittedAt =
-    input.state === SUBMITTED_PENDING_SYNC_REPORT_STATE
+    isPersistedSubmittedReportState(input.state)
       ? input.submittedAt ?? existingPayload?.submittedAt ?? null
       : null;
   const payload = buildStoredPerTagReportDraftPayload(shell, {
@@ -2511,7 +2576,8 @@ function parseStoredPerTagReportDraftPayload(
       typeof parsed.templateId !== 'string' ||
       typeof parsed.templateVersion !== 'string' ||
       (parsed.state !== TECHNICIAN_OWNED_DRAFT_REPORT_STATE &&
-        parsed.state !== SUBMITTED_PENDING_SYNC_REPORT_STATE) ||
+        parsed.state !== SUBMITTED_PENDING_SYNC_REPORT_STATE &&
+        parsed.state !== SUBMITTED_PENDING_REVIEW_REPORT_STATE) ||
       typeof parsed.updatedAt !== 'string'
     ) {
       return null;
@@ -2527,11 +2593,12 @@ function parseStoredPerTagReportDraftPayload(
       lifecycleState:
         parsed.lifecycleState === 'Ready to Submit' ||
         parsed.lifecycleState === 'In Progress' ||
-        parsed.lifecycleState === 'Submitted - Pending Sync'
+        parsed.lifecycleState === 'Submitted - Pending Sync' ||
+        parsed.lifecycleState === 'Submitted - Pending Supervisor Review'
           ? parsed.lifecycleState
           : undefined,
       syncState:
-        parsed.syncState === QUEUED_SYNC_STATE || parsed.syncState === LOCAL_ONLY_SYNC_STATE
+        isSharedExecutionSyncState(parsed.syncState)
           ? parsed.syncState
           : undefined,
       reviewNotes: typeof parsed.reviewNotes === 'string' ? parsed.reviewNotes : undefined,
@@ -2542,6 +2609,14 @@ function parseStoredPerTagReportDraftPayload(
       submittedAt:
         typeof parsed.submittedAt === 'string' || parsed.submittedAt === null
           ? parsed.submittedAt
+          : undefined,
+      syncIssue:
+        typeof parsed.syncIssue === 'string' || parsed.syncIssue === null
+          ? parsed.syncIssue
+          : undefined,
+      syncIssueReasonCode:
+        typeof parsed.syncIssueReasonCode === 'string' || parsed.syncIssueReasonCode === null
+          ? parsed.syncIssueReasonCode
           : undefined,
       updatedAt: parsed.updatedAt,
     };
@@ -2574,6 +2649,8 @@ function buildStoredPerTagReportDraftPayload(
     reviewNotes: input.reviewNotes,
     savedAt: input.savedAt,
     submittedAt: input.submittedAt,
+    syncIssue: shell.report.syncIssue ?? null,
+    syncIssueReasonCode: shell.report.syncIssueReasonCode ?? null,
     updatedAt: input.updatedAt,
   };
 }

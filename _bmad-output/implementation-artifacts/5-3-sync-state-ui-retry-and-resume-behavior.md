@@ -1,6 +1,6 @@
 ﻿# Story 5.3: Sync State UI, Retry, and Resume Behavior
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 5-3-sync-state-ui-retry-and-resume-behavior
@@ -34,6 +34,35 @@ drive UI from explicit local sync state machine; separate report business state 
 
 ## Validation / Test Notes
 - state-machine tests, reconnect/reopen retry tests, UI regression tests for state display.
+
+## Dev Agent Record
+### Implementation Summary
+- Selected Story 5.3 from the ordered story index after Story 5.2; Story 5.4 depends on E5-S3.
+- Added an explicit local sync-state model for the approved v1 states: `local-only`, `queued`, `syncing`, `pending-validation`, `synced`, and `sync-issue`.
+- Added a mobile sync-state service that derives per-report and per-package sync summaries from local report drafts, evidence metadata, and queue records.
+- Wired connected app reopen and connected sign-in to retry eligible queued evidence sync work without adding Story 5.4 server validation or approval behavior.
+- Added report/package sync badges, report sync detail, evidence sync badges, and a manual retry action scoped to retry-ready local evidence queue items.
+- Kept report lifecycle state separate from sync transport state.
+- Preserved the helper-level offline-to-connected regain detector and reverted the QA-rejected AppState/timer monitor test attempt after approval.
+
+### Files Updated
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/sync/syncStateModel.ts`
+- `mobile/src/features/sync/syncStateModel.test.ts`
+- `mobile/src/features/sync/syncConnectivityRegain.ts`
+- `mobile/src/features/sync/syncStateConnectivityRegain.test.ts`
+- `mobile/src/features/sync/syncStateService.ts`
+- `mobile/src/features/sync/syncStateService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+
+### Validation Results
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- syncState`
+- `cd mobile && npm test -- sharedExecutionShellService`
+- `cd mobile && npm test -- evidenceUploadOrchestrator`
+- `cd mobile && npm test`
+- `cd backend && npm run typecheck`
 
 ## Source References
 - [product-brief.md](../planning-artifacts/product-brief.md)

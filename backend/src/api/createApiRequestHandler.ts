@@ -7,6 +7,14 @@ import {
   EvidenceSyncError,
 } from '../modules/evidence-sync/model';
 import type { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
+import {
+  REPORT_SUBMISSION_API_CONTRACT_VERSION,
+  ReportSubmissionError,
+  type ReportSubmissionEvidenceReference,
+  type ReportSubmissionPhotoAttachment,
+  type ReportSubmissionRiskFlag,
+} from '../modules/report-submissions/model';
+import type { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
@@ -14,6 +22,7 @@ export interface ApiRequestHandlerDependencies {
   authService: AuthService;
   assignedWorkPackageService: AssignedWorkPackageService;
   evidenceSyncService: EvidenceSyncService;
+  reportSubmissionService: ReportSubmissionService;
 }
 
 export function createApiRequestHandler(dependencies: ApiRequestHandlerDependencies) {
@@ -314,6 +323,102 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    if (method === 'POST' && url === '/sync/report-submissions') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const body = await readJsonBody<{
+          contractVersion?: string;
+          reportId?: string;
+          workPackageId?: string;
+          tagId?: string;
+          templateId?: string;
+          templateVersion?: string;
+          reportState?: 'submitted-pending-sync';
+          lifecycleState?: 'Submitted - Pending Sync';
+          syncState?: 'queued' | 'syncing' | 'pending-validation';
+          objectVersion?: string;
+          idempotencyKey?: string;
+          submittedAt?: string;
+          executionSummary?: string;
+          historySummary?: string;
+          draftDiagnosisSummary?: string;
+          evidenceReferences?: unknown[];
+          riskFlags?: unknown[];
+          photoAttachments?: unknown[];
+        }>(request);
+
+        assertReportSubmissionContractVersion(body.contractVersion);
+
+        if (
+          !body.reportId ||
+          !body.workPackageId ||
+          !body.tagId ||
+          !body.templateId ||
+          !body.templateVersion ||
+          !body.reportState ||
+          !body.lifecycleState ||
+          !body.syncState ||
+          !body.objectVersion ||
+          !body.idempotencyKey ||
+          !body.submittedAt ||
+          !body.executionSummary ||
+          !body.historySummary ||
+          !body.draftDiagnosisSummary ||
+          !Array.isArray(body.evidenceReferences) ||
+          !Array.isArray(body.riskFlags) ||
+          !Array.isArray(body.photoAttachments)
+        ) {
+          writeJson(response, 400, { message: 'Report submission validation requires the full report payload.' });
+          return true;
+        }
+
+        const accepted = await dependencies.reportSubmissionService.submitForValidation(user, {
+          contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+          reportId: body.reportId,
+          workPackageId: body.workPackageId,
+          tagId: body.tagId,
+          templateId: body.templateId,
+          templateVersion: body.templateVersion,
+          reportState: body.reportState,
+          lifecycleState: body.lifecycleState,
+          syncState: body.syncState,
+          objectVersion: body.objectVersion,
+          idempotencyKey: body.idempotencyKey,
+          submittedAt: body.submittedAt,
+          executionSummary: body.executionSummary,
+          historySummary: body.historySummary,
+          draftDiagnosisSummary: body.draftDiagnosisSummary,
+          evidenceReferences: body.evidenceReferences as ReportSubmissionEvidenceReference[],
+          riskFlags: body.riskFlags as ReportSubmissionRiskFlag[],
+          photoAttachments: body.photoAttachments as ReportSubmissionPhotoAttachment[],
+        });
+
+        context.logger.info('report-submission.validation.accepted', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: accepted.reportId,
+          serverReportVersion: accepted.serverReportVersion,
+        });
+        writeJson(response, 200, accepted);
+      } catch (error) {
+        context.logger.warn('report-submission.validation.failed', {
+          statusCode:
+            error instanceof ReportSubmissionError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeReportSubmissionError(
+          response,
+          error,
+          'Report submission validation failed. The local report will remain queued.',
+        );
+      }
+
+      return true;
+    }
+
     return false;
   };
 }
@@ -375,10 +480,40 @@ function writeEvidenceSyncError(response: ServerResponse, error: unknown, fallba
   writeJson(response, 500, { message: fallbackMessage });
 }
 
+function writeReportSubmissionError(
+  response: ServerResponse,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  if (error instanceof ReportSubmissionError) {
+    writeJson(response, error.statusCode, {
+      message: error.message,
+      ...(error.syncIssue ? { syncIssue: error.syncIssue } : {}),
+    });
+    return;
+  }
+
+  writeJson(response, 500, { message: fallbackMessage });
+}
+
 function assertEvidenceSyncContractVersion(contractVersion: unknown): void {
   if (contractVersion !== EVIDENCE_SYNC_API_CONTRACT_VERSION) {
     throw new EvidenceSyncError(
       `Evidence sync contractVersion must be ${EVIDENCE_SYNC_API_CONTRACT_VERSION}.`,
+      400,
+    );
+  }
+}
+
+function assertReportSubmissionContractVersion(contractVersion: unknown): void {
+  if (contractVersion !== REPORT_SUBMISSION_API_CONTRACT_VERSION) {
+    throw new ReportSubmissionError(
+      `Report submission contractVersion must be ${REPORT_SUBMISSION_API_CONTRACT_VERSION}.`,
       400,
     );
   }

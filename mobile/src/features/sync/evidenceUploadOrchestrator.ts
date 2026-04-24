@@ -2,21 +2,28 @@ import type { ActiveUserSession } from '../auth/model';
 import type {
   SharedExecutionPhotoAttachment,
   SharedExecutionShell,
+  SharedExecutionSyncState,
   StoredExecutionPhotoAttachmentPayload,
 } from '../execution/model';
-import type { UserOwnedEvidenceMetadataRecord, UserOwnedQueueItemRecord } from '../../data/local/repositories/userPartitionedLocalTypes';
+import type { UserOwnedDraftRecord, UserOwnedEvidenceMetadataRecord } from '../../data/local/repositories/userPartitionedLocalTypes';
 import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
 import type { EvidenceBinaryUploadBoundary } from '../../platform/files/evidenceBinaryUploadBoundary';
 import {
   EVIDENCE_SYNC_API_CONTRACT_VERSION,
+  EvidenceUploadApiError,
   type EvidenceUploadApiClient,
+  type ReportSubmissionRequest,
+  type ReportSubmissionSyncIssue,
 } from './evidenceUploadApiClient';
 import {
+  buildSubmitReportQueueItemId,
   buildUploadEvidenceBinaryQueueItemId,
   buildUploadEvidenceMetadataQueueItemId,
   LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+  type SubmitReportQueuePayload,
   type UploadEvidenceBinaryQueuePayload,
   type UploadEvidenceMetadataQueuePayload,
+  SUBMIT_REPORT_QUEUE_ITEM_KIND,
   UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
   UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
 } from './queueContracts';
@@ -41,8 +48,7 @@ export class EvidenceUploadOrchestrator {
   ): Promise<void> {
     if (
       session.connectionMode !== 'connected' ||
-      shell.report.state !== 'submitted-pending-sync' ||
-      shell.evidence.photoAttachments.length === 0
+      shell.report.state !== 'submitted-pending-sync'
     ) {
       return;
     }
@@ -51,6 +57,66 @@ export class EvidenceUploadOrchestrator {
 
     for (const attachment of shell.evidence.photoAttachments) {
       await this.processAttachment(store, shell, attachment);
+    }
+
+    await this.submitReportForServerValidation(store, shell);
+  }
+
+  private async submitReportForServerValidation(
+    store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+    shell: SharedExecutionShell,
+  ): Promise<void> {
+    const submitQueueItemId = buildSubmitReportQueueItemId(shell.report.reportId);
+    const submitQueueItem = await store.queueItems.getQueueItemById(submitQueueItemId);
+    if (!submitQueueItem) {
+      return;
+    }
+
+    const submitPayload = parseSubmitReportQueuePayload(submitQueueItem.payloadJson);
+    if (!submitPayload) {
+      return;
+    }
+
+    const pendingAt = this.now().toISOString();
+    await updateReportDraftRecord(store, shell, {
+      state: 'submitted-pending-sync',
+      lifecycleState: 'Submitted - Pending Sync',
+      syncState: 'pending-validation',
+      syncIssue: null,
+      syncIssueReasonCode: null,
+      updatedAt: pendingAt,
+    });
+
+    try {
+      const accepted = await this.dependencies.apiClient.submitReportForValidation(
+        await buildReportSubmissionRequest(store, shell, submitPayload),
+      );
+      const acceptedAt = accepted.acceptedAt || this.now().toISOString();
+
+      await updateReportDraftRecord(store, shell, {
+        state: accepted.reportState,
+        lifecycleState: accepted.lifecycleState,
+        syncState: accepted.syncState,
+        syncIssue: null,
+        syncIssueReasonCode: null,
+        updatedAt: acceptedAt,
+      });
+      await markFinalizedPhotoRecordsSynced(store, shell.report.reportId);
+      await store.queueItems.deleteQueueItem(submitQueueItemId);
+    } catch (error) {
+      const syncIssue = error instanceof EvidenceUploadApiError ? error.syncIssue : null;
+      await bumpQueueRetryCount(store, submitQueueItemId);
+      await updateReportDraftRecord(store, shell, {
+        state: 'submitted-pending-sync',
+        lifecycleState: 'Submitted - Pending Sync',
+        syncState: 'sync-issue',
+        syncIssue:
+          syncIssue?.message ??
+          (error instanceof Error ? error.message : 'Report submission validation failed.'),
+        syncIssueReasonCode: syncIssue?.reasonCode ?? null,
+        updatedAt: this.now().toISOString(),
+      });
+      throw error;
     }
   }
 
@@ -176,6 +242,148 @@ export class EvidenceUploadOrchestrator {
       }));
       throw error;
     }
+  }
+}
+
+interface StoredReportSubmissionDraftPayload {
+  reportId: string;
+  workPackageId: string;
+  tagId: string;
+  templateId: string;
+  templateVersion: string;
+  state: 'technician-owned-draft' | 'submitted-pending-sync' | 'submitted-pending-review';
+  lifecycleState?: 'In Progress' | 'Ready to Submit' | 'Submitted - Pending Sync' | 'Submitted - Pending Supervisor Review';
+  syncState?: SharedExecutionSyncState;
+  reviewNotes?: string;
+  savedAt?: string | null;
+  submittedAt?: string | null;
+  syncIssue?: string | null;
+  syncIssueReasonCode?: string | null;
+  updatedAt: string;
+}
+
+async function buildReportSubmissionRequest(
+  store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+  shell: SharedExecutionShell,
+  submitPayload: SubmitReportQueuePayload,
+): Promise<ReportSubmissionRequest> {
+  const photoAttachments = await loadPhotoSubmissionAttachments(store, shell.report.reportId);
+
+  return {
+    contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+    reportId: shell.report.reportId,
+    workPackageId: shell.workPackageId,
+    tagId: shell.tagId,
+    templateId: shell.template.id,
+    templateVersion: shell.template.version,
+    reportState: 'submitted-pending-sync',
+    lifecycleState: 'Submitted - Pending Sync',
+    syncState: 'pending-validation',
+    objectVersion: submitPayload.objectVersion,
+    idempotencyKey: submitPayload.idempotencyKey,
+    submittedAt: shell.report.submittedAt ?? submitPayload.queuedAt,
+    executionSummary: shell.report.executionSummary,
+    historySummary: shell.report.historySummary,
+    draftDiagnosisSummary: shell.report.draftDiagnosisSummary,
+    evidenceReferences: shell.report.evidenceReferences,
+    riskFlags: shell.report.riskFlags.map((item) => ({
+      id: item.id,
+      reasonType: item.reasonType,
+      justificationRequired: item.justificationRequired,
+      justificationText: item.justificationText,
+    })),
+    photoAttachments,
+  };
+}
+
+async function loadPhotoSubmissionAttachments(
+  store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+  reportId: string,
+): Promise<ReportSubmissionRequest['photoAttachments']> {
+  const records = await store.evidenceMetadata.listEvidenceByBusinessObject({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: reportId,
+  });
+  const attachments: ReportSubmissionRequest['photoAttachments'] = [];
+
+  for (const record of records) {
+    const payload = parsePhotoAttachmentPayload(record.payloadJson);
+    if (!payload) {
+      continue;
+    }
+
+    attachments.push({
+      evidenceId: record.evidenceId,
+      serverEvidenceId: payload.serverEvidenceId ?? null,
+      presenceFinalizedAt: payload.presenceFinalizedAt ?? null,
+      syncState: payload.syncState ?? 'local-only',
+    });
+  }
+
+  return attachments;
+}
+
+async function updateReportDraftRecord(
+  store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+  shell: SharedExecutionShell,
+  input: {
+    state: StoredReportSubmissionDraftPayload['state'];
+    lifecycleState: NonNullable<StoredReportSubmissionDraftPayload['lifecycleState']>;
+    syncState: SharedExecutionSyncState;
+    syncIssue: string | null;
+    syncIssueReasonCode: ReportSubmissionSyncIssue['reasonCode'] | null;
+    updatedAt: string;
+  },
+): Promise<void> {
+  const draft = await store.drafts.getDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: shell.report.reportId,
+  });
+  if (!draft) {
+    throw new Error(`Missing local report draft for ${shell.report.reportId}.`);
+  }
+
+  const payload = parseReportSubmissionDraftPayload(draft);
+  if (!payload) {
+    throw new Error(`Unsupported report draft payload for ${shell.report.reportId}.`);
+  }
+
+  await store.drafts.saveDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: shell.report.reportId,
+    summaryText: `${input.lifecycleState} report for ${shell.tagCode}`,
+    payloadJson: JSON.stringify({
+      ...payload,
+      state: input.state,
+      lifecycleState: input.lifecycleState,
+      syncState: input.syncState,
+      syncIssue: input.syncIssue,
+      syncIssueReasonCode: input.syncIssueReasonCode,
+      updatedAt: input.updatedAt,
+    } satisfies StoredReportSubmissionDraftPayload),
+  });
+}
+
+async function markFinalizedPhotoRecordsSynced(
+  store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+  reportId: string,
+): Promise<void> {
+  const records = await store.evidenceMetadata.listEvidenceByBusinessObject({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: reportId,
+  });
+
+  for (const record of records) {
+    const payload = parsePhotoAttachmentPayload(record.payloadJson);
+    if (!payload?.presenceFinalizedAt) {
+      continue;
+    }
+
+    await updatePhotoMetadataRecord(store, record, (current) => ({
+      ...current,
+      syncState: 'synced',
+      syncIssue: null,
+    }));
   }
 }
 
@@ -443,6 +651,90 @@ function parseUploadEvidenceBinaryQueuePayload(
     }
 
     return parsed as UploadEvidenceBinaryQueuePayload;
+  } catch {
+    return null;
+  }
+}
+
+function parseSubmitReportQueuePayload(payloadJson: string): SubmitReportQueuePayload | null {
+  try {
+    const parsed = JSON.parse(payloadJson) as Partial<SubmitReportQueuePayload>;
+    if (
+      parsed.itemType !== SUBMIT_REPORT_QUEUE_ITEM_KIND ||
+      typeof parsed.reportId !== 'string' ||
+      typeof parsed.objectVersion !== 'string' ||
+      typeof parsed.idempotencyKey !== 'string'
+    ) {
+      return null;
+    }
+
+    return parsed as SubmitReportQueuePayload;
+  } catch {
+    return null;
+  }
+}
+
+function parseReportSubmissionDraftPayload(
+  draft: UserOwnedDraftRecord,
+): StoredReportSubmissionDraftPayload | null {
+  try {
+    const parsed = JSON.parse(draft.payloadJson) as Partial<StoredReportSubmissionDraftPayload>;
+    if (
+      typeof parsed.reportId !== 'string' ||
+      typeof parsed.workPackageId !== 'string' ||
+      typeof parsed.tagId !== 'string' ||
+      typeof parsed.templateId !== 'string' ||
+      typeof parsed.templateVersion !== 'string' ||
+      (parsed.state !== 'technician-owned-draft' &&
+        parsed.state !== 'submitted-pending-sync' &&
+        parsed.state !== 'submitted-pending-review') ||
+      typeof parsed.updatedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      reportId: parsed.reportId,
+      workPackageId: parsed.workPackageId,
+      tagId: parsed.tagId,
+      templateId: parsed.templateId,
+      templateVersion: parsed.templateVersion,
+      state: parsed.state,
+      lifecycleState:
+        parsed.lifecycleState === 'Ready to Submit' ||
+        parsed.lifecycleState === 'In Progress' ||
+        parsed.lifecycleState === 'Submitted - Pending Sync' ||
+        parsed.lifecycleState === 'Submitted - Pending Supervisor Review'
+          ? parsed.lifecycleState
+          : undefined,
+      syncState:
+        parsed.syncState === 'local-only' ||
+        parsed.syncState === 'queued' ||
+        parsed.syncState === 'syncing' ||
+        parsed.syncState === 'pending-validation' ||
+        parsed.syncState === 'synced' ||
+        parsed.syncState === 'sync-issue'
+          ? parsed.syncState
+          : undefined,
+      reviewNotes: typeof parsed.reviewNotes === 'string' ? parsed.reviewNotes : undefined,
+      savedAt:
+        typeof parsed.savedAt === 'string' || parsed.savedAt === null
+          ? parsed.savedAt
+          : undefined,
+      submittedAt:
+        typeof parsed.submittedAt === 'string' || parsed.submittedAt === null
+          ? parsed.submittedAt
+          : undefined,
+      syncIssue:
+        typeof parsed.syncIssue === 'string' || parsed.syncIssue === null
+          ? parsed.syncIssue
+          : undefined,
+      syncIssueReasonCode:
+        typeof parsed.syncIssueReasonCode === 'string' || parsed.syncIssueReasonCode === null
+          ? parsed.syncIssueReasonCode
+          : undefined,
+      updatedAt: parsed.updatedAt,
+    };
   } catch {
     return null;
   }

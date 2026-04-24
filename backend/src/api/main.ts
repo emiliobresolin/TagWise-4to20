@@ -11,6 +11,8 @@ import { AssignedWorkPackageRepository } from '../modules/work-packages/assigned
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
+import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
+import { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
 import { createApiRequestHandler } from './createApiRequestHandler';
 import { createS3EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
 
@@ -45,6 +47,10 @@ async function main() {
     new EvidenceSyncRepository(pool),
     createS3EvidenceObjectStorageClient(environment.objectStorage),
   );
+  const reportSubmissionService = new ReportSubmissionService(
+    new ReportSubmissionRepository(pool),
+    assignedWorkPackageService,
+  );
 
   const runtime = createServiceRuntime({
     serviceName: 'api-service',
@@ -57,6 +63,7 @@ async function main() {
       authService,
       assignedWorkPackageService,
       evidenceSyncService,
+      reportSubmissionService,
     }),
   });
 

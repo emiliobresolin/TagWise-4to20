@@ -20,15 +20,19 @@ import { createNodeAppSandboxBoundary } from '../../../tests/helpers/createNodeA
 import { createNodeSqliteDatabase } from '../../../tests/helpers/createNodeSqliteDatabase';
 import {
   EVIDENCE_SYNC_API_CONTRACT_VERSION,
+  EvidenceUploadApiError,
   type EvidenceUploadApiClient,
 } from './evidenceUploadApiClient';
 import { EvidenceUploadOrchestrator } from './evidenceUploadOrchestrator';
 import {
+  buildSubmitReportQueueItemId,
   buildUploadEvidenceBinaryQueueItemId,
   buildUploadEvidenceMetadataQueueItemId,
   LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+  type SubmitReportQueuePayload,
   type UploadEvidenceBinaryQueuePayload,
   type UploadEvidenceMetadataQueuePayload,
+  SUBMIT_REPORT_QUEUE_ITEM_KIND,
   UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
   UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
 } from './queueContracts';
@@ -110,6 +114,7 @@ describe('EvidenceUploadOrchestrator', () => {
         syncEvidenceMetadata,
         authorizeEvidenceBinaryUpload,
         finalizeEvidenceBinaryUpload,
+        submitReportForValidation: vi.fn(),
       },
       binaryUploadBoundary: { uploadBinary },
       now: () => new Date('2026-04-23T14:11:00.000Z'),
@@ -265,6 +270,123 @@ describe('EvidenceUploadOrchestrator', () => {
       retryCount: 1,
     });
   });
+
+  it('submits finalized reports for validation and refreshes local state from the server outcome', async () => {
+    const syncedAttachment = buildPhotoAttachment({
+      metadataSyncedAt: '2026-04-23T14:10:00.000Z',
+      serverEvidenceId: 'server-evidence-1',
+      presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+      syncState: 'pending-validation',
+    });
+    const { store, shell, attachment } = await createFixture(syncedAttachment);
+    await seedReportDraftAndSubmitQueue(store, shell);
+    const submitReportForValidation = vi.fn(
+      async (
+        request: Parameters<EvidenceUploadApiClient['submitReportForValidation']>[0],
+      ) => ({
+        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+        reportId: request.reportId,
+        serverReportVersion: 'server-report-version-1',
+        reportState: 'submitted-pending-review' as const,
+        lifecycleState: 'Submitted - Pending Supervisor Review' as const,
+        syncState: 'synced' as const,
+        acceptedAt: '2026-04-23T14:30:00.000Z',
+      }),
+    );
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata: vi.fn(),
+        authorizeEvidenceBinaryUpload: vi.fn(),
+        finalizeEvidenceBinaryUpload: vi.fn(),
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      now: () => new Date('2026-04-23T14:20:00.000Z'),
+    });
+
+    await orchestrator.syncSubmittedReportEvidence(connectedSession, shell);
+
+    expect(submitReportForValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+        reportId: shell.report.reportId,
+        reportState: 'submitted-pending-sync',
+        lifecycleState: 'Submitted - Pending Sync',
+        syncState: 'pending-validation',
+        objectVersion: '2026-04-23T14:05:00.000Z',
+        idempotencyKey:
+          'submit-report:tag-report:wp-local-001:tag-001:2026-04-23T14:05:00.000Z',
+        photoAttachments: [
+          {
+            evidenceId: attachment.evidenceId,
+            serverEvidenceId: 'server-evidence-1',
+            presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+            syncState: 'pending-validation',
+          },
+        ],
+      }),
+    );
+
+    const draftPayload = await loadReportDraftPayload(store, shell.report.reportId);
+    expect(draftPayload).toMatchObject({
+      state: 'submitted-pending-review',
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      syncState: 'synced',
+      syncIssue: null,
+      syncIssueReasonCode: null,
+      updatedAt: '2026-04-23T14:30:00.000Z',
+    });
+    await expect(loadSubmitQueuePayload(store, shell.report.reportId)).resolves.toBeNull();
+    await expect(loadPhotoPayload(store, attachment.evidenceId)).resolves.toMatchObject({
+      syncState: 'synced',
+      syncIssue: null,
+    });
+  });
+
+  it('keeps rejected submissions queued with the structured server sync issue', async () => {
+    const syncedAttachment = buildPhotoAttachment({
+      metadataSyncedAt: '2026-04-23T14:10:00.000Z',
+      serverEvidenceId: 'server-evidence-1',
+      presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+      syncState: 'pending-validation',
+    });
+    const { store, shell } = await createFixture(syncedAttachment);
+    await seedReportDraftAndSubmitQueue(store, shell);
+    const submitReportForValidation = vi.fn(async () => {
+      throw new EvidenceUploadApiError('Minimum evidence is missing: as-found readings.', 422, 'server', {
+        reasonCode: 'minimum-evidence-missing',
+        message: 'Minimum evidence is missing: as-found readings.',
+      });
+    });
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata: vi.fn(),
+        authorizeEvidenceBinaryUpload: vi.fn(),
+        finalizeEvidenceBinaryUpload: vi.fn(),
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      now: () => new Date('2026-04-23T14:20:00.000Z'),
+    });
+
+    await expect(orchestrator.syncSubmittedReportEvidence(connectedSession, shell)).rejects.toThrow(
+      'Minimum evidence is missing: as-found readings.',
+    );
+
+    await expect(loadReportDraftPayload(store, shell.report.reportId)).resolves.toMatchObject({
+      state: 'submitted-pending-sync',
+      lifecycleState: 'Submitted - Pending Sync',
+      syncState: 'sync-issue',
+      syncIssue: 'Minimum evidence is missing: as-found readings.',
+      syncIssueReasonCode: 'minimum-evidence-missing',
+    });
+    await expect(loadSubmitQueuePayload(store, shell.report.reportId)).resolves.toMatchObject({
+      itemType: 'submit-report',
+      retryCount: 1,
+    });
+  });
 });
 
 async function createFixture(attachmentInput?: SharedExecutionPhotoAttachment) {
@@ -394,7 +516,15 @@ function buildShell(attachment: SharedExecutionPhotoAttachment): SharedExecution
       historySummary: 'History available.',
       draftDiagnosisSummary: 'No local diagnosis.',
       checklistOutcomes: [],
-      evidenceReferences: [],
+      evidenceReferences: [
+        {
+          label: 'as-found readings',
+          requirementLevel: 'minimum',
+          evidenceKind: 'structured-readings',
+          satisfied: true,
+          detail: 'Structured readings saved locally.',
+        },
+      ],
       riskFlags: [],
       reviewNotes: '',
       savedAt: '2026-04-23T14:05:00.000Z',
@@ -436,6 +566,61 @@ async function saveLocalEvidence(
       presenceFinalizedAt: attachment.presenceFinalizedAt,
       syncIssue: attachment.syncIssue,
     } satisfies StoredExecutionPhotoAttachmentPayload),
+  });
+}
+
+async function seedReportDraftAndSubmitQueue(
+  store: UserPartitionedLocalStore,
+  shell: SharedExecutionShell,
+): Promise<void> {
+  await store.drafts.saveDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: shell.report.reportId,
+    summaryText: `Submitted - Pending Sync report for ${shell.tagCode}`,
+    payloadJson: JSON.stringify({
+      reportId: shell.report.reportId,
+      workPackageId: shell.workPackageId,
+      tagId: shell.tagId,
+      templateId: shell.template.id,
+      templateVersion: shell.template.version,
+      state: 'submitted-pending-sync',
+      lifecycleState: 'Submitted - Pending Sync',
+      syncState: 'queued',
+      reviewNotes: shell.report.reviewNotes,
+      savedAt: shell.report.savedAt,
+      submittedAt: shell.report.submittedAt,
+      syncIssue: null,
+      syncIssueReasonCode: null,
+      updatedAt: '2026-04-23T14:05:00.000Z',
+    }),
+  });
+
+  const submitPayload: SubmitReportQueuePayload = {
+    queueItemSchemaVersion: '2026-04-v1',
+    itemType: SUBMIT_REPORT_QUEUE_ITEM_KIND,
+    reportId: shell.report.reportId,
+    workPackageId: shell.workPackageId,
+    tagId: shell.tagId,
+    templateId: shell.template.id,
+    templateVersion: shell.template.version,
+    localObjectReference: {
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+    },
+    objectVersion: '2026-04-23T14:05:00.000Z',
+    idempotencyKey:
+      'submit-report:tag-report:wp-local-001:tag-001:2026-04-23T14:05:00.000Z',
+    dependencyStatus: 'ready',
+    retryCount: 0,
+    queuedAt: '2026-04-23T14:05:00.000Z',
+  };
+
+  await store.queueItems.enqueue({
+    queueItemId: buildSubmitReportQueueItemId(shell.report.reportId),
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: shell.report.reportId,
+    itemKind: SUBMIT_REPORT_QUEUE_ITEM_KIND,
+    payloadJson: JSON.stringify(submitPayload),
   });
 }
 
@@ -524,6 +709,29 @@ async function loadPhotoPayload(
   }
 
   return JSON.parse(record.payloadJson) as StoredExecutionPhotoAttachmentPayload;
+}
+
+async function loadReportDraftPayload(
+  store: UserPartitionedLocalStore,
+  reportId: string,
+): Promise<Record<string, unknown>> {
+  const record = await store.drafts.getDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: reportId,
+  });
+  if (!record) {
+    throw new Error(`Expected report draft ${reportId} to exist.`);
+  }
+
+  return JSON.parse(record.payloadJson) as Record<string, unknown>;
+}
+
+async function loadSubmitQueuePayload(
+  store: UserPartitionedLocalStore,
+  reportId: string,
+): Promise<SubmitReportQueuePayload | null> {
+  const record = await store.queueItems.getQueueItemById(buildSubmitReportQueueItemId(reportId));
+  return record ? (JSON.parse(record.payloadJson) as SubmitReportQueuePayload) : null;
 }
 
 async function listEvidenceQueuePayloads(store: UserPartitionedLocalStore, reportId: string) {

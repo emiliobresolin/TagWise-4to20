@@ -9,6 +9,9 @@ import { AuthService } from '../modules/auth/authService';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import { EVIDENCE_SYNC_API_CONTRACT_VERSION } from '../modules/evidence-sync/model';
+import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
+import { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
+import { REPORT_SUBMISSION_API_CONTRACT_VERSION } from '../modules/report-submissions/model';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createServiceRuntime, type ServiceRuntimeHandle } from '../runtime/serviceRuntime';
@@ -78,6 +81,10 @@ describe('createApiRequestHandler', () => {
       new EvidenceSyncRepository(pool),
       createTestEvidenceObjectStorageClient(),
     );
+    const reportSubmissionService = new ReportSubmissionService(
+      new ReportSubmissionRepository(pool),
+      assignedWorkPackageService,
+    );
 
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
@@ -89,6 +96,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        reportSubmissionService,
       }),
     });
     runtimes.push(runtime);
@@ -166,6 +174,10 @@ describe('createApiRequestHandler', () => {
       new EvidenceSyncRepository(pool),
       createTestEvidenceObjectStorageClient(),
     );
+    const reportSubmissionService = new ReportSubmissionService(
+      new ReportSubmissionRepository(pool),
+      assignedWorkPackageService,
+    );
 
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
@@ -177,6 +189,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        reportSubmissionService,
       }),
     });
     runtimes.push(runtime);
@@ -254,6 +267,16 @@ describe('createApiRequestHandler', () => {
     );
     await authService.ensureSeedUsers();
 
+    const assignedWorkPackageService = {
+      listAssignedPackages: async () => {
+        throw new Error('database unavailable');
+      },
+      downloadAssignedPackage: async () => {
+        throw new Error('storage unavailable');
+      },
+      ensureSeedPackages: async () => undefined,
+    } as unknown as AssignedWorkPackageService;
+
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
       serviceRole: 'api',
@@ -262,18 +285,14 @@ describe('createApiRequestHandler', () => {
       verifyDatabaseReadiness: async () => undefined,
       handleRequest: createApiRequestHandler({
         authService,
-        assignedWorkPackageService: {
-          listAssignedPackages: async () => {
-            throw new Error('database unavailable');
-          },
-          downloadAssignedPackage: async () => {
-            throw new Error('storage unavailable');
-          },
-          ensureSeedPackages: async () => undefined,
-        } as unknown as AssignedWorkPackageService,
+        assignedWorkPackageService,
         evidenceSyncService: new EvidenceSyncService(
           new EvidenceSyncRepository(pool),
           createTestEvidenceObjectStorageClient(),
+        ),
+        reportSubmissionService: new ReportSubmissionService(
+          new ReportSubmissionRepository(pool),
+          assignedWorkPackageService,
         ),
       }),
     });
@@ -341,6 +360,10 @@ describe('createApiRequestHandler', () => {
       createTestEvidenceObjectStorageClient(uploadedKeys),
       () => new Date('2026-04-23T14:30:00.000Z'),
     );
+    const reportSubmissionService = new ReportSubmissionService(
+      new ReportSubmissionRepository(pool),
+      assignedWorkPackageService,
+    );
 
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
@@ -352,6 +375,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        reportSubmissionService,
       }),
     });
     runtimes.push(runtime);
@@ -486,6 +510,10 @@ describe('createApiRequestHandler', () => {
       createTestEvidenceObjectStorageClient(),
       () => new Date('2026-04-23T15:00:00.000Z'),
     );
+    const reportSubmissionService = new ReportSubmissionService(
+      new ReportSubmissionRepository(pool),
+      assignedWorkPackageService,
+    );
 
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
@@ -497,6 +525,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        reportSubmissionService,
       }),
     });
     runtimes.push(runtime);
@@ -609,6 +638,137 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('accepts valid report submissions into the supervisor-review lifecycle state', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const login = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-report-submit-login',
+      },
+    );
+
+    const response = await fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${login.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(buildValidReportSubmissionPayload()),
+    });
+    const body = (await response.json()) as {
+      contractVersion: string;
+      reportId: string;
+      reportState: string;
+      lifecycleState: string;
+      syncState: string;
+      serverReportVersion: string;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+      reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+      reportState: 'submitted-pending-review',
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      syncState: 'synced',
+    });
+    expect(body.serverReportVersion).toContain('tag-report:wp-seed-1001:tag-pt-101');
+
+    await pool.end();
+  });
+
+  it('rejects invalid report submissions with structured sync issue reasons', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const login = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-report-invalid-login',
+      },
+    );
+
+    const response = await fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${login.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(
+        buildValidReportSubmissionPayload({
+          evidenceReferences: [
+            {
+              label: 'as-found readings',
+              requirementLevel: 'minimum',
+              evidenceKind: 'structured-readings',
+              satisfied: false,
+              detail: 'Structured readings have not been saved yet.',
+            },
+          ],
+        }),
+      ),
+    });
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      message: 'Minimum evidence is missing: as-found readings.',
+      syncIssue: {
+        reasonCode: 'minimum-evidence-missing',
+        message: 'Minimum evidence is missing: as-found readings.',
+      },
+    });
+
+    await pool.end();
+  });
+
+  it('rejects conflicting report updates without silently merging', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const login = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-report-conflict-login',
+      },
+    );
+    const submit = (payload: unknown) =>
+      fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+    const accepted = await submit(buildValidReportSubmissionPayload());
+    expect(accepted.status).toBe(200);
+
+    const conflict = await submit(
+      buildValidReportSubmissionPayload({
+        objectVersion: '2026-04-23T14:20:00.000Z',
+        idempotencyKey:
+          'submit-report:tag-report:wp-seed-1001:tag-pt-101:2026-04-23T14:20:00.000Z',
+      }),
+    );
+    const body = (await conflict.json()) as {
+      message: string;
+      syncIssue: { reasonCode: string; serverReportVersion: string };
+    };
+
+    expect(conflict.status).toBe(409);
+    expect(body.message).toBe('Report was already accepted at a different submitted version.');
+    expect(body.syncIssue.reasonCode).toBe('conflicting-report-version');
+    expect(body.syncIssue.serverReportVersion).toContain('tag-report:wp-seed-1001:tag-pt-101');
+
+    await pool.end();
+  });
 });
 
 function createTestEvidenceObjectStorageClient(
@@ -628,5 +788,105 @@ function createTestEvidenceObjectStorageClient(
     async hasObject(objectKey) {
       return uploadedKeys.has(objectKey);
     },
+  };
+}
+
+async function startReportSubmissionRuntime() {
+  const database = newDb();
+  const adapter = database.adapters.createPg();
+  const pool = new adapter.Pool();
+  await runPostgresMigrations(pool);
+
+  const authRepository = new AuthRepository(pool);
+  const authService = new AuthService(
+    authRepository,
+    authConfig,
+    new AuditEventService(new AuditEventRepository(pool)),
+  );
+  await authService.ensureSeedUsers();
+  const technician = await authRepository.findByEmail(authConfig.seedUsers.technician.email);
+  if (!technician) {
+    throw new Error('Missing seeded technician for report submission test.');
+  }
+
+  const assignedWorkPackageService = new AssignedWorkPackageService(
+    new AssignedWorkPackageRepository(pool),
+  );
+  await assignedWorkPackageService.ensureSeedPackages(technician.id);
+  const evidenceSyncService = new EvidenceSyncService(
+    new EvidenceSyncRepository(pool),
+    createTestEvidenceObjectStorageClient(),
+  );
+  const reportSubmissionService = new ReportSubmissionService(
+    new ReportSubmissionRepository(pool),
+    assignedWorkPackageService,
+    () => new Date('2026-04-23T14:30:00.000Z'),
+  );
+
+  const runtime = createServiceRuntime({
+    serviceName: 'api-service',
+    serviceRole: 'api',
+    host: '127.0.0.1',
+    port: 0,
+    verifyDatabaseReadiness: async () => undefined,
+    handleRequest: createApiRequestHandler({
+      authService,
+      assignedWorkPackageService,
+      evidenceSyncService,
+      reportSubmissionService,
+    }),
+  });
+  runtimes.push(runtime);
+
+  const { port } = await runtime.start();
+  return { authService, pool, port };
+}
+
+function buildValidReportSubmissionPayload(
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+    reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+    workPackageId: 'wp-seed-1001',
+    tagId: 'tag-pt-101',
+    templateId: 'tpl-pressure-as-found',
+    templateVersion: '2026-04-v1',
+    reportState: 'submitted-pending-sync',
+    lifecycleState: 'Submitted - Pending Sync',
+    syncState: 'pending-validation',
+    objectVersion: '2026-04-23T14:10:00.000Z',
+    idempotencyKey:
+      'submit-report:tag-report:wp-seed-1001:tag-pt-101:2026-04-23T14:10:00.000Z',
+    submittedAt: '2026-04-23T14:06:00.000Z',
+    executionSummary: 'Structured pressure readings are captured.',
+    historySummary: 'History available.',
+    draftDiagnosisSummary: 'No local diagnosis.',
+    evidenceReferences: [
+      {
+        label: 'as-found readings',
+        requirementLevel: 'minimum',
+        evidenceKind: 'structured-readings',
+        satisfied: true,
+        detail: 'Structured readings saved locally.',
+      },
+      {
+        label: 'instrument note',
+        requirementLevel: 'minimum',
+        evidenceKind: 'observation-notes',
+        satisfied: true,
+        detail: 'Observation notes are captured locally.',
+      },
+    ],
+    riskFlags: [
+      {
+        id: 'missing-history',
+        reasonType: 'missing-history',
+        justificationRequired: true,
+        justificationText: 'Compared against paper record on site.',
+      },
+    ],
+    photoAttachments: [],
+    ...overrides,
   };
 }

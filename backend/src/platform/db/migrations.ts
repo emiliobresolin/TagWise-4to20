@@ -128,6 +128,37 @@ const postgresMigrations: PostgresMigration[] = [
       ON evidence_sync_records (presence_status, updated_at ASC);
     `,
   },
+  {
+    id: '0006_report_submission_records',
+    sql: `
+      CREATE TABLE IF NOT EXISTS report_submission_records (
+        owner_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+        report_id TEXT NOT NULL,
+        work_package_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_version TEXT NOT NULL,
+        local_object_version TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        server_report_version TEXT NOT NULL,
+        report_state TEXT NOT NULL CHECK (report_state IN ('submitted-pending-review')),
+        lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('Submitted - Pending Supervisor Review')),
+        sync_state TEXT NOT NULL CHECK (sync_state IN ('synced')),
+        submitted_at TEXT NOT NULL,
+        accepted_at TEXT NOT NULL,
+        payload_json JSONB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_user_id, report_id)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_report_submission_server_version
+      ON report_submission_records (server_report_version);
+
+      CREATE INDEX IF NOT EXISTS idx_report_submission_review_queue
+      ON report_submission_records (work_package_id, lifecycle_state, accepted_at ASC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(
