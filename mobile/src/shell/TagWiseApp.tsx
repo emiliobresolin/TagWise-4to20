@@ -62,11 +62,15 @@ import type {
   LocalAssignedWorkPackageSummary,
 } from '../features/work-packages/model';
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
+import { createFetchEvidenceUploadApiClient } from '../features/sync/evidenceUploadApiClient';
+import { EvidenceUploadOrchestrator } from '../features/sync/evidenceUploadOrchestrator';
+import { createEvidenceBinaryUploadBoundary } from '../platform/files/evidenceBinaryUploadBoundary';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { createPhotoAcquisitionBoundary } from '../platform/media/photoAcquisitionBoundary';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
 
 const photoAcquisitionBoundary = createPhotoAcquisitionBoundary();
+const evidenceBinaryUploadBoundary = createEvidenceBinaryUploadBoundary();
 
 type BootstrapStatus =
   | { type: 'loading' }
@@ -86,6 +90,7 @@ type BootstrapStatus =
       localTagEntryService: LocalTagEntryService;
       localTagContextService: LocalTagContextService;
       executionShellService: SharedExecutionShellService;
+      evidenceUploadOrchestrator: EvidenceUploadOrchestrator;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
@@ -155,6 +160,14 @@ export function TagWiseApp() {
           tagContextService: localTagContextService,
           localWorkState: runtime.repositories.localWorkState,
         });
+        const evidenceUploadOrchestrator = new EvidenceUploadOrchestrator({
+          userPartitions: runtime.repositories.userPartitions,
+          apiClient: createFetchEvidenceUploadApiClient({
+            baseUrl: getDefaultAuthApiBaseUrl(),
+            secureStorage,
+          }),
+          binaryUploadBoundary: evidenceBinaryUploadBoundary,
+        });
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
@@ -187,6 +200,7 @@ export function TagWiseApp() {
           localTagEntryService,
           localTagContextService,
           executionShellService,
+          evidenceUploadOrchestrator,
           session,
           localOwnership,
           authBusy: false,
@@ -1250,27 +1264,50 @@ export function TagWiseApp() {
       );
   }
 
-  async function handleSubmitExecutionReport() {
-    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
-      return;
-    }
+    async function handleSubmitExecutionReport() {
+      if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+        return;
+      }
 
-    try {
-      const executionShell = await readyState.executionShellService.submitReport(
-        readyState.session,
-        readyState.executionShell,
-      );
+      try {
+        let executionShell = await readyState.executionShellService.submitReport(
+          readyState.session,
+          readyState.executionShell,
+        );
+        let authMessage = `Per-tag report queued locally for sync for ${executionShell.tagCode}.`;
 
-      setStatus((current) =>
-        current.type !== 'ready'
-          ? current
-          : {
-              ...current,
+        if (readyState.session.connectionMode === 'connected') {
+          try {
+            await readyState.evidenceUploadOrchestrator.syncSubmittedReportEvidence(
+              readyState.session,
               executionShell,
-              authMessage: `Per-tag report queued locally for sync for ${executionShell.tagCode}.`,
-            },
-      );
-    } catch (error) {
+            );
+
+            executionShell =
+              (await readyState.executionShellService.loadShell(
+                readyState.session,
+                executionShell.workPackageId,
+                executionShell.tagId,
+                executionShell.template.id,
+              )) ?? executionShell;
+          } catch (error) {
+            authMessage =
+              error instanceof Error
+                ? `Per-tag report queued locally. Evidence upload hit an issue and remains on-device: ${error.message}`
+                : 'Per-tag report queued locally. Evidence upload hit an issue and remains on-device.';
+          }
+        }
+
+        setStatus((current) =>
+          current.type !== 'ready'
+            ? current
+            : {
+                ...current,
+                executionShell,
+                authMessage,
+              },
+        );
+      } catch (error) {
       setStatus((current) =>
         current.type !== 'ready'
           ? current

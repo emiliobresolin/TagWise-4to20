@@ -93,6 +93,41 @@ const postgresMigrations: PostgresMigration[] = [
       );
     `,
   },
+  {
+    id: '0005_evidence_sync_records',
+    sql: `
+      CREATE TABLE IF NOT EXISTS evidence_sync_records (
+        server_evidence_id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+        report_id TEXT NOT NULL,
+        work_package_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_version TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        mime_type TEXT,
+        execution_step_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('camera', 'library')),
+        local_captured_at TEXT NOT NULL,
+        metadata_idempotency_key TEXT NOT NULL,
+        storage_object_key TEXT,
+        metadata_received_at TEXT NOT NULL,
+        binary_uploaded_at TEXT,
+        presence_finalized_at TEXT,
+        presence_status TEXT NOT NULL CHECK (presence_status IN ('metadata-recorded', 'binary-finalized')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (owner_user_id, report_id, evidence_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_evidence_sync_owner_report
+      ON evidence_sync_records (owner_user_id, report_id, evidence_id);
+
+      CREATE INDEX IF NOT EXISTS idx_evidence_sync_status
+      ON evidence_sync_records (presence_status, updated_at ASC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

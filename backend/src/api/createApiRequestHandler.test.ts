@@ -6,10 +6,13 @@ import { AuditEventRepository } from '../modules/audit/auditEventRepository';
 import { AuditEventService } from '../modules/audit/auditEventService';
 import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
+import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
+import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createServiceRuntime, type ServiceRuntimeHandle } from '../runtime/serviceRuntime';
 import { runPostgresMigrations } from '../platform/db/migrations';
+import type { EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
 
 const authConfig = {
   tokenSecret: 'unit-test-secret',
@@ -70,6 +73,10 @@ describe('createApiRequestHandler', () => {
       new AssignedWorkPackageRepository(pool),
     );
     await assignedWorkPackageService.ensureSeedPackages(technician.id);
+    const evidenceSyncService = new EvidenceSyncService(
+      new EvidenceSyncRepository(pool),
+      createTestEvidenceObjectStorageClient(),
+    );
 
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
@@ -77,7 +84,11 @@ describe('createApiRequestHandler', () => {
       host: '127.0.0.1',
       port: 0,
       verifyDatabaseReadiness: async () => undefined,
-      handleRequest: createApiRequestHandler({ authService, assignedWorkPackageService }),
+      handleRequest: createApiRequestHandler({
+        authService,
+        assignedWorkPackageService,
+        evidenceSyncService,
+      }),
     });
     runtimes.push(runtime);
 
@@ -150,6 +161,10 @@ describe('createApiRequestHandler', () => {
       new AssignedWorkPackageRepository(pool),
     );
     await assignedWorkPackageService.ensureSeedPackages(technician.id);
+    const evidenceSyncService = new EvidenceSyncService(
+      new EvidenceSyncRepository(pool),
+      createTestEvidenceObjectStorageClient(),
+    );
 
     const runtime = createServiceRuntime({
       serviceName: 'api-service',
@@ -157,7 +172,11 @@ describe('createApiRequestHandler', () => {
       host: '127.0.0.1',
       port: 0,
       verifyDatabaseReadiness: async () => undefined,
-      handleRequest: createApiRequestHandler({ authService, assignedWorkPackageService }),
+      handleRequest: createApiRequestHandler({
+        authService,
+        assignedWorkPackageService,
+        evidenceSyncService,
+      }),
     });
     runtimes.push(runtime);
 
@@ -251,6 +270,10 @@ describe('createApiRequestHandler', () => {
           },
           ensureSeedPackages: async () => undefined,
         } as unknown as AssignedWorkPackageService,
+        evidenceSyncService: new EvidenceSyncService(
+          new EvidenceSyncRepository(pool),
+          createTestEvidenceObjectStorageClient(),
+        ),
       }),
     });
     runtimes.push(runtime);
@@ -288,4 +311,167 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('syncs evidence metadata, issues upload authorization, and finalizes binary presence', async () => {
+    const database = newDb();
+    const adapter = database.adapters.createPg();
+    const pool = new adapter.Pool();
+    await runPostgresMigrations(pool);
+
+    const authRepository = new AuthRepository(pool);
+    const authService = new AuthService(
+      authRepository,
+      authConfig,
+      new AuditEventService(new AuditEventRepository(pool)),
+    );
+    await authService.ensureSeedUsers();
+    const technician = await authRepository.findByEmail(authConfig.seedUsers.technician.email);
+    if (!technician) {
+      throw new Error('Missing seeded technician for evidence sync test.');
+    }
+
+    const assignedWorkPackageService = new AssignedWorkPackageService(
+      new AssignedWorkPackageRepository(pool),
+    );
+    await assignedWorkPackageService.ensureSeedPackages(technician.id);
+    const uploadedKeys = new Set<string>();
+    const evidenceSyncService = new EvidenceSyncService(
+      new EvidenceSyncRepository(pool),
+      createTestEvidenceObjectStorageClient(uploadedKeys),
+      () => new Date('2026-04-23T14:30:00.000Z'),
+    );
+
+    const runtime = createServiceRuntime({
+      serviceName: 'api-service',
+      serviceRole: 'api',
+      host: '127.0.0.1',
+      port: 0,
+      verifyDatabaseReadiness: async () => undefined,
+      handleRequest: createApiRequestHandler({
+        authService,
+        assignedWorkPackageService,
+        evidenceSyncService,
+      }),
+    });
+    runtimes.push(runtime);
+
+    const { port } = await runtime.start();
+    const login = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-evidence-sync-login',
+      },
+    );
+
+    const metadataResponse = await fetch(`http://127.0.0.1:${port}/sync/evidence-metadata`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${login.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        reportId: 'tag-report:wp-seed-1001:tag-001',
+        workPackageId: 'wp-seed-1001',
+        tagId: 'tag-001',
+        templateId: 'tpl-pressure-as-found',
+        templateVersion: '2026-04-v1',
+        evidenceId: 'photo:20260423143000:test',
+        fileName: 'field-photo.jpg',
+        mimeType: 'image/jpeg',
+        executionStepId: 'guidance',
+        source: 'camera',
+        localCapturedAt: '2026-04-23T14:25:00.000Z',
+        metadataIdempotencyKey:
+          'upload-evidence-metadata:photo:20260423143000:test:2026-04-23T14:25:00.000Z',
+      }),
+    });
+    const metadataBody = (await metadataResponse.json()) as {
+      serverEvidenceId: string;
+      presenceStatus: string;
+    };
+
+    expect(metadataResponse.status).toBe(200);
+    expect(metadataBody.presenceStatus).toBe('metadata-recorded');
+
+    const authorizationResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-upload-authorizations`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          reportId: 'tag-report:wp-seed-1001:tag-001',
+          evidenceId: 'photo:20260423143000:test',
+        }),
+      },
+    );
+    const authorizationBody = (await authorizationResponse.json()) as {
+      serverEvidenceId: string;
+      objectKey: string;
+      uploadMethod: string;
+      requiredHeaders: Record<string, string>;
+    };
+
+    expect(authorizationResponse.status).toBe(200);
+    expect(authorizationBody.serverEvidenceId).toBe(metadataBody.serverEvidenceId);
+    expect(authorizationBody.uploadMethod).toBe('PUT');
+    expect(authorizationBody.requiredHeaders).toEqual({
+      'content-type': 'image/jpeg',
+    });
+
+    uploadedKeys.add(authorizationBody.objectKey);
+
+    const finalizationResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-binary-finalizations`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          serverEvidenceId: metadataBody.serverEvidenceId,
+        }),
+      },
+    );
+    const finalizationBody = (await finalizationResponse.json()) as {
+      serverEvidenceId: string;
+      presenceStatus: string;
+      presenceFinalizedAt: string;
+    };
+
+    expect(finalizationResponse.status).toBe(200);
+    expect(finalizationBody).toMatchObject({
+      serverEvidenceId: metadataBody.serverEvidenceId,
+      presenceStatus: 'binary-finalized',
+      presenceFinalizedAt: '2026-04-23T14:30:00.000Z',
+    });
+
+    await pool.end();
+  });
 });
+
+function createTestEvidenceObjectStorageClient(
+  uploadedKeys: Set<string> = new Set<string>(),
+): EvidenceObjectStorageClient {
+  return {
+    async createBinaryUploadAuthorization(input) {
+      return {
+        uploadUrl: `https://storage.tagwise.test/${encodeURIComponent(input.objectKey)}`,
+        uploadMethod: 'PUT',
+        requiredHeaders: {
+          'content-type': input.contentType,
+        },
+        expiresAt: '2026-04-23T14:45:00.000Z',
+      };
+    },
+    async hasObject(objectKey) {
+      return uploadedKeys.has(objectKey);
+    },
+  };
+}

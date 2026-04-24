@@ -193,6 +193,14 @@ export interface SharedExecutionGuidanceState {
 
 export type SharedExecutionPhotoAttachmentSource = 'camera' | 'library';
 
+export type SharedExecutionPhotoSyncState =
+  | 'local-only'
+  | 'queued'
+  | 'syncing'
+  | 'pending-validation'
+  | 'synced'
+  | 'sync-issue';
+
 export interface SharedExecutionPhotoAttachmentInput {
   source: SharedExecutionPhotoAttachmentSource;
   uri: string;
@@ -214,6 +222,14 @@ export interface SharedExecutionPhotoAttachment {
   width: number | null;
   height: number | null;
   fileSize: number | null;
+  syncState: SharedExecutionPhotoSyncState;
+  metadataSyncedAt: string | null;
+  serverEvidenceId: string | null;
+  storageObjectKey: string | null;
+  uploadAuthorizedAt: string | null;
+  binaryUploadedAt: string | null;
+  presenceFinalizedAt: string | null;
+  syncIssue: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -361,4 +377,12 @@ export interface StoredExecutionPhotoAttachmentPayload {
   width: number | null;
   height: number | null;
   fileSize: number | null;
+  syncState?: SharedExecutionPhotoSyncState;
+  metadataSyncedAt?: string | null;
+  serverEvidenceId?: string | null;
+  storageObjectKey?: string | null;
+  uploadAuthorizedAt?: string | null;
+  binaryUploadedAt?: string | null;
+  presenceFinalizedAt?: string | null;
+  syncIssue?: string | null;
 }

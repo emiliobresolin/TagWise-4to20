@@ -2,12 +2,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { AuthenticationError } from '../modules/auth/model';
 import type { AuthService } from '../modules/auth/authService';
+import { EvidenceSyncError } from '../modules/evidence-sync/model';
+import type { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
 export interface ApiRequestHandlerDependencies {
   authService: AuthService;
   assignedWorkPackageService: AssignedWorkPackageService;
+  evidenceSyncService: EvidenceSyncService;
 }
 
 export function createApiRequestHandler(dependencies: ApiRequestHandlerDependencies) {
@@ -136,6 +139,166 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    if (method === 'POST' && url === '/sync/evidence-metadata') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const body = await readJsonBody<{
+          reportId?: string;
+          workPackageId?: string;
+          tagId?: string;
+          templateId?: string;
+          templateVersion?: string;
+          evidenceId?: string;
+          fileName?: string;
+          mimeType?: string | null;
+          executionStepId?: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
+          source?: 'camera' | 'library';
+          localCapturedAt?: string;
+          metadataIdempotencyKey?: string;
+        }>(request);
+
+        if (
+          !body.reportId ||
+          !body.workPackageId ||
+          !body.tagId ||
+          !body.templateId ||
+          !body.templateVersion ||
+          !body.evidenceId ||
+          !body.fileName ||
+          !body.executionStepId ||
+          !body.source ||
+          !body.localCapturedAt ||
+          !body.metadataIdempotencyKey
+        ) {
+          writeJson(response, 400, { message: 'Evidence metadata sync requires the full evidence payload.' });
+          return true;
+        }
+
+        const synced = await dependencies.evidenceSyncService.syncEvidenceMetadata(user, {
+          reportId: body.reportId,
+          workPackageId: body.workPackageId,
+          tagId: body.tagId,
+          templateId: body.templateId,
+          templateVersion: body.templateVersion,
+          evidenceId: body.evidenceId,
+          fileName: body.fileName,
+          mimeType: body.mimeType ?? null,
+          executionStepId: body.executionStepId,
+          source: body.source,
+          localCapturedAt: body.localCapturedAt,
+          metadataIdempotencyKey: body.metadataIdempotencyKey,
+        });
+
+        context.logger.info('evidence.metadata-sync.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: synced.reportId,
+          evidenceId: synced.evidenceId,
+        });
+        writeJson(response, 200, synced);
+      } catch (error) {
+        context.logger.warn('evidence.metadata-sync.failed', {
+          statusCode:
+            error instanceof EvidenceSyncError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeEvidenceSyncError(
+          response,
+          error,
+          'Evidence metadata sync failed. The local attachment will remain queued.',
+        );
+      }
+
+      return true;
+    }
+
+    if (method === 'POST' && url === '/sync/evidence-upload-authorizations') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const body = await readJsonBody<{
+          reportId?: string;
+          evidenceId?: string;
+        }>(request);
+
+        if (!body.reportId || !body.evidenceId) {
+          writeJson(response, 400, { message: 'Evidence upload authorization requires reportId and evidenceId.' });
+          return true;
+        }
+
+        const authorization = await dependencies.evidenceSyncService.authorizeBinaryUpload(user, {
+          reportId: body.reportId,
+          evidenceId: body.evidenceId,
+        });
+
+        context.logger.info('evidence.binary-upload-authorized', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: authorization.reportId,
+          evidenceId: authorization.evidenceId,
+        });
+        writeJson(response, 200, authorization);
+      } catch (error) {
+        context.logger.warn('evidence.binary-upload-authorize.failed', {
+          statusCode:
+            error instanceof EvidenceSyncError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeEvidenceSyncError(
+          response,
+          error,
+          'Evidence upload authorization failed. The local attachment will remain queued.',
+        );
+      }
+
+      return true;
+    }
+
+    if (method === 'POST' && url === '/sync/evidence-binary-finalizations') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const body = await readJsonBody<{ serverEvidenceId?: string }>(request);
+
+        if (!body.serverEvidenceId) {
+          writeJson(response, 400, { message: 'Evidence binary finalization requires serverEvidenceId.' });
+          return true;
+        }
+
+        const finalized = await dependencies.evidenceSyncService.finalizeBinaryUpload(user, {
+          serverEvidenceId: body.serverEvidenceId,
+        });
+
+        context.logger.info('evidence.binary-finalized', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: finalized.reportId,
+          evidenceId: finalized.evidenceId,
+        });
+        writeJson(response, 200, finalized);
+      } catch (error) {
+        context.logger.warn('evidence.binary-finalize.failed', {
+          statusCode:
+            error instanceof EvidenceSyncError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeEvidenceSyncError(
+          response,
+          error,
+          'Evidence binary finalization failed. The local attachment will remain queued until retry.',
+        );
+      }
+
+      return true;
+    }
+
     return false;
   };
 }
@@ -177,6 +340,20 @@ function writeAuthError(response: ServerResponse, error: unknown) {
 function writeWorkPackageError(response: ServerResponse, error: unknown, fallbackMessage: string) {
   if (error instanceof AuthenticationError) {
     writeAuthError(response, error);
+    return;
+  }
+
+  writeJson(response, 500, { message: fallbackMessage });
+}
+
+function writeEvidenceSyncError(response: ServerResponse, error: unknown, fallbackMessage: string) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  if (error instanceof EvidenceSyncError) {
+    writeJson(response, error.statusCode, { message: error.message });
     return;
   }
 

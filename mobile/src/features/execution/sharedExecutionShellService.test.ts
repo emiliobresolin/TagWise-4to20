@@ -2771,7 +2771,7 @@ describe('SharedExecutionShellService', () => {
         enqueue: vi.fn(async (input) => {
           enqueueAttemptCount += 1;
 
-          if (enqueueAttemptCount === 2) {
+          if (enqueueAttemptCount === 3) {
             throw new Error('Simulated queue failure while enqueuing evidence binary.');
           }
 

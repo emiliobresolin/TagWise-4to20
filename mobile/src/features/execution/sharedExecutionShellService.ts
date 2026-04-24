@@ -46,14 +46,23 @@ import {
   computeDeterministicCalculation,
   resolveDeterministicCalculationDefinition,
 } from './deterministicCalculationEngine';
+import {
+  buildSubmitReportQueueItemId,
+  buildUploadEvidenceBinaryQueueItemId,
+  buildUploadEvidenceMetadataQueueItemId,
+  LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+  SUBMIT_REPORT_QUEUE_ITEM_KIND,
+  type SubmitReportQueuePayload,
+  type UploadEvidenceBinaryQueuePayload,
+  type UploadEvidenceMetadataQueuePayload,
+  UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
+  UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
+} from '../sync/queueContracts';
 
-const LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE = 'per-tag-report';
 const TECHNICIAN_OWNED_DRAFT_REPORT_STATE = 'technician-owned-draft';
 const SUBMITTED_PENDING_SYNC_REPORT_STATE = 'submitted-pending-sync';
 const LOCAL_ONLY_SYNC_STATE = 'local-only';
 const QUEUED_SYNC_STATE = 'queued';
-const SUBMIT_REPORT_QUEUE_ITEM_KIND = 'submit-report';
-const UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND = 'upload-evidence-binary';
 type SharedExecutionEvidenceRequirementKind =
   | 'structured-readings'
   | 'observation-notes'
@@ -72,45 +81,6 @@ interface StoredPerTagReportDraftPayload {
   savedAt?: string | null;
   submittedAt?: string | null;
   updatedAt: string;
-}
-
-interface SubmitReportQueuePayload {
-  queueItemSchemaVersion: '2026-04-v1';
-  itemType: typeof SUBMIT_REPORT_QUEUE_ITEM_KIND;
-  reportId: string;
-  workPackageId: string;
-  tagId: string;
-  templateId: string;
-  templateVersion: string;
-  localObjectReference: {
-    businessObjectType: typeof LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE;
-    businessObjectId: string;
-  };
-  objectVersion: string;
-  idempotencyKey: string;
-  dependencyStatus: 'ready';
-  retryCount: number;
-  queuedAt: string;
-}
-
-interface UploadEvidenceBinaryQueuePayload {
-  queueItemSchemaVersion: '2026-04-v1';
-  itemType: typeof UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND;
-  reportId: string;
-  evidenceId: string;
-  mediaRelativePath: string;
-  mimeType: string | null;
-  executionStepId: SharedExecutionStepKind;
-  localObjectReference: {
-    businessObjectType: typeof LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE;
-    businessObjectId: string;
-  };
-  objectVersion: string;
-  idempotencyKey: string;
-  dependsOnQueueItemId: string;
-  dependencyStatus: 'waiting-on-report-submission';
-  retryCount: number;
-  queuedAt: string;
 }
 
 const STRUCTURED_READINGS_EVIDENCE_LABELS = new Set([
@@ -433,11 +403,11 @@ export class SharedExecutionShellService {
       sourceUri: photo.uri,
     });
 
-    await store.evidenceMetadata.saveEvidenceMetadata({
-      evidenceId: buildPhotoEvidenceId(updatedAt),
-      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
-      businessObjectId: draftReportId,
-      fileName: sandboxFile.fileName,
+      await store.evidenceMetadata.saveEvidenceMetadata({
+        evidenceId: buildPhotoEvidenceId(updatedAt),
+        businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+        businessObjectId: draftReportId,
+        fileName: sandboxFile.fileName,
       mediaRelativePath: sandboxFile.relativePath,
       mimeType: photo.mimeType,
       payloadJson: JSON.stringify({
@@ -448,12 +418,20 @@ export class SharedExecutionShellService {
         templateVersion: shell.template.version,
         draftReportId,
         executionStepId: toExecutionStepKind(shell.progress.currentStepId),
-        source: photo.source,
-        width: photo.width,
-        height: photo.height,
-        fileSize: photo.fileSize,
-      } satisfies StoredExecutionPhotoAttachmentPayload),
-    });
+          source: photo.source,
+          width: photo.width,
+          height: photo.height,
+          fileSize: photo.fileSize,
+          syncState: isSubmittedReport(shell.report) ? QUEUED_SYNC_STATE : LOCAL_ONLY_SYNC_STATE,
+          metadataSyncedAt: null,
+          serverEvidenceId: null,
+          storageObjectKey: null,
+          uploadAuthorizedAt: null,
+          binaryUploadedAt: null,
+          presenceFinalizedAt: null,
+          syncIssue: null,
+        } satisfies StoredExecutionPhotoAttachmentPayload),
+      });
 
     const reloadedShell = await this.loadShell(
       session,
@@ -632,8 +610,8 @@ export class SharedExecutionShellService {
       const submittedAt = alreadySubmitted
         ? existingPayload?.submittedAt ?? updatedAt
         : updatedAt;
-      const reportQueueItemId = buildSubmitReportQueueItemId(shell.report.reportId);
-      let draftRecord = existingDraft;
+        const reportQueueItemId = buildSubmitReportQueueItemId(shell.report.reportId);
+        let draftRecord = existingDraft;
 
       if (!alreadySubmitted || !draftRecord) {
         draftRecord = await persistPerTagReportDraft(store, shell, {
@@ -664,29 +642,41 @@ export class SharedExecutionShellService {
         });
       }
 
-      for (const attachment of shell.evidence.photoAttachments) {
-        const queueItemId = buildUploadEvidenceBinaryQueueItemId(attachment.evidenceId);
-        const existingEvidenceQueueItem = await store.queueItems.getQueueItemById(queueItemId);
+        for (const attachment of shell.evidence.photoAttachments) {
+          const metadataQueueItemId = buildUploadEvidenceMetadataQueueItemId(attachment.evidenceId);
+          const binaryQueueItemId = buildUploadEvidenceBinaryQueueItemId(attachment.evidenceId);
+          const existingMetadataQueueItem = await store.queueItems.getQueueItemById(metadataQueueItemId);
+          const existingBinaryQueueItem = await store.queueItems.getQueueItemById(binaryQueueItemId);
 
-        if (existingEvidenceQueueItem) {
-          continue;
+          if (!existingMetadataQueueItem) {
+            await store.queueItems.enqueue({
+              queueItemId: metadataQueueItemId,
+              businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+              businessObjectId: shell.report.reportId,
+              itemKind: UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
+              payloadJson: JSON.stringify(
+                buildUploadEvidenceMetadataQueuePayload(shell, attachment, updatedAt),
+              ),
+            });
+          }
+
+          if (!existingBinaryQueueItem) {
+            await store.queueItems.enqueue({
+              queueItemId: binaryQueueItemId,
+              businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+              businessObjectId: shell.report.reportId,
+              itemKind: UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
+              payloadJson: JSON.stringify(
+                buildUploadEvidenceBinaryQueuePayload(
+                  shell,
+                  attachment,
+                  metadataQueueItemId,
+                  updatedAt,
+                ),
+              ),
+            });
+          }
         }
-
-        await store.queueItems.enqueue({
-          queueItemId,
-          businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
-          businessObjectId: shell.report.reportId,
-          itemKind: UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
-          payloadJson: JSON.stringify(
-            buildUploadEvidenceBinaryQueuePayload(
-              shell,
-              attachment,
-              reportQueueItemId,
-              updatedAt,
-            ),
-          ),
-        });
-      }
 
       if (this.dependencies.localWorkState && !existingReportQueueItem) {
         const currentUnsyncedCount = await this.dependencies.localWorkState.getUnsyncedWorkCount();
@@ -2334,6 +2324,14 @@ async function buildPhotoAttachments(
         width: payload.width,
         height: payload.height,
         fileSize: payload.fileSize,
+        syncState: payload.syncState ?? LOCAL_ONLY_SYNC_STATE,
+        metadataSyncedAt: payload.metadataSyncedAt ?? null,
+        serverEvidenceId: payload.serverEvidenceId ?? null,
+        storageObjectKey: payload.storageObjectKey ?? null,
+        uploadAuthorizedAt: payload.uploadAuthorizedAt ?? null,
+        binaryUploadedAt: payload.binaryUploadedAt ?? null,
+        presenceFinalizedAt: payload.presenceFinalizedAt ?? null,
+        syncIssue: payload.syncIssue ?? null,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
       } satisfies SharedExecutionPhotoAttachment;
@@ -2363,23 +2361,60 @@ function parsePhotoAttachmentPayload(
       return null;
     }
 
-    return {
-      kind: 'photo',
-      workPackageId: parsed.workPackageId,
-      tagId: parsed.tagId,
-      templateId: parsed.templateId,
+      return {
+        kind: 'photo',
+        workPackageId: parsed.workPackageId,
+        tagId: parsed.tagId,
+        templateId: parsed.templateId,
       templateVersion: parsed.templateVersion,
       draftReportId: parsed.draftReportId,
       executionStepId: parsed.executionStepId,
-      source: parsed.source,
-      width: typeof parsed.width === 'number' ? parsed.width : null,
-      height: typeof parsed.height === 'number' ? parsed.height : null,
-      fileSize: typeof parsed.fileSize === 'number' ? parsed.fileSize : null,
-    };
-  } catch {
-    return null;
+        source: parsed.source,
+        width: typeof parsed.width === 'number' ? parsed.width : null,
+        height: typeof parsed.height === 'number' ? parsed.height : null,
+        fileSize: typeof parsed.fileSize === 'number' ? parsed.fileSize : null,
+        syncState:
+          parsed.syncState === 'queued' ||
+          parsed.syncState === 'syncing' ||
+          parsed.syncState === 'pending-validation' ||
+          parsed.syncState === 'synced' ||
+          parsed.syncState === 'sync-issue' ||
+          parsed.syncState === 'local-only'
+            ? parsed.syncState
+            : undefined,
+        metadataSyncedAt:
+          typeof parsed.metadataSyncedAt === 'string' || parsed.metadataSyncedAt === null
+            ? parsed.metadataSyncedAt
+            : undefined,
+        serverEvidenceId:
+          typeof parsed.serverEvidenceId === 'string' || parsed.serverEvidenceId === null
+            ? parsed.serverEvidenceId
+            : undefined,
+        storageObjectKey:
+          typeof parsed.storageObjectKey === 'string' || parsed.storageObjectKey === null
+            ? parsed.storageObjectKey
+            : undefined,
+        uploadAuthorizedAt:
+          typeof parsed.uploadAuthorizedAt === 'string' || parsed.uploadAuthorizedAt === null
+            ? parsed.uploadAuthorizedAt
+            : undefined,
+        binaryUploadedAt:
+          typeof parsed.binaryUploadedAt === 'string' || parsed.binaryUploadedAt === null
+            ? parsed.binaryUploadedAt
+            : undefined,
+        presenceFinalizedAt:
+          typeof parsed.presenceFinalizedAt === 'string' || parsed.presenceFinalizedAt === null
+            ? parsed.presenceFinalizedAt
+            : undefined,
+        syncIssue:
+          typeof parsed.syncIssue === 'string' || parsed.syncIssue === null
+            ? parsed.syncIssue
+            : undefined,
+      };
+    } catch {
+      return null;
+    }
   }
-}
 
 async function ensureDraftReportLink(
   store: UserPartitionedLocalStore,
@@ -2554,14 +2589,6 @@ function buildDraftReportId(workPackageId: string, tagId: string): string {
   return `tag-report:${workPackageId}:${tagId}`;
 }
 
-function buildSubmitReportQueueItemId(reportId: string): string {
-  return `${SUBMIT_REPORT_QUEUE_ITEM_KIND}:${reportId}`;
-}
-
-function buildUploadEvidenceBinaryQueueItemId(evidenceId: string): string {
-  return `${UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND}:${evidenceId}`;
-}
-
 function buildSubmitReportQueuePayload(
   shell: SharedExecutionShell,
   objectVersion: string,
@@ -2581,6 +2608,36 @@ function buildSubmitReportQueuePayload(
     },
     objectVersion,
     idempotencyKey: `${SUBMIT_REPORT_QUEUE_ITEM_KIND}:${shell.report.reportId}:${objectVersion}`,
+    dependencyStatus: 'ready',
+    retryCount: 0,
+    queuedAt,
+    };
+}
+
+function buildUploadEvidenceMetadataQueuePayload(
+  shell: SharedExecutionShell,
+  attachment: SharedExecutionPhotoAttachment,
+  queuedAt: string,
+): UploadEvidenceMetadataQueuePayload {
+  return {
+    queueItemSchemaVersion: '2026-04-v1',
+    itemType: UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
+    reportId: shell.report.reportId,
+    workPackageId: shell.workPackageId,
+    tagId: shell.tagId,
+    templateId: shell.template.id,
+    templateVersion: shell.template.version,
+    evidenceId: attachment.evidenceId,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    executionStepId: attachment.executionStepId,
+    source: attachment.source,
+    localObjectReference: {
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+    },
+    objectVersion: attachment.updatedAt,
+    idempotencyKey: `${UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND}:${attachment.evidenceId}:${attachment.updatedAt}`,
     dependencyStatus: 'ready',
     retryCount: 0,
     queuedAt,
@@ -2608,7 +2665,7 @@ function buildUploadEvidenceBinaryQueuePayload(
     objectVersion: attachment.updatedAt,
     idempotencyKey: `${UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND}:${attachment.evidenceId}:${attachment.updatedAt}`,
     dependsOnQueueItemId,
-    dependencyStatus: 'waiting-on-report-submission',
+    dependencyStatus: 'waiting-on-evidence-metadata',
     retryCount: 0,
     queuedAt,
   };

@@ -3,9 +3,11 @@ import {
   CreateBucketCommand,
   DeleteObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 import type { ObjectStorageConfig } from '../../config/env';
 
@@ -13,6 +15,22 @@ export interface ObjectStorageSmokeClient {
   ensureBucket(): Promise<void>;
   putTextObject(key: string, body: string): Promise<void>;
   deleteObject(key: string): Promise<void>;
+}
+
+export interface EvidenceBinaryUploadAuthorization {
+  uploadUrl: string;
+  uploadMethod: 'PUT';
+  requiredHeaders: Record<string, string>;
+  expiresAt: string;
+}
+
+export interface EvidenceObjectStorageClient {
+  createBinaryUploadAuthorization(input: {
+    objectKey: string;
+    contentType: string;
+    expiresInSeconds: number;
+  }): Promise<EvidenceBinaryUploadAuthorization>;
+  hasObject(objectKey: string): Promise<boolean>;
 }
 
 export interface ObjectStorageSmokeSummary {
@@ -72,19 +90,61 @@ export class S3ObjectStorageSmokeClient implements ObjectStorageSmokeClient {
   }
 }
 
-export function createS3ObjectStorageClient(config: ObjectStorageConfig): S3ObjectStorageSmokeClient {
-  return new S3ObjectStorageSmokeClient(
-    new S3Client({
-      region: config.region,
-      endpoint: config.endpoint,
-      forcePathStyle: config.forcePathStyle,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
+export class S3EvidenceObjectStorageClient implements EvidenceObjectStorageClient {
+  constructor(
+    private readonly client: S3Client,
+    private readonly config: ObjectStorageConfig,
+  ) {}
+
+  async createBinaryUploadAuthorization(input: {
+    objectKey: string;
+    contentType: string;
+    expiresInSeconds: number;
+  }): Promise<EvidenceBinaryUploadAuthorization> {
+    const command = new PutObjectCommand({
+      Bucket: this.config.bucket,
+      Key: input.objectKey,
+      ContentType: input.contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.client, command, {
+      expiresIn: input.expiresInSeconds,
+    });
+    const expiresAt = new Date(Date.now() + input.expiresInSeconds * 1000).toISOString();
+
+    return {
+      uploadUrl,
+      uploadMethod: 'PUT',
+      requiredHeaders: {
+        'content-type': input.contentType,
       },
-    }),
-    config,
-  );
+      expiresAt,
+    };
+  }
+
+  async hasObject(objectKey: string): Promise<boolean> {
+    try {
+      await this.client.send(
+        new HeadObjectCommand({
+          Bucket: this.config.bucket,
+          Key: objectKey,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function createS3ObjectStorageClient(config: ObjectStorageConfig): S3ObjectStorageSmokeClient {
+  return new S3ObjectStorageSmokeClient(createS3Client(config), config);
+}
+
+export function createS3EvidenceObjectStorageClient(
+  config: ObjectStorageConfig,
+): S3EvidenceObjectStorageClient {
+  return new S3EvidenceObjectStorageClient(createS3Client(config), config);
 }
 
 export async function runObjectStorageBootstrapSmoke(
@@ -102,4 +162,16 @@ export async function runObjectStorageBootstrapSmoke(
     bucket,
     objectKey,
   };
+}
+
+function createS3Client(config: ObjectStorageConfig): S3Client {
+  return new S3Client({
+    region: config.region,
+    endpoint: config.endpoint,
+    forcePathStyle: config.forcePathStyle,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    },
+  });
 }

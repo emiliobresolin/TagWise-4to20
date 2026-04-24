@@ -114,6 +114,17 @@ export class UserPartitionedQueueItemRepository {
 
     return rows.map(mapQueueRow);
   }
+
+  async deleteQueueItem(queueItemId: string): Promise<void> {
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_queue_items
+        WHERE owner_user_id = ?
+          AND queue_item_id = ?;
+      `,
+      [this.ownerUserId, queueItemId],
+    );
+  }
 }
 
 function mapQueueRow(row: QueueRow): UserOwnedQueueItemRecord {

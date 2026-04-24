@@ -9,7 +9,10 @@ import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
+import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
+import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import { createApiRequestHandler } from './createApiRequestHandler';
+import { createS3EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
 
 async function main() {
   const environment = loadServiceEnvironment('api');
@@ -38,6 +41,10 @@ async function main() {
     new AssignedWorkPackageRepository(pool),
   );
   await assignedWorkPackageService.ensureSeedPackages(technician.id);
+  const evidenceSyncService = new EvidenceSyncService(
+    new EvidenceSyncRepository(pool),
+    createS3EvidenceObjectStorageClient(environment.objectStorage),
+  );
 
   const runtime = createServiceRuntime({
     serviceName: 'api-service',
@@ -46,7 +53,11 @@ async function main() {
     port: environment.port,
     verifyDatabaseReadiness: () => verifyPostgresConnectivity(pool),
     logger,
-    handleRequest: createApiRequestHandler({ authService, assignedWorkPackageService }),
+    handleRequest: createApiRequestHandler({
+      authService,
+      assignedWorkPackageService,
+      evidenceSyncService,
+    }),
   });
 
   const { port } = await runtime.start();
