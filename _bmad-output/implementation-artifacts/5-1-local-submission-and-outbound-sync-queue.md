@@ -1,6 +1,6 @@
 ﻿# Story 5.1: Local Submission and Outbound Sync Queue
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 5-1-local-submission-and-outbound-sync-queue
@@ -34,6 +34,27 @@ create queue items with idempotency keys and dependency metadata; lock technicia
 
 ## Validation / Test Notes
 - queue persistence tests, offline submit tests, duplicate-submit guard tests.
+
+## Dev Agent Record
+### Implementation Summary
+- added local per-tag report submission that transitions the draft into `Submitted - Pending Sync`
+- created outbound queue items for the submitted report and any pending photo evidence binaries
+- preserved restart-safe local report state and locked post-submit technician edits in the shared execution shell
+- wrapped local submit in a SQLite transaction so draft state, queue items, and local unsynced-work state stay consistent on failure
+- hardened submit idempotency to read persisted draft/queue state so stale-shell resubmits do not drift counters or duplicate queue semantics
+
+### Files Updated
+- `mobile/src/data/local/repositories/localWorkStateRepository.ts`
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+
+### Validation Results
+- `cd mobile && npm run typecheck`
+- `cd mobile && npm test -- sharedExecutionShellService`
+- `cd mobile && npm test`
+- `cd mobile && npx expo export --platform android`
 
 ## Source References
 - [product-brief.md](../planning-artifacts/product-brief.md)

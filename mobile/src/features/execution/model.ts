@@ -220,7 +220,7 @@ export interface SharedExecutionPhotoAttachment {
 
 export interface SharedExecutionEvidenceState {
   draftReportId: string;
-  draftReportState: 'technician-owned-draft';
+  draftReportState: SharedExecutionReportState;
   observationNotes: string;
   calculationEvidenceUpdatedAt: string | null;
   guidanceEvidenceUpdatedAt: string | null;
@@ -228,9 +228,18 @@ export interface SharedExecutionEvidenceState {
   photoEvidenceUpdatedAt: string | null;
 }
 
+export type SharedExecutionReportState =
+  | 'technician-owned-draft'
+  | 'submitted-pending-sync';
+
 export type SharedExecutionReportLifecycleState =
   | 'In Progress'
-  | 'Ready to Submit';
+  | 'Ready to Submit'
+  | 'Submitted - Pending Sync';
+
+export type SharedExecutionSyncState =
+  | 'local-only'
+  | 'queued';
 
 export type SharedExecutionReportEvidenceRequirementLevel =
   | 'minimum'
@@ -259,8 +268,9 @@ export interface SharedExecutionReportChecklistOutcome {
 
 export interface SharedExecutionReportDraftState {
   reportId: string;
-  state: 'technician-owned-draft';
+  state: SharedExecutionReportState;
   lifecycleState: SharedExecutionReportLifecycleState;
+  syncState: SharedExecutionSyncState;
   technicianName: string;
   technicianEmail: string;
   tagContextSummary: string;
@@ -272,6 +282,7 @@ export interface SharedExecutionReportDraftState {
   riskFlags: SharedExecutionRiskItem[];
   reviewNotes: string;
   savedAt: string | null;
+  submittedAt: string | null;
 }
 
 export interface StoredExecutionProgressRecord {

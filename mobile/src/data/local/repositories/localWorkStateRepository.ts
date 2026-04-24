@@ -9,6 +9,19 @@ interface LocalWorkStateRow {
 export class LocalWorkStateRepository {
   constructor(private readonly database: LocalDatabase) {}
 
+  async runInTransaction<T>(work: () => Promise<T>): Promise<T> {
+    await this.database.execAsync('BEGIN IMMEDIATE;');
+
+    try {
+      const result = await work();
+      await this.database.execAsync('COMMIT;');
+      return result;
+    } catch (error) {
+      await this.database.execAsync('ROLLBACK;');
+      throw error;
+    }
+  }
+
   async getUnsyncedWorkCount(): Promise<number> {
     const row = await this.database.getFirstAsync<LocalWorkStateRow>(
       'SELECT unsynced_work_count FROM local_work_state WHERE state_key = ?;',

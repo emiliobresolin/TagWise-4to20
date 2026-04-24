@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createNodeAppSandboxBoundary } from '../../../tests/helpers/createNodeAppSandboxBoundary';
 import { createNodeSqliteDatabase } from '../../../tests/helpers/createNodeSqliteDatabase';
@@ -105,6 +105,67 @@ function serviceUpdateChecklistToCompleted(
     ),
     'pressure-reference-check',
     'completed',
+  );
+}
+
+async function buildReadyForSubmissionShell(input: {
+  service: SharedExecutionShellService;
+  session: ActiveUserSession;
+  workPackageId: string;
+  tagId: string;
+  templateId: string;
+  observationNotes: string;
+  justifyMissingExpectedEvidence?: boolean;
+  photoInput?: {
+    source: 'camera' | 'library';
+    uri: string;
+    fileName: string | null;
+    mimeType: string | null;
+    width: number | null;
+    height: number | null;
+    fileSize: number | null;
+  };
+}): Promise<SharedExecutionShell> {
+  const loadedShell = await input.service.loadShell(
+    input.session,
+    input.workPackageId,
+    input.tagId,
+    input.templateId,
+  );
+
+  if (!loadedShell) {
+    throw new Error('Expected execution shell to load for submission test preparation.');
+  }
+
+  const calculatedShell = await input.service.saveCalculation(input.session, loadedShell, {
+    expectedValue: '5',
+    observedValue: '5.02',
+  });
+  const preparedGuidanceShell = serviceUpdateChecklistToCompleted(
+    input.service,
+    await input.service.selectStep(input.session, calculatedShell, 'guidance'),
+    input.observationNotes,
+  );
+  const guidanceWithExpectedEvidenceJustification = input.justifyMissingExpectedEvidence
+    ? input.service.updateRiskJustification(
+        preparedGuidanceShell,
+        'expected-evidence:supporting-photo',
+        'Supporting photo was not captured, so the draft carries a technician justification instead.',
+      )
+    : preparedGuidanceShell;
+  const savedGuidanceShell = await input.service.saveGuidanceEvidence(
+    input.session,
+    guidanceWithExpectedEvidenceJustification,
+  );
+
+  if (!input.photoInput) {
+    return savedGuidanceShell;
+  }
+
+  return input.service.attachPhotoEvidence(
+    input.session,
+    savedGuidanceShell,
+    input.photoInput,
   );
 }
 
@@ -2676,6 +2737,420 @@ describe('SharedExecutionShellService', () => {
         }),
       ]),
     );
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('rolls back the local submit transition when queue creation fails after draft persistence begins', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-submit-report-rollback-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const photoSourcePath = join(tempDirectory, 'rollback-report-photo.jpg');
+    writeFileSync(photoSourcePath, 'rollback-report-photo-binary');
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const baseStore = runtime.repositories.userPartitions.forUser(session.userId);
+    let enqueueAttemptCount = 0;
+    const failingStore = {
+      ...baseStore,
+      queueItems: {
+        ownerUserId: baseStore.queueItems.ownerUserId,
+        getQueueItemById: (queueItemId: string) =>
+          baseStore.queueItems.getQueueItemById(queueItemId),
+        listQueueItemsByBusinessObject: (input: {
+          businessObjectType: string;
+          businessObjectId: string;
+        }) => baseStore.queueItems.listQueueItemsByBusinessObject(input),
+        enqueue: vi.fn(async (input) => {
+          enqueueAttemptCount += 1;
+
+          if (enqueueAttemptCount === 2) {
+            throw new Error('Simulated queue failure while enqueuing evidence binary.');
+          }
+
+          return baseStore.queueItems.enqueue(input);
+        }),
+      },
+    };
+    const service = new SharedExecutionShellService({
+      userPartitions: {
+        forUser(ownerUserId: string) {
+          expect(ownerUserId).toBe(session.userId);
+          return failingStore;
+        },
+      } as unknown as typeof runtime.repositories.userPartitions,
+      localWorkState: runtime.repositories.localWorkState,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+    const verificationService = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      localWorkState: runtime.repositories.localWorkState,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const readyShell = await buildReadyForSubmissionShell({
+      service: verificationService,
+      session,
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      observationNotes: 'Ready draft that will hit a queue failure during local submit.',
+      photoInput: {
+        source: 'camera',
+        uri: photoSourcePath,
+        fileName: 'rollback-report-photo.jpg',
+        mimeType: 'image/jpeg',
+        width: 1024,
+        height: 768,
+        fileSize: 4096,
+      },
+    });
+
+    await expect(service.submitReport(session, readyShell)).rejects.toThrow(
+      'Simulated queue failure while enqueuing evidence binary.',
+    );
+
+    const reopenedShell = await verificationService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    expect(reopenedShell).toMatchObject({
+      evidence: {
+        draftReportState: 'technician-owned-draft',
+      },
+      report: {
+        reportId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+        state: 'technician-owned-draft',
+        syncState: 'local-only',
+        submittedAt: null,
+      },
+    });
+    expect(
+      await runtime.repositories.userPartitions.forUser(session.userId).queueItems.listQueueItemsByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      }),
+    ).toHaveLength(0);
+    expect(await runtime.repositories.localWorkState.getUnsyncedWorkCount()).toBe(0);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('submits a ready per-tag report locally, queues the report and pending photo evidence, and locks further draft edits', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-submit-report-ready-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const photoSourcePath = join(tempDirectory, 'queued-report-photo.jpg');
+    writeFileSync(photoSourcePath, 'queued-report-photo-binary');
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      localWorkState: runtime.repositories.localWorkState,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const readyShell = await buildReadyForSubmissionShell({
+      service,
+      session,
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      observationNotes: 'Observation notes captured before local submission.',
+      photoInput: {
+        source: 'camera',
+        uri: photoSourcePath,
+        fileName: 'queued-report-photo.jpg',
+        mimeType: 'image/jpeg',
+        width: 1280,
+        height: 960,
+        fileSize: 8192,
+      },
+    });
+
+    const submittedShell = await service.submitReport(session, readyShell);
+
+    expect(submittedShell.report).toMatchObject({
+      reportId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      state: 'submitted-pending-sync',
+      lifecycleState: 'Submitted - Pending Sync',
+      syncState: 'queued',
+      submittedAt: expect.any(String),
+    });
+    expect(submittedShell.evidence.draftReportState).toBe('submitted-pending-sync');
+    expect(submittedShell.steps.find((step) => step.id === 'report')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Report lifecycle',
+          value: 'Submitted - Pending Sync',
+          state: 'available',
+        }),
+        expect.objectContaining({
+          label: 'Sync state',
+          value: 'Queued',
+          state: 'missing',
+        }),
+        expect.objectContaining({
+          label: 'Submitted locally',
+          state: 'available',
+        }),
+      ]),
+    );
+
+    const queueItems = await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .queueItems.listQueueItemsByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: submittedShell.report.reportId,
+      });
+    expect(queueItems).toHaveLength(2);
+
+    const reportQueueItem = queueItems.find((item) => item.itemKind === 'submit-report');
+    const evidenceQueueItem = queueItems.find(
+      (item) => item.itemKind === 'upload-evidence-binary',
+    );
+
+    expect(reportQueueItem).toBeDefined();
+    expect(evidenceQueueItem).toBeDefined();
+    expect(JSON.parse(reportQueueItem!.payloadJson)).toMatchObject({
+      queueItemSchemaVersion: '2026-04-v1',
+      itemType: 'submit-report',
+      reportId: submittedShell.report.reportId,
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      templateVersion: baseSnapshot.contractVersion,
+      localObjectReference: {
+        businessObjectType: 'per-tag-report',
+        businessObjectId: submittedShell.report.reportId,
+      },
+      dependencyStatus: 'ready',
+      retryCount: 0,
+    });
+    expect(JSON.parse(evidenceQueueItem!.payloadJson)).toMatchObject({
+      queueItemSchemaVersion: '2026-04-v1',
+      itemType: 'upload-evidence-binary',
+      reportId: submittedShell.report.reportId,
+      evidenceId: submittedShell.evidence.photoAttachments[0]?.evidenceId,
+      mediaRelativePath: submittedShell.evidence.photoAttachments[0]?.mediaRelativePath,
+      mimeType: 'image/jpeg',
+      executionStepId: 'guidance',
+      localObjectReference: {
+        businessObjectType: 'per-tag-report',
+        businessObjectId: submittedShell.report.reportId,
+      },
+      dependsOnQueueItemId: reportQueueItem!.queueItemId,
+      dependencyStatus: 'waiting-on-report-submission',
+      retryCount: 0,
+    });
+    expect(await runtime.repositories.localWorkState.getUnsyncedWorkCount()).toBe(1);
+
+    expect(
+      service.updateObservationNotes(submittedShell, 'Observation edits should stay locked.'),
+    ).toBe(submittedShell);
+    expect(
+      service.updateChecklistOutcome(submittedShell, 'pressure-path-check', 'skipped'),
+    ).toBe(submittedShell);
+    expect(
+      service.updateReportReviewNotes(submittedShell, 'Final notes should stay locked after submit.'),
+    ).toBe(submittedShell);
+    await expect(
+      service.saveCalculation(session, submittedShell, {
+        expectedValue: '6',
+        observedValue: '6.20',
+      }),
+    ).resolves.toBe(submittedShell);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('restores submitted pending sync report state and queue records after reopen', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-submit-report-reopen-'));
+    createdDirectories.push(tempDirectory);
+
+    const databasePath = join(tempDirectory, 'tagwise.db');
+    const sandboxPath = join(tempDirectory, 'sandbox');
+
+    const firstRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    await firstRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const firstService = new SharedExecutionShellService({
+      userPartitions: firstRuntime.repositories.userPartitions,
+      localWorkState: firstRuntime.repositories.localWorkState,
+      tagContextService: new LocalTagContextService({
+        userPartitions: firstRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const readyShell = await buildReadyForSubmissionShell({
+      service: firstService,
+      session,
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      observationNotes: 'Ready for local submission before restart validation.',
+      justifyMissingExpectedEvidence: true,
+    });
+
+    const submittedShell = await firstService.submitReport(session, readyShell);
+    expect(submittedShell.report.submittedAt).not.toBeNull();
+
+    await firstRuntime.database.closeAsync?.();
+
+    const secondRuntime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    const secondService = new SharedExecutionShellService({
+      userPartitions: secondRuntime.repositories.userPartitions,
+      localWorkState: secondRuntime.repositories.localWorkState,
+      tagContextService: new LocalTagContextService({
+        userPartitions: secondRuntime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:20:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:20:00.000Z'),
+    });
+
+    const reopenedShell = await secondService.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    expect(reopenedShell).toMatchObject({
+      evidence: {
+        draftReportState: 'submitted-pending-sync',
+      },
+      report: {
+        reportId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+        state: 'submitted-pending-sync',
+        lifecycleState: 'Submitted - Pending Sync',
+        syncState: 'queued',
+        submittedAt: expect.any(String),
+      },
+    });
+    expect(reopenedShell?.steps.find((step) => step.id === 'report')?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Report lifecycle',
+          value: 'Submitted - Pending Sync',
+        }),
+        expect.objectContaining({
+          label: 'Sync state',
+          value: 'Queued',
+        }),
+      ]),
+    );
+
+    const queueItems = await secondRuntime.repositories.userPartitions
+      .forUser(session.userId)
+      .queueItems.listQueueItemsByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      });
+    expect(queueItems).toHaveLength(1);
+    expect(queueItems[0]).toMatchObject({
+      itemKind: 'submit-report',
+      businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+    });
+
+    await secondRuntime.database.closeAsync?.();
+  });
+
+  it('keeps submit idempotent when a stale draft shell is submitted again after success', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-submit-report-duplicate-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      localWorkState: runtime.repositories.localWorkState,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const readyShell = await buildReadyForSubmissionShell({
+      service,
+      session,
+      workPackageId: baseSnapshot.summary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      observationNotes: 'Ready draft for duplicate submit guard coverage.',
+      justifyMissingExpectedEvidence: true,
+    });
+
+    const firstSubmittedShell = await service.submitReport(session, readyShell);
+    const secondSubmittedShell = await service.submitReport(session, readyShell);
+
+    expect(firstSubmittedShell.report).toMatchObject({
+      state: 'submitted-pending-sync',
+      syncState: 'queued',
+      submittedAt: expect.any(String),
+    });
+    expect(secondSubmittedShell.report).toMatchObject({
+      state: 'submitted-pending-sync',
+      syncState: 'queued',
+      submittedAt: firstSubmittedShell.report.submittedAt,
+    });
+
+    const queueItems = await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .queueItems.listQueueItemsByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: firstSubmittedShell.report.reportId,
+      });
+    expect(queueItems).toHaveLength(1);
+    expect(await runtime.repositories.localWorkState.getUnsyncedWorkCount()).toBe(1);
 
     await runtime.database.closeAsync?.();
   });

@@ -23,9 +23,11 @@ import type {
   SharedExecutionReportDraftState,
   SharedExecutionReportEvidenceReference,
   SharedExecutionReportLifecycleState,
+  SharedExecutionReportState,
   SharedExecutionRiskInputs,
   SharedExecutionRiskItem,
   SharedExecutionShell,
+  SharedExecutionSyncState,
   SharedExecutionStepKind,
   SharedExecutionCalculationRawInputs,
   StoredExecutionCalculationRecord,
@@ -38,6 +40,7 @@ import type {
   UserPartitionedLocalStore,
   UserPartitionedLocalStoreFactory,
 } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
+import type { LocalWorkStateRepository } from '../../data/local/repositories/localWorkStateRepository';
 import type { UserOwnedDraftRecord } from '../../data/local/repositories/userPartitionedLocalTypes';
 import {
   computeDeterministicCalculation,
@@ -46,6 +49,11 @@ import {
 
 const LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE = 'per-tag-report';
 const TECHNICIAN_OWNED_DRAFT_REPORT_STATE = 'technician-owned-draft';
+const SUBMITTED_PENDING_SYNC_REPORT_STATE = 'submitted-pending-sync';
+const LOCAL_ONLY_SYNC_STATE = 'local-only';
+const QUEUED_SYNC_STATE = 'queued';
+const SUBMIT_REPORT_QUEUE_ITEM_KIND = 'submit-report';
+const UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND = 'upload-evidence-binary';
 type SharedExecutionEvidenceRequirementKind =
   | 'structured-readings'
   | 'observation-notes'
@@ -57,11 +65,52 @@ interface StoredPerTagReportDraftPayload {
   tagId: string;
   templateId: string;
   templateVersion: string;
-  state: 'technician-owned-draft';
+  state: SharedExecutionReportState;
   lifecycleState?: SharedExecutionReportLifecycleState;
+  syncState?: SharedExecutionSyncState;
   reviewNotes?: string;
   savedAt?: string | null;
+  submittedAt?: string | null;
   updatedAt: string;
+}
+
+interface SubmitReportQueuePayload {
+  queueItemSchemaVersion: '2026-04-v1';
+  itemType: typeof SUBMIT_REPORT_QUEUE_ITEM_KIND;
+  reportId: string;
+  workPackageId: string;
+  tagId: string;
+  templateId: string;
+  templateVersion: string;
+  localObjectReference: {
+    businessObjectType: typeof LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE;
+    businessObjectId: string;
+  };
+  objectVersion: string;
+  idempotencyKey: string;
+  dependencyStatus: 'ready';
+  retryCount: number;
+  queuedAt: string;
+}
+
+interface UploadEvidenceBinaryQueuePayload {
+  queueItemSchemaVersion: '2026-04-v1';
+  itemType: typeof UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND;
+  reportId: string;
+  evidenceId: string;
+  mediaRelativePath: string;
+  mimeType: string | null;
+  executionStepId: SharedExecutionStepKind;
+  localObjectReference: {
+    businessObjectType: typeof LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE;
+    businessObjectId: string;
+  };
+  objectVersion: string;
+  idempotencyKey: string;
+  dependsOnQueueItemId: string;
+  dependencyStatus: 'waiting-on-report-submission';
+  retryCount: number;
+  queuedAt: string;
 }
 
 const STRUCTURED_READINGS_EVIDENCE_LABELS = new Set([
@@ -108,6 +157,7 @@ const PHOTO_EVIDENCE_LABELS = new Set(['supporting photo']);
 interface SharedExecutionShellServiceDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
   tagContextService: LocalTagContextService;
+  localWorkState?: LocalWorkStateRepository;
   templateRegistry?: LocalExecutionTemplateRegistry;
   now?: () => Date;
 }
@@ -169,6 +219,7 @@ export class SharedExecutionShellService {
       businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
       businessObjectId: buildDraftReportId(workPackageId, tagId),
     });
+    const storedDraftPayload = parseStoredPerTagReportDraftPayload(storedDraft);
     const storedPhotoAttachments = await buildPhotoAttachments(
       store,
       await store.evidenceMetadata.listEvidenceByBusinessObject({
@@ -205,6 +256,7 @@ export class SharedExecutionShellService {
       storedEvidence,
       storedPhotoAttachments,
       storedDraft,
+      storedDraftPayload,
       session,
     );
   }
@@ -245,7 +297,7 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     rawInputs: SharedExecutionCalculationRawInputs,
   ): Promise<SharedExecutionShell> {
-    if (!shell.calculation) {
+    if (!shell.calculation || isSubmittedReport(shell.report)) {
       return shell;
     }
 
@@ -299,7 +351,7 @@ export class SharedExecutionShellService {
   }
 
   updateObservationNotes(shell: SharedExecutionShell, observationNotes: string): SharedExecutionShell {
-    if (shell.evidence.observationNotes === observationNotes) {
+    if (shell.evidence.observationNotes === observationNotes || isSubmittedReport(shell.report)) {
       return shell;
     }
 
@@ -313,6 +365,10 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
   ): Promise<SharedExecutionShell> {
+    if (isSubmittedReport(shell.report)) {
+      return shell;
+    }
+
     const updatedAt = this.now().toISOString();
     const store = this.dependencies.userPartitions.forUser(session.userId);
     const draftReportId = await ensureDraftReportLink(store, shell, updatedAt);
@@ -363,6 +419,10 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     photo: SharedExecutionPhotoAttachmentInput,
   ): Promise<SharedExecutionShell> {
+    if (isSubmittedReport(shell.report)) {
+      return shell;
+    }
+
     const updatedAt = this.now().toISOString();
     const store = this.dependencies.userPartitions.forUser(session.userId);
     const draftReportId = await ensureDraftReportLink(store, shell, updatedAt);
@@ -412,6 +472,10 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     evidenceId: string,
   ): Promise<SharedExecutionShell> {
+    if (isSubmittedReport(shell.report)) {
+      return shell;
+    }
+
     const store = this.dependencies.userPartitions.forUser(session.userId);
     const metadata = await store.evidenceMetadata.getEvidenceById(evidenceId);
 
@@ -443,6 +507,10 @@ export class SharedExecutionShellService {
     checklistItemId: string,
     outcome: SharedExecutionChecklistOutcome,
   ): SharedExecutionShell {
+    if (isSubmittedReport(shell.report)) {
+      return shell;
+    }
+
     const checklistItems = shell.guidance.checklistItems.map((item) =>
       item.id === checklistItemId ? { ...item, outcome } : item,
     );
@@ -466,6 +534,10 @@ export class SharedExecutionShellService {
     riskItemId: string,
     justificationText: string,
   ): SharedExecutionShell {
+    if (isSubmittedReport(shell.report)) {
+      return shell;
+    }
+
     const riskItems = shell.guidance.riskItems.map((item) =>
       item.id === riskItemId ? { ...item, justificationText } : item,
     );
@@ -488,7 +560,7 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     reviewNotes: string,
   ): SharedExecutionShell {
-    if (shell.report.reviewNotes === reviewNotes) {
+    if (shell.report.reviewNotes === reviewNotes || isSubmittedReport(shell.report)) {
       return shell;
     }
 
@@ -502,12 +574,19 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
   ): Promise<SharedExecutionShell> {
+    if (isSubmittedReport(shell.report)) {
+      return shell;
+    }
+
     const updatedAt = this.now().toISOString();
     const store = this.dependencies.userPartitions.forUser(session.userId);
-    const lifecycleState = resolveReportLifecycleState(shell.guidance.submitReadiness);
+    const lifecycleState = resolveDraftReportLifecycleState(shell.guidance.submitReadiness);
     const draftRecord = await saveReportDraftRecord(store, shell, {
+      state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
       reviewNotes: shell.report.reviewNotes,
       savedAt: updatedAt,
+      submittedAt: null,
+      syncState: LOCAL_ONLY_SYNC_STATE,
       lifecycleState,
       updatedAt,
     });
@@ -515,10 +594,120 @@ export class SharedExecutionShellService {
 
     return applyReportDraftState(shell, {
       ...shell.report,
+      state: storedPayload?.state ?? TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
       lifecycleState,
+      syncState: storedPayload?.syncState ?? LOCAL_ONLY_SYNC_STATE,
       reviewNotes: storedPayload?.reviewNotes ?? shell.report.reviewNotes,
       savedAt: storedPayload?.savedAt ?? updatedAt,
+      submittedAt: storedPayload?.submittedAt ?? null,
     });
+  }
+
+  async submitReport(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+  ): Promise<SharedExecutionShell> {
+    const submitWork = async () => {
+      const updatedAt = this.now().toISOString();
+      const store = this.dependencies.userPartitions.forUser(session.userId);
+      const existingDraft = await store.drafts.getDraft({
+        businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+        businessObjectId: shell.report.reportId,
+      });
+      const existingPayload = parseStoredPerTagReportDraftPayload(existingDraft);
+      const alreadySubmitted = existingPayload?.state === SUBMITTED_PENDING_SYNC_REPORT_STATE;
+
+      if (!alreadySubmitted && shell.guidance.submitReadiness === 'blocked') {
+        throw new Error(
+          'This per-tag report is not ready for local submission yet. Capture the minimum evidence and required justifications first.',
+        );
+      }
+
+      const reviewNotes = alreadySubmitted
+        ? existingPayload?.reviewNotes ?? shell.report.reviewNotes
+        : shell.report.reviewNotes;
+      const savedAt = alreadySubmitted
+        ? existingPayload?.savedAt ?? shell.report.savedAt
+        : shell.report.savedAt;
+      const submittedAt = alreadySubmitted
+        ? existingPayload?.submittedAt ?? updatedAt
+        : updatedAt;
+      const reportQueueItemId = buildSubmitReportQueueItemId(shell.report.reportId);
+      let draftRecord = existingDraft;
+
+      if (!alreadySubmitted || !draftRecord) {
+        draftRecord = await persistPerTagReportDraft(store, shell, {
+          state: SUBMITTED_PENDING_SYNC_REPORT_STATE,
+          reviewNotes,
+          savedAt,
+          submittedAt,
+          syncState: QUEUED_SYNC_STATE,
+          lifecycleState: 'Submitted - Pending Sync',
+          updatedAt,
+        });
+      }
+
+      const existingReportQueueItem = await store.queueItems.getQueueItemById(reportQueueItemId);
+      if (!existingReportQueueItem) {
+        await store.queueItems.enqueue({
+          queueItemId: reportQueueItemId,
+          businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+          businessObjectId: shell.report.reportId,
+          itemKind: SUBMIT_REPORT_QUEUE_ITEM_KIND,
+          payloadJson: JSON.stringify(
+            buildSubmitReportQueuePayload(
+              shell,
+              draftRecord?.updatedAt ?? updatedAt,
+              updatedAt,
+            ),
+          ),
+        });
+      }
+
+      for (const attachment of shell.evidence.photoAttachments) {
+        const queueItemId = buildUploadEvidenceBinaryQueueItemId(attachment.evidenceId);
+        const existingEvidenceQueueItem = await store.queueItems.getQueueItemById(queueItemId);
+
+        if (existingEvidenceQueueItem) {
+          continue;
+        }
+
+        await store.queueItems.enqueue({
+          queueItemId,
+          businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+          businessObjectId: shell.report.reportId,
+          itemKind: UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
+          payloadJson: JSON.stringify(
+            buildUploadEvidenceBinaryQueuePayload(
+              shell,
+              attachment,
+              reportQueueItemId,
+              updatedAt,
+            ),
+          ),
+        });
+      }
+
+      if (this.dependencies.localWorkState && !existingReportQueueItem) {
+        const currentUnsyncedCount = await this.dependencies.localWorkState.getUnsyncedWorkCount();
+        await this.dependencies.localWorkState.setUnsyncedWorkCount(currentUnsyncedCount + 1);
+      }
+    };
+
+    if (this.dependencies.localWorkState) {
+      await this.dependencies.localWorkState.runInTransaction(submitWork);
+    } else {
+      await submitWork();
+    }
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell ?? shell;
   }
 }
 
@@ -532,6 +721,7 @@ function buildExecutionShell(
   storedEvidence: StoredExecutionEvidenceRecord[],
   storedPhotoAttachments: SharedExecutionPhotoAttachment[],
   storedDraft: UserOwnedDraftRecord | null,
+  storedDraftPayload: StoredPerTagReportDraftPayload | null,
   session: ActiveUserSession,
 ): SharedExecutionShell {
   const riskInputs = buildRiskInputs(tagContext);
@@ -540,6 +730,7 @@ function buildExecutionShell(
     tag.id,
     storedEvidence,
     storedPhotoAttachments,
+    storedDraftPayload?.state,
   );
   const calculation = buildCalculationState(tag, template, storedCalculation);
   const guidance = buildGuidanceState(
@@ -560,6 +751,7 @@ function buildExecutionShell(
     guidance,
     evidence,
     storedDraft,
+    storedDraftPayload,
   });
   const steps: SharedExecutionShell['steps'] = [
     {
@@ -1103,13 +1295,17 @@ function buildReportDraftState(input: {
   guidance: SharedExecutionGuidanceState;
   evidence: SharedExecutionEvidenceState;
   storedDraft: UserOwnedDraftRecord | null;
+  storedDraftPayload: StoredPerTagReportDraftPayload | null;
 }): SharedExecutionReportDraftState {
-  const storedPayload = parseStoredPerTagReportDraftPayload(input.storedDraft);
+  const storedPayload =
+    input.storedDraftPayload ?? parseStoredPerTagReportDraftPayload(input.storedDraft);
+  const derivedLifecycleState = resolveDraftReportLifecycleState(input.guidance.submitReadiness);
 
   return {
     reportId: input.evidence.draftReportId,
-    state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
-    lifecycleState: resolveReportLifecycleState(input.guidance.submitReadiness),
+    state: storedPayload?.state ?? TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    lifecycleState: storedPayload?.lifecycleState ?? derivedLifecycleState,
+    syncState: storedPayload?.syncState ?? LOCAL_ONLY_SYNC_STATE,
     technicianName: input.session.displayName,
     technicianEmail: input.session.email,
     tagContextSummary: buildReportTagContextSummary(
@@ -1130,6 +1326,7 @@ function buildReportDraftState(input: {
     riskFlags: input.guidance.riskItems,
     reviewNotes: storedPayload?.reviewNotes ?? '',
     savedAt: storedPayload?.savedAt ?? null,
+    submittedAt: storedPayload?.submittedAt ?? null,
   };
 }
 
@@ -1138,16 +1335,25 @@ function deriveReportDraftState(
   overrides?: Partial<
     Pick<
       SharedExecutionReportDraftState,
-      'technicianName' | 'technicianEmail' | 'tagContextSummary' | 'reviewNotes' | 'savedAt'
+      | 'technicianName'
+      | 'technicianEmail'
+      | 'tagContextSummary'
+      | 'reviewNotes'
+      | 'savedAt'
+      | 'submittedAt'
     >
   >,
 ): SharedExecutionReportDraftState {
   const historySummary = buildReportHistorySummaryFromShell(shell);
+  const lifecycleState = isSubmittedReport(shell.report)
+    ? 'Submitted - Pending Sync'
+    : resolveDraftReportLifecycleState(shell.guidance.submitReadiness);
 
   return {
     reportId: shell.evidence.draftReportId,
-    state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
-    lifecycleState: resolveReportLifecycleState(shell.guidance.submitReadiness),
+    state: shell.report.state,
+    lifecycleState,
+    syncState: shell.report.syncState,
     technicianName: overrides?.technicianName ?? shell.report.technicianName,
     technicianEmail: overrides?.technicianEmail ?? shell.report.technicianEmail,
     tagContextSummary: overrides?.tagContextSummary ?? shell.report.tagContextSummary,
@@ -1164,6 +1370,7 @@ function deriveReportDraftState(
     riskFlags: shell.guidance.riskItems,
     reviewNotes: overrides?.reviewNotes ?? shell.report.reviewNotes,
     savedAt: overrides?.savedAt ?? shell.report.savedAt,
+    submittedAt: overrides?.submittedAt ?? shell.report.submittedAt,
   };
 }
 
@@ -1173,6 +1380,10 @@ function applyReportDraftState(
 ): SharedExecutionShell {
   return {
     ...shell,
+    evidence: {
+      ...shell.evidence,
+      draftReportState: report.state,
+    },
     report,
     steps: shell.steps.map((step) =>
       step.id === 'report'
@@ -1191,9 +1402,22 @@ function mergeInSessionReportDraftIntoShell(
   shell: SharedExecutionShell,
   previousShell: SharedExecutionShell,
 ): SharedExecutionShell {
+  const preserveSubmittedLifecycle = isSubmittedReport(previousShell.report);
+
   return applyReportDraftState(shell, {
     ...shell.report,
+    state: previousShell.report.state,
+    lifecycleState: preserveSubmittedLifecycle
+      ? previousShell.report.lifecycleState
+      : shell.report.lifecycleState,
+    syncState: preserveSubmittedLifecycle
+      ? previousShell.report.syncState
+      : shell.report.syncState,
     reviewNotes: previousShell.report.reviewNotes,
+    savedAt: previousShell.report.savedAt,
+    submittedAt: preserveSubmittedLifecycle
+      ? previousShell.report.submittedAt
+      : shell.report.submittedAt,
   });
 }
 
@@ -1398,6 +1622,10 @@ function buildEvidenceReferenceDetail(
 }
 
 function buildReportStepSummary(report: SharedExecutionReportDraftState): string {
+  if (report.lifecycleState === 'Submitted - Pending Sync') {
+    return 'Per-tag report was submitted locally and is queued for sync while the field record stays locked.';
+  }
+
   if (report.lifecycleState === 'Ready to Submit') {
     return 'Per-tag report draft is assembled locally and ready for submission review.';
   }
@@ -1406,6 +1634,10 @@ function buildReportStepSummary(report: SharedExecutionReportDraftState): string
 }
 
 function buildReportStepDetail(report: SharedExecutionReportDraftState): string {
+  if (report.lifecycleState === 'Submitted - Pending Sync') {
+    return 'This per-tag report has already been queued locally. Submission remains local-only until a later sync story sends it for server validation.';
+  }
+
   return report.savedAt
     ? 'Review the generated draft, add final notes or corrections, and save locally for later completion without retyping the field session.'
     : 'Review the generated draft, add final notes or corrections, and save locally when you want to keep this per-tag report for later completion.';
@@ -1443,7 +1675,12 @@ function buildReportFields(
     {
       label: 'Report lifecycle',
       value: report.lifecycleState,
-      state: report.lifecycleState === 'Ready to Submit' ? 'available' : 'missing',
+      state: report.lifecycleState === 'In Progress' ? 'missing' : 'available',
+    },
+    {
+      label: 'Sync state',
+      value: report.syncState === QUEUED_SYNC_STATE ? 'Queued' : 'Local Only',
+      state: report.syncState === QUEUED_SYNC_STATE ? 'missing' : 'available',
     },
     availableField('Draft report', report.reportId),
     availableField('Technician', `${report.technicianName} (${report.technicianEmail})`),
@@ -1451,6 +1688,11 @@ function buildReportFields(
       label: 'Draft review saved',
       value: report.savedAt ? new Date(report.savedAt).toLocaleString() : 'Not saved yet',
       state: report.savedAt ? 'available' : 'missing',
+    },
+    {
+      label: 'Submitted locally',
+      value: report.submittedAt ? new Date(report.submittedAt).toLocaleString() : 'Not submitted yet',
+      state: report.submittedAt ? 'available' : 'missing',
     },
     availableField('Tag context', report.tagContextSummary),
     {
@@ -1519,10 +1761,14 @@ function buildReportFields(
   ];
 }
 
-function resolveReportLifecycleState(
+function resolveDraftReportLifecycleState(
   submitReadiness: SharedExecutionGuidanceState['submitReadiness'],
 ): SharedExecutionReportLifecycleState {
   return submitReadiness === 'ready' ? 'Ready to Submit' : 'In Progress';
+}
+
+function isSubmittedReport(report: Pick<SharedExecutionReportDraftState, 'state'>): boolean {
+  return report.state === SUBMITTED_PENDING_SYNC_REPORT_STATE;
 }
 
 function getStepFieldValue(
@@ -1780,6 +2026,7 @@ function buildEvidenceState(
   tagId: string,
   storedEvidence: StoredExecutionEvidenceRecord[],
   storedPhotoAttachments: SharedExecutionPhotoAttachment[],
+  reportState: SharedExecutionReportState | undefined,
 ): SharedExecutionEvidenceState {
   const calculationEvidence = storedEvidence.find(
     (item) => item.executionStepId === 'calculation',
@@ -1794,7 +2041,7 @@ function buildEvidenceState(
       guidanceEvidence?.draftReportId ??
       calculationEvidence?.draftReportId ??
       buildDraftReportId(workPackageId, tagId),
-    draftReportState: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    draftReportState: reportState ?? TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
     observationNotes: guidanceEvidence?.observationNotes ?? '',
     calculationEvidenceUpdatedAt: calculationEvidence?.updatedAt ?? null,
     guidanceEvidenceUpdatedAt: guidanceEvidence?.updatedAt ?? null,
@@ -2140,9 +2387,14 @@ async function ensureDraftReportLink(
   updatedAt: string,
 ): Promise<string> {
   const draft = await persistPerTagReportDraft(store, shell, {
+    state: shell.report.state,
     reviewNotes: shell.report.reviewNotes,
     savedAt: shell.report.savedAt,
-    lifecycleState: resolveReportLifecycleState(shell.guidance.submitReadiness),
+    submittedAt: shell.report.submittedAt,
+    syncState: shell.report.syncState,
+    lifecycleState: isSubmittedReport(shell.report)
+      ? 'Submitted - Pending Sync'
+      : resolveDraftReportLifecycleState(shell.guidance.submitReadiness),
     updatedAt,
   });
 
@@ -2153,8 +2405,11 @@ async function saveReportDraftRecord(
   store: UserPartitionedLocalStore,
   shell: SharedExecutionShell,
   input: {
+    state: SharedExecutionReportState;
     reviewNotes: string;
     savedAt: string | null;
+    submittedAt: string | null;
+    syncState: SharedExecutionSyncState;
     lifecycleState: SharedExecutionReportLifecycleState;
     updatedAt: string;
   },
@@ -2166,8 +2421,11 @@ async function persistPerTagReportDraft(
   store: UserPartitionedLocalStore,
   shell: SharedExecutionShell,
   input: {
+    state: SharedExecutionReportState;
     reviewNotes: string;
     savedAt: string | null;
+    submittedAt: string | null;
+    syncState: SharedExecutionSyncState;
     lifecycleState: SharedExecutionReportLifecycleState;
     updatedAt: string;
   },
@@ -2180,9 +2438,16 @@ async function persistPerTagReportDraft(
   const existingPayload = parseStoredPerTagReportDraftPayload(existingDraft);
   const reviewNotes = input.reviewNotes;
   const savedAt = input.savedAt ?? existingPayload?.savedAt ?? null;
+  const submittedAt =
+    input.state === SUBMITTED_PENDING_SYNC_REPORT_STATE
+      ? input.submittedAt ?? existingPayload?.submittedAt ?? null
+      : null;
   const payload = buildStoredPerTagReportDraftPayload(shell, {
+    state: input.state,
     reviewNotes,
     savedAt,
+    submittedAt,
+    syncState: input.syncState,
     lifecycleState: input.lifecycleState,
     updatedAt: input.updatedAt,
   });
@@ -2210,7 +2475,8 @@ function parseStoredPerTagReportDraftPayload(
       typeof parsed.tagId !== 'string' ||
       typeof parsed.templateId !== 'string' ||
       typeof parsed.templateVersion !== 'string' ||
-      parsed.state !== TECHNICIAN_OWNED_DRAFT_REPORT_STATE ||
+      (parsed.state !== TECHNICIAN_OWNED_DRAFT_REPORT_STATE &&
+        parsed.state !== SUBMITTED_PENDING_SYNC_REPORT_STATE) ||
       typeof parsed.updatedAt !== 'string'
     ) {
       return null;
@@ -2222,15 +2488,25 @@ function parseStoredPerTagReportDraftPayload(
       tagId: parsed.tagId,
       templateId: parsed.templateId,
       templateVersion: parsed.templateVersion,
-      state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+      state: parsed.state,
       lifecycleState:
-        parsed.lifecycleState === 'Ready to Submit' || parsed.lifecycleState === 'In Progress'
+        parsed.lifecycleState === 'Ready to Submit' ||
+        parsed.lifecycleState === 'In Progress' ||
+        parsed.lifecycleState === 'Submitted - Pending Sync'
           ? parsed.lifecycleState
+          : undefined,
+      syncState:
+        parsed.syncState === QUEUED_SYNC_STATE || parsed.syncState === LOCAL_ONLY_SYNC_STATE
+          ? parsed.syncState
           : undefined,
       reviewNotes: typeof parsed.reviewNotes === 'string' ? parsed.reviewNotes : undefined,
       savedAt:
         typeof parsed.savedAt === 'string' || parsed.savedAt === null
           ? parsed.savedAt
+          : undefined,
+      submittedAt:
+        typeof parsed.submittedAt === 'string' || parsed.submittedAt === null
+          ? parsed.submittedAt
           : undefined,
       updatedAt: parsed.updatedAt,
     };
@@ -2242,8 +2518,11 @@ function parseStoredPerTagReportDraftPayload(
 function buildStoredPerTagReportDraftPayload(
   shell: SharedExecutionShell,
   input: {
+    state: SharedExecutionReportState;
     reviewNotes: string;
     savedAt: string | null;
+    submittedAt: string | null;
+    syncState: SharedExecutionSyncState;
     lifecycleState: SharedExecutionReportLifecycleState;
     updatedAt: string;
   },
@@ -2254,10 +2533,12 @@ function buildStoredPerTagReportDraftPayload(
     tagId: shell.tagId,
     templateId: shell.template.id,
     templateVersion: shell.template.version,
-    state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+    state: input.state,
     lifecycleState: input.lifecycleState,
+    syncState: input.syncState,
     reviewNotes: input.reviewNotes,
     savedAt: input.savedAt,
+    submittedAt: input.submittedAt,
     updatedAt: input.updatedAt,
   };
 }
@@ -2266,11 +2547,71 @@ function buildDraftSummaryText(
   shell: SharedExecutionShell,
   lifecycleState: SharedExecutionReportLifecycleState,
 ): string {
-  return `Technician-owned draft report for ${shell.tagCode} (${lifecycleState})`;
+  return `${lifecycleState} report for ${shell.tagCode}`;
 }
 
 function buildDraftReportId(workPackageId: string, tagId: string): string {
   return `tag-report:${workPackageId}:${tagId}`;
+}
+
+function buildSubmitReportQueueItemId(reportId: string): string {
+  return `${SUBMIT_REPORT_QUEUE_ITEM_KIND}:${reportId}`;
+}
+
+function buildUploadEvidenceBinaryQueueItemId(evidenceId: string): string {
+  return `${UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND}:${evidenceId}`;
+}
+
+function buildSubmitReportQueuePayload(
+  shell: SharedExecutionShell,
+  objectVersion: string,
+  queuedAt: string,
+): SubmitReportQueuePayload {
+  return {
+    queueItemSchemaVersion: '2026-04-v1',
+    itemType: SUBMIT_REPORT_QUEUE_ITEM_KIND,
+    reportId: shell.report.reportId,
+    workPackageId: shell.workPackageId,
+    tagId: shell.tagId,
+    templateId: shell.template.id,
+    templateVersion: shell.template.version,
+    localObjectReference: {
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+    },
+    objectVersion,
+    idempotencyKey: `${SUBMIT_REPORT_QUEUE_ITEM_KIND}:${shell.report.reportId}:${objectVersion}`,
+    dependencyStatus: 'ready',
+    retryCount: 0,
+    queuedAt,
+  };
+}
+
+function buildUploadEvidenceBinaryQueuePayload(
+  shell: SharedExecutionShell,
+  attachment: SharedExecutionPhotoAttachment,
+  dependsOnQueueItemId: string,
+  queuedAt: string,
+): UploadEvidenceBinaryQueuePayload {
+  return {
+    queueItemSchemaVersion: '2026-04-v1',
+    itemType: UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
+    reportId: shell.report.reportId,
+    evidenceId: attachment.evidenceId,
+    mediaRelativePath: attachment.mediaRelativePath,
+    mimeType: attachment.mimeType,
+    executionStepId: attachment.executionStepId,
+    localObjectReference: {
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+    },
+    objectVersion: attachment.updatedAt,
+    idempotencyKey: `${UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND}:${attachment.evidenceId}:${attachment.updatedAt}`,
+    dependsOnQueueItemId,
+    dependencyStatus: 'waiting-on-report-submission',
+    retryCount: 0,
+    queuedAt,
+  };
 }
 
 function buildPhotoAttachmentFileName(

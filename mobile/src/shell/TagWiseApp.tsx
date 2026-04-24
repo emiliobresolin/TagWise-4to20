@@ -153,6 +153,7 @@ export function TagWiseApp() {
         const executionShellService = new SharedExecutionShellService({
           userPartitions: runtime.repositories.userPartitions,
           tagContextService: localTagContextService,
+          localWorkState: runtime.repositories.localWorkState,
         });
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
@@ -718,7 +719,10 @@ export function TagWiseApp() {
     value: string,
   ) {
     setStatus((current) =>
-      current.type !== 'ready' || !current.executionShell || !current.executionShell.calculation
+      current.type !== 'ready' ||
+      !current.executionShell ||
+      !current.executionShell.calculation ||
+      current.executionShell.report.state !== 'technician-owned-draft'
         ? current
         : {
             ...current,
@@ -741,7 +745,9 @@ export function TagWiseApp() {
     outcome: SharedExecutionChecklistOutcome,
   ) {
     setStatus((current) =>
-      current.type !== 'ready' || !current.executionShell
+      current.type !== 'ready' ||
+      !current.executionShell ||
+      current.executionShell.report.state !== 'technician-owned-draft'
         ? current
         : {
             ...current,
@@ -756,7 +762,9 @@ export function TagWiseApp() {
 
   function handleObservationNotesChange(value: string) {
     setStatus((current) =>
-      current.type !== 'ready' || !current.executionShell
+      current.type !== 'ready' ||
+      !current.executionShell ||
+      current.executionShell.report.state !== 'technician-owned-draft'
         ? current
         : {
             ...current,
@@ -770,7 +778,9 @@ export function TagWiseApp() {
 
   function handleRiskJustificationChange(riskItemId: string, justificationText: string) {
     setStatus((current) =>
-      current.type !== 'ready' || !current.executionShell
+      current.type !== 'ready' ||
+      !current.executionShell ||
+      current.executionShell.report.state !== 'technician-owned-draft'
         ? current
         : {
             ...current,
@@ -785,7 +795,9 @@ export function TagWiseApp() {
 
   function handleReportReviewNotesChange(value: string) {
     setStatus((current) =>
-      current.type !== 'ready' || !current.executionShell
+      current.type !== 'ready' ||
+      !current.executionShell ||
+      current.executionShell.report.state !== 'technician-owned-draft'
         ? current
         : {
             ...current,
@@ -798,7 +810,12 @@ export function TagWiseApp() {
   }
 
   async function handleSaveExecutionCalculation() {
-    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell?.calculation) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell?.calculation ||
+      readyState.executionShell.report.state !== 'technician-owned-draft'
+    ) {
       return;
     }
 
@@ -836,7 +853,12 @@ export function TagWiseApp() {
   }
 
   async function handleSaveExecutionEvidence() {
-    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      readyState.executionShell.report.state !== 'technician-owned-draft'
+    ) {
       return;
     }
 
@@ -857,7 +879,12 @@ export function TagWiseApp() {
   }
 
   async function handleAttachExecutionPhoto(source: 'camera' | 'library') {
-    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      readyState.executionShell.report.state !== 'technician-owned-draft'
+    ) {
       return;
     }
 
@@ -902,7 +929,12 @@ export function TagWiseApp() {
   }
 
   async function handleRemoveExecutionPhoto(evidenceId: string) {
-    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      readyState.executionShell.report.state !== 'technician-owned-draft'
+    ) {
       return;
     }
 
@@ -924,7 +956,12 @@ export function TagWiseApp() {
   }
 
   async function handleSaveReportDraft() {
-    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      readyState.executionShell.report.state !== 'technician-owned-draft'
+    ) {
       return;
     }
 
@@ -1211,6 +1248,41 @@ export function TagWiseApp() {
                 : result.message ?? 'User switch blocked.',
           },
       );
+  }
+
+  async function handleSubmitExecutionReport() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    try {
+      const executionShell = await readyState.executionShellService.submitReport(
+        readyState.session,
+        readyState.executionShell,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              executionShell,
+              authMessage: `Per-tag report queued locally for sync for ${executionShell.tagCode}.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Local report submission failed without a detailed message.',
+            },
+      );
+    }
   }
 
   const selectedExecutionStep =
@@ -1795,6 +1867,9 @@ export function TagWiseApp() {
                             <TextInput
                               autoCapitalize="none"
                               autoCorrect={false}
+                              editable={
+                                readyState.executionShell.report.state === 'technician-owned-draft'
+                              }
                               keyboardType="decimal-pad"
                               onChangeText={(value) =>
                                 handleExecutionCalculationInputChange('expectedValue', value)
@@ -1809,6 +1884,9 @@ export function TagWiseApp() {
                             <TextInput
                               autoCapitalize="none"
                               autoCorrect={false}
+                              editable={
+                                readyState.executionShell.report.state === 'technician-owned-draft'
+                              }
                               keyboardType="decimal-pad"
                               onChangeText={(value) =>
                                 handleExecutionCalculationInputChange('observedValue', value)
@@ -1819,8 +1897,16 @@ export function TagWiseApp() {
                             />
                             <Pressable
                               accessibilityRole="button"
+                              disabled={
+                                readyState.executionShell.report.state !== 'technician-owned-draft'
+                              }
                               onPress={() => void handleSaveExecutionCalculation()}
-                              style={styles.primaryButton}
+                              style={[
+                                styles.primaryButton,
+                                readyState.executionShell.report.state !== 'technician-owned-draft'
+                                  ? styles.buttonDisabled
+                                  : null,
+                              ]}
                             >
                               <Text style={styles.primaryButtonLabel}>
                                 Run deterministic calculation
@@ -1896,6 +1982,9 @@ export function TagWiseApp() {
                           <ExecutionGuidancePanel
                             evidence={readyState.executionShell.evidence}
                             guidance={readyState.executionShell.guidance}
+                            editable={
+                              readyState.executionShell.report.state === 'technician-owned-draft'
+                            }
                             onAttachPhotoFromCamera={() => void handleAttachExecutionPhoto('camera')}
                             onAttachPhotoFromLibrary={() => void handleAttachExecutionPhoto('library')}
                             onChecklistOutcomeChange={handleChecklistOutcomeChange}
@@ -1911,8 +2000,12 @@ export function TagWiseApp() {
                         {selectedExecutionStep.kind === 'report' ? (
                           <ExecutionReportDraftPanel
                             report={readyState.executionShell.report}
+                            editable={
+                              readyState.executionShell.report.state === 'technician-owned-draft'
+                            }
                             onReviewNotesChange={handleReportReviewNotesChange}
                             onSaveReportDraft={() => void handleSaveReportDraft()}
+                            onSubmitReport={() => void handleSubmitExecutionReport()}
                           />
                         ) : null}
 
@@ -2196,13 +2289,19 @@ function ExecutionFieldCard({
 
 function ExecutionReportDraftPanel({
   report,
+  editable,
   onReviewNotesChange,
   onSaveReportDraft,
+  onSubmitReport,
 }: {
   report: SharedExecutionShell['report'];
+  editable: boolean;
   onReviewNotesChange: (value: string) => void;
   onSaveReportDraft: () => void;
+  onSubmitReport: () => void;
 }) {
+  const canSubmit = editable && report.lifecycleState === 'Ready to Submit';
+
   return (
     <View style={styles.listCard}>
       <Text style={styles.metricLabel}>Per-tag report draft</Text>
@@ -2210,18 +2309,24 @@ function ExecutionReportDraftPanel({
         This summary is assembled from captured local execution work so the technician reviews the
         draft instead of retyping the field session.
       </Text>
+      {!editable ? (
+        <Text style={styles.helperText}>
+          This report was already submitted locally and queued for sync. Execution evidence and
+          final notes are now locked until a later lifecycle story changes the state.
+        </Text>
+      ) : null}
 
       <View
         style={[
           styles.metricCard,
-          report.lifecycleState === 'Ready to Submit' ? null : styles.missingMetricCard,
+          report.lifecycleState === 'In Progress' ? styles.missingMetricCard : null,
         ]}
       >
         <Text style={styles.metricLabel}>Lifecycle</Text>
         <Text
           style={[
             styles.metricValue,
-            report.lifecycleState === 'Ready to Submit' ? null : styles.missingMetricValue,
+            report.lifecycleState === 'In Progress' ? styles.missingMetricValue : null,
           ]}
         >
           {report.lifecycleState}
@@ -2229,6 +2334,12 @@ function ExecutionReportDraftPanel({
         <Text style={styles.helperText}>{report.tagContextSummary}</Text>
         <Text style={styles.helperText}>
           Technician: {report.technicianName} ({report.technicianEmail})
+        </Text>
+        <Text style={styles.helperText}>
+          Sync state: {report.syncState === 'queued' ? 'Queued' : 'Local Only'}
+        </Text>
+        <Text style={styles.helperText}>
+          Submitted locally: {report.submittedAt ? formatTimestamp(report.submittedAt) : 'Not submitted yet'}
         </Text>
       </View>
 
@@ -2345,6 +2456,7 @@ function ExecutionReportDraftPanel({
       <TextInput
         autoCapitalize="sentences"
         autoCorrect
+        editable={editable}
         multiline
         onChangeText={onReviewNotesChange}
         placeholder="Capture any final notes or corrections for the per-tag report draft."
@@ -2357,10 +2469,20 @@ function ExecutionReportDraftPanel({
 
       <Pressable
         accessibilityRole="button"
+        disabled={!editable}
         onPress={onSaveReportDraft}
-        style={styles.primaryButton}
+        style={[styles.primaryButton, !editable ? styles.buttonDisabled : null]}
       >
         <Text style={styles.primaryButtonLabel}>Save draft report review</Text>
+      </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
+        disabled={!canSubmit}
+        onPress={onSubmitReport}
+        style={[styles.secondaryButton, !canSubmit ? styles.buttonDisabled : null]}
+      >
+        <Text style={styles.secondaryButtonLabel}>Submit locally for sync</Text>
       </Pressable>
     </View>
   );
@@ -2369,6 +2491,7 @@ function ExecutionReportDraftPanel({
 function ExecutionGuidancePanel({
   evidence,
   guidance,
+  editable,
   onAttachPhotoFromCamera,
   onAttachPhotoFromLibrary,
   onChecklistOutcomeChange,
@@ -2379,6 +2502,7 @@ function ExecutionGuidancePanel({
 }: {
   evidence: SharedExecutionShell['evidence'];
   guidance: SharedExecutionShell['guidance'];
+  editable: boolean;
   onAttachPhotoFromCamera: () => void;
   onAttachPhotoFromLibrary: () => void;
   onChecklistOutcomeChange: (
@@ -2397,6 +2521,11 @@ function ExecutionGuidancePanel({
         Use the cached checklist and diagnosis prompts as lightweight field support. They stay
         visible, local, and non-blocking.
       </Text>
+      {!editable ? (
+        <Text style={styles.helperText}>
+          Guidance evidence is locked because this per-tag report already entered the local sync queue.
+        </Text>
+      ) : null}
 
       <View
         style={[
@@ -2451,6 +2580,7 @@ function ExecutionGuidancePanel({
         guidance.riskItems.map((item) => (
           <ExecutionRiskItemCard
             key={item.id}
+            editable={editable}
             item={item}
             onJustificationChange={(value) => onRiskJustificationChange(item.id, value)}
           />
@@ -2465,7 +2595,12 @@ function ExecutionGuidancePanel({
         <Text style={styles.metricLabel}>Linked draft report</Text>
         <Text style={styles.metricValue}>{evidence.draftReportId}</Text>
         <Text style={styles.helperText}>
-          State: technician-owned draft. Guidance evidence remains editable locally in this story.
+          State:{' '}
+          {evidence.draftReportState === 'technician-owned-draft'
+            ? 'technician-owned draft'
+            : 'submitted - pending sync'}
+          . Guidance evidence{' '}
+          {editable ? 'remains editable locally until submission.' : 'is now locked locally.'}
         </Text>
       </View>
 
@@ -2473,6 +2608,7 @@ function ExecutionGuidancePanel({
       <TextInput
         autoCapitalize="sentences"
         autoCorrect
+        editable={editable}
         multiline
         onChangeText={onObservationNotesChange}
         placeholder="Capture field observations, setup details, or anything the draft report should carry forward."
@@ -2490,15 +2626,17 @@ function ExecutionGuidancePanel({
       <View style={styles.metricGrid}>
         <Pressable
           accessibilityRole="button"
+          disabled={!editable}
           onPress={onAttachPhotoFromCamera}
-          style={styles.primaryButton}
+          style={[styles.primaryButton, !editable ? styles.buttonDisabled : null]}
         >
           <Text style={styles.primaryButtonLabel}>Capture photo</Text>
         </Pressable>
         <Pressable
           accessibilityRole="button"
+          disabled={!editable}
           onPress={onAttachPhotoFromLibrary}
-          style={styles.secondaryButton}
+          style={[styles.secondaryButton, !editable ? styles.buttonDisabled : null]}
         >
           <Text style={styles.secondaryButtonLabel}>Attach photo</Text>
         </Pressable>
@@ -2512,6 +2650,7 @@ function ExecutionGuidancePanel({
           <ExecutionPhotoAttachmentCard
             key={attachment.evidenceId}
             attachment={attachment}
+            editable={editable}
             onRemove={() => onRemovePhotoAttachment(attachment.evidenceId)}
           />
         ))
@@ -2521,8 +2660,9 @@ function ExecutionGuidancePanel({
 
       <Pressable
         accessibilityRole="button"
+        disabled={!editable}
         onPress={onSaveEvidence}
-        style={styles.primaryButton}
+        style={[styles.primaryButton, !editable ? styles.buttonDisabled : null]}
       >
         <Text style={styles.primaryButtonLabel}>Save notes, checklist, and justifications</Text>
       </Pressable>
@@ -2533,6 +2673,7 @@ function ExecutionGuidancePanel({
           <ExecutionChecklistCard
             key={item.id}
             item={item}
+            editable={editable}
             onChecklistOutcomeChange={onChecklistOutcomeChange}
           />
         ))
@@ -2563,9 +2704,11 @@ function ExecutionGuidancePanel({
 
 function ExecutionPhotoAttachmentCard({
   attachment,
+  editable,
   onRemove,
 }: {
   attachment: SharedExecutionPhotoAttachment;
+  editable: boolean;
   onRemove: () => void;
 }) {
   return (
@@ -2587,7 +2730,12 @@ function ExecutionPhotoAttachmentCard({
         . Size:{' '}
         {attachment.fileSize !== null ? `${attachment.fileSize} bytes` : 'Unknown'}.
       </Text>
-      <Pressable accessibilityRole="button" onPress={onRemove} style={styles.secondaryButton}>
+      <Pressable
+        accessibilityRole="button"
+        disabled={!editable}
+        onPress={onRemove}
+        style={[styles.secondaryButton, !editable ? styles.buttonDisabled : null]}
+      >
         <Text style={styles.secondaryButtonLabel}>Remove photo</Text>
       </Pressable>
     </View>
@@ -2596,9 +2744,11 @@ function ExecutionPhotoAttachmentCard({
 
 function ExecutionChecklistCard({
   item,
+  editable,
   onChecklistOutcomeChange,
 }: {
   item: SharedExecutionChecklistItem;
+  editable: boolean;
   onChecklistOutcomeChange: (
     checklistItemId: string,
     outcome: SharedExecutionChecklistOutcome,
@@ -2632,11 +2782,13 @@ function ExecutionChecklistCard({
       <View style={styles.metricGrid}>
         <ChecklistOutcomeButton
           active={item.outcome === 'completed'}
+          disabled={!editable}
           label="Complete"
           onPress={() => onChecklistOutcomeChange(item.id, 'completed')}
         />
         <ChecklistOutcomeButton
           active={item.outcome === 'incomplete'}
+          disabled={!editable}
           label="Incomplete"
           onPress={() => onChecklistOutcomeChange(item.id, 'incomplete')}
         />
@@ -2644,11 +2796,13 @@ function ExecutionChecklistCard({
       <View style={styles.metricGrid}>
         <ChecklistOutcomeButton
           active={item.outcome === 'skipped'}
+          disabled={!editable}
           label="Skip"
           onPress={() => onChecklistOutcomeChange(item.id, 'skipped')}
         />
         <ChecklistOutcomeButton
           active={item.outcome === 'pending'}
+          disabled={!editable}
           label="Reset"
           onPress={() => onChecklistOutcomeChange(item.id, 'pending')}
         />
@@ -2659,9 +2813,11 @@ function ExecutionChecklistCard({
 
 function ExecutionRiskItemCard({
   item,
+  editable,
   onJustificationChange,
 }: {
   item: SharedExecutionShell['guidance']['riskItems'][number];
+  editable: boolean;
   onJustificationChange: (value: string) => void;
 }) {
   const justificationMissing =
@@ -2698,6 +2854,7 @@ function ExecutionRiskItemCard({
           <TextInput
             autoCapitalize="sentences"
             autoCorrect
+            editable={editable}
             multiline
             onChangeText={onJustificationChange}
             placeholder="Enter the local field justification for this risk."
@@ -2716,18 +2873,25 @@ function ExecutionRiskItemCard({
 
 function ChecklistOutcomeButton({
   active,
+  disabled,
   label,
   onPress,
 }: {
   active: boolean;
+  disabled: boolean;
   label: string;
   onPress: () => void;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
+      disabled={disabled}
       onPress={onPress}
-      style={[styles.secondaryButton, active ? styles.routeButtonActive : null]}
+      style={[
+        styles.secondaryButton,
+        active ? styles.routeButtonActive : null,
+        disabled ? styles.buttonDisabled : null,
+      ]}
     >
       <Text
         style={[styles.secondaryButtonLabel, active ? styles.routeButtonLabelActive : null]}
