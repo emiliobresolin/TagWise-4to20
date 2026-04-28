@@ -21,6 +21,7 @@ import { createNodeSqliteDatabase } from '../../../tests/helpers/createNodeSqlit
 import {
   EVIDENCE_SYNC_API_CONTRACT_VERSION,
   EvidenceUploadApiError,
+  REPORT_SUBMISSION_API_CONTRACT_VERSION,
   type EvidenceUploadApiClient,
 } from './evidenceUploadApiClient';
 import { EvidenceUploadOrchestrator } from './evidenceUploadOrchestrator';
@@ -278,13 +279,14 @@ describe('EvidenceUploadOrchestrator', () => {
       presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
       syncState: 'pending-validation',
     });
-    const { store, shell, attachment } = await createFixture(syncedAttachment);
+    const { runtime, store, shell, attachment } = await createFixture(syncedAttachment);
     await seedReportDraftAndSubmitQueue(store, shell);
+    await runtime.repositories.localWorkState.setUnsyncedWorkCount(1);
     const submitReportForValidation = vi.fn(
       async (
         request: Parameters<EvidenceUploadApiClient['submitReportForValidation']>[0],
       ) => ({
-        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+        contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
         reportId: request.reportId,
         serverReportVersion: 'server-report-version-1',
         reportState: 'submitted-pending-review' as const,
@@ -302,6 +304,7 @@ describe('EvidenceUploadOrchestrator', () => {
         submitReportForValidation,
       } as unknown as EvidenceUploadApiClient,
       binaryUploadBoundary: { uploadBinary: vi.fn() },
+      localWorkState: runtime.repositories.localWorkState,
       now: () => new Date('2026-04-23T14:20:00.000Z'),
     });
 
@@ -309,7 +312,7 @@ describe('EvidenceUploadOrchestrator', () => {
 
     expect(submitReportForValidation).toHaveBeenCalledWith(
       expect.objectContaining({
-        contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+        contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
         reportId: shell.report.reportId,
         reportState: 'submitted-pending-sync',
         lifecycleState: 'Submitted - Pending Sync',
@@ -342,6 +345,7 @@ describe('EvidenceUploadOrchestrator', () => {
       syncState: 'synced',
       syncIssue: null,
     });
+    await expect(runtime.repositories.localWorkState.getUnsyncedWorkCount()).resolves.toBe(0);
   });
 
   it('keeps rejected submissions queued with the structured server sync issue', async () => {
@@ -381,6 +385,57 @@ describe('EvidenceUploadOrchestrator', () => {
       syncState: 'sync-issue',
       syncIssue: 'Minimum evidence is missing: as-found readings.',
       syncIssueReasonCode: 'minimum-evidence-missing',
+    });
+    await expect(loadSubmitQueuePayload(store, shell.report.reportId)).resolves.toMatchObject({
+      itemType: 'submit-report',
+      retryCount: 1,
+    });
+  });
+
+  it('moves malformed submit queue payloads into sync issue instead of counting them as success', async () => {
+    const syncedAttachment = buildPhotoAttachment({
+      metadataSyncedAt: '2026-04-23T14:10:00.000Z',
+      serverEvidenceId: 'server-evidence-1',
+      presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+      syncState: 'pending-validation',
+    });
+    const { store, shell } = await createFixture(syncedAttachment);
+    await seedReportDraftAndSubmitQueue(store, shell);
+    await store.queueItems.enqueue({
+      queueItemId: buildSubmitReportQueueItemId(shell.report.reportId),
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+      itemKind: SUBMIT_REPORT_QUEUE_ITEM_KIND,
+      payloadJson: JSON.stringify({
+        itemType: SUBMIT_REPORT_QUEUE_ITEM_KIND,
+        reportId: shell.report.reportId,
+        retryCount: 0,
+      }),
+    });
+    const submitReportForValidation = vi.fn();
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata: vi.fn(),
+        authorizeEvidenceBinaryUpload: vi.fn(),
+        finalizeEvidenceBinaryUpload: vi.fn(),
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      now: () => new Date('2026-04-23T14:20:00.000Z'),
+    });
+
+    await expect(orchestrator.syncSubmittedReportEvidence(connectedSession, shell)).rejects.toThrow(
+      'Report submission queue payload is malformed and needs local recovery.',
+    );
+
+    expect(submitReportForValidation).not.toHaveBeenCalled();
+    await expect(loadReportDraftPayload(store, shell.report.reportId)).resolves.toMatchObject({
+      state: 'submitted-pending-sync',
+      lifecycleState: 'Submitted - Pending Sync',
+      syncState: 'sync-issue',
+      syncIssue: 'Report submission queue payload is malformed and needs local recovery.',
+      syncIssueReasonCode: 'malformed-report-payload',
     });
     await expect(loadSubmitQueuePayload(store, shell.report.reportId)).resolves.toMatchObject({
       itemType: 'submit-report',

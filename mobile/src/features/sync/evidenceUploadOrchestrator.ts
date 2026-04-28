@@ -7,10 +7,12 @@ import type {
 } from '../execution/model';
 import type { UserOwnedDraftRecord, UserOwnedEvidenceMetadataRecord } from '../../data/local/repositories/userPartitionedLocalTypes';
 import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
+import type { LocalWorkStateRepository } from '../../data/local/repositories/localWorkStateRepository';
 import type { EvidenceBinaryUploadBoundary } from '../../platform/files/evidenceBinaryUploadBoundary';
 import {
   EVIDENCE_SYNC_API_CONTRACT_VERSION,
   EvidenceUploadApiError,
+  REPORT_SUBMISSION_API_CONTRACT_VERSION,
   type EvidenceUploadApiClient,
   type ReportSubmissionRequest,
   type ReportSubmissionSyncIssue,
@@ -32,6 +34,7 @@ interface EvidenceUploadOrchestratorDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
   apiClient: EvidenceUploadApiClient;
   binaryUploadBoundary: EvidenceBinaryUploadBoundary;
+  localWorkState?: LocalWorkStateRepository;
   now?: () => Date;
 }
 
@@ -72,12 +75,22 @@ export class EvidenceUploadOrchestrator {
       return;
     }
 
+    const pendingAt = this.now().toISOString();
     const submitPayload = parseSubmitReportQueuePayload(submitQueueItem.payloadJson);
     if (!submitPayload) {
-      return;
+      const message = 'Report submission queue payload is malformed and needs local recovery.';
+      await bumpQueueRetryCount(store, submitQueueItemId);
+      await updateReportDraftRecord(store, shell, {
+        state: 'submitted-pending-sync',
+        lifecycleState: 'Submitted - Pending Sync',
+        syncState: 'sync-issue',
+        syncIssue: message,
+        syncIssueReasonCode: 'malformed-report-payload',
+        updatedAt: pendingAt,
+      });
+      throw new Error(message);
     }
 
-    const pendingAt = this.now().toISOString();
     await updateReportDraftRecord(store, shell, {
       state: 'submitted-pending-sync',
       lifecycleState: 'Submitted - Pending Sync',
@@ -103,6 +116,7 @@ export class EvidenceUploadOrchestrator {
       });
       await markFinalizedPhotoRecordsSynced(store, shell.report.reportId);
       await store.queueItems.deleteQueueItem(submitQueueItemId);
+      await decrementUnsyncedWorkCount(this.dependencies.localWorkState);
     } catch (error) {
       const syncIssue = error instanceof EvidenceUploadApiError ? error.syncIssue : null;
       await bumpQueueRetryCount(store, submitQueueItemId);
@@ -270,7 +284,7 @@ async function buildReportSubmissionRequest(
   const photoAttachments = await loadPhotoSubmissionAttachments(store, shell.report.reportId);
 
   return {
-    contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+    contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
     reportId: shell.report.reportId,
     workPackageId: shell.workPackageId,
     tagId: shell.tagId,
@@ -294,6 +308,17 @@ async function buildReportSubmissionRequest(
     })),
     photoAttachments,
   };
+}
+
+async function decrementUnsyncedWorkCount(
+  localWorkState: LocalWorkStateRepository | undefined,
+): Promise<void> {
+  if (!localWorkState) {
+    return;
+  }
+
+  const currentUnsyncedCount = await localWorkState.getUnsyncedWorkCount();
+  await localWorkState.setUnsyncedWorkCount(currentUnsyncedCount - 1);
 }
 
 async function loadPhotoSubmissionAttachments(

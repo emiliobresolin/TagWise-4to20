@@ -59,7 +59,7 @@ export class ReportSubmissionRepository {
     return row ? mapReportSubmissionRow(row) : null;
   }
 
-  async insertAccepted(record: ReportSubmissionRecord): Promise<ReportSubmissionRecord> {
+  async insertAcceptedOrGetExisting(record: ReportSubmissionRecord): Promise<ReportSubmissionRecord> {
     await this.database.query(
       `
         INSERT INTO report_submission_records (
@@ -84,7 +84,8 @@ export class ReportSubmissionRepository {
         VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
           $10, $11, $12, $13, $14, $15, $16, $17
-        );
+        )
+        ON CONFLICT (owner_user_id, report_id) DO NOTHING;
       `,
       [
         record.ownerUserId,

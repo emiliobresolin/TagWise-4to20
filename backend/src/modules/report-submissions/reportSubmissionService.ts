@@ -48,7 +48,7 @@ export class ReportSubmissionService {
     validateEvidenceArrival(request);
 
     const acceptedAt = this.now().toISOString();
-    const accepted = await this.repository.insertAccepted({
+    const accepted = await this.repository.insertAcceptedOrGetExisting({
       ownerUserId: user.id,
       reportId: request.reportId,
       workPackageId: request.workPackageId,
@@ -67,6 +67,18 @@ export class ReportSubmissionService {
       createdAt: acceptedAt,
       updatedAt: acceptedAt,
     });
+
+    if (
+      accepted.localObjectVersion !== request.objectVersion ||
+      accepted.idempotencyKey !== request.idempotencyKey
+    ) {
+      throw structuredIssue(
+        'conflicting-report-version',
+        'Report was already accepted at a different submitted version.',
+        409,
+        accepted.serverReportVersion,
+      );
+    }
 
     return toAcceptedResult(accepted);
   }

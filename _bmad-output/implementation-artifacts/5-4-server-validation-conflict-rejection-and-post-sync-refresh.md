@@ -54,6 +54,11 @@ validate scope, lifecycle transition, minimum evidence, required justification, 
 - Added validation for assigned scope, lifecycle transition, minimum evidence, required justifications, required finalized photo evidence, and conflicting submitted versions.
 - Extended mobile sync to retry `submit-report` queue items, submit pending reports for validation, refresh accepted reports to `submitted-pending-review` / `Submitted - Pending Supervisor Review`, and keep rejected submissions queued with structured sync issue metadata.
 - Scope adjustment surfaced and applied: Story 5.4 required a narrow report-submission API/service boundary, not evidence-upload changes alone, because the approved docs state reviewable state begins only after E5-S4 server acceptance.
+- QA fix 2026-04-28: made duplicate/racing report submissions deterministic by treating the database primary-key conflict as insert-or-load, returning idempotent accepted results for the same submitted version and structured `conflicting-report-version` for different submitted versions.
+- QA fix 2026-04-28: added explicit report-submission payload parsing with structured `malformed-report-payload` sync issues before service logic touches nested evidence/risk/photo fields.
+- QA fix 2026-04-28: wired accepted mobile report-submission reconciliation to decrement local unsynced-work state after the submit queue item is resolved, preventing phantom unsynced work after server acceptance.
+- QA fix 2026-04-28: split the mobile report-submission contract constant from evidence-sync contract naming while preserving the approved `2026-04-v1` version.
+- QA follow-up 2026-04-28: guarded top-level non-object report-submission JSON bodies, including `null`, so they return structured `malformed-report-payload` instead of runtime exceptions.
 
 ### Validation Results
 - `backend`: `npm run typecheck` - passed.
@@ -62,13 +67,25 @@ validate scope, lifecycle transition, minimum evidence, required justification, 
 - `mobile`: `npm test` - passed, 20 files / 106 tests.
 - Focused backend API/migration tests: `npm test -- createApiRequestHandler.test.ts migrations.test.ts` - passed, 2 files / 10 tests.
 - Focused mobile sync tests: `npm test -- evidenceUploadOrchestrator.test.ts syncStateService.test.ts sharedExecutionShellService.test.ts` - passed, 3 files / 38 tests.
+- QA fix validation 2026-04-28: `backend`: `npm run typecheck` - passed.
+- QA fix validation 2026-04-28: `backend`: `npm test -- reportSubmission` - passed, 2 files / 6 tests.
+- QA fix validation 2026-04-28: `backend`: `npm test` - passed, 9 files / 26 tests.
+- QA fix validation 2026-04-28: `mobile`: `npm run typecheck` - passed.
+- QA fix validation 2026-04-28: `mobile`: `npm test -- syncState` - passed, 3 files / 13 tests.
+- QA fix validation 2026-04-28: `mobile`: `npm test` - passed, 20 files / 107 tests.
+- QA follow-up validation 2026-04-28: `backend`: `npm run typecheck` - passed.
+- QA follow-up validation 2026-04-28: `backend`: `npm test -- reportSubmission` - passed, 2 files / 7 tests.
+- QA follow-up validation 2026-04-28: `backend`: `npm test` - passed, 9 files / 27 tests.
 
 ## File List
 - `backend/src/api/createApiRequestHandler.ts`
 - `backend/src/api/createApiRequestHandler.test.ts`
 - `backend/src/api/main.ts`
 - `backend/src/modules/report-submissions/model.ts`
+- `backend/src/modules/report-submissions/reportSubmissionPayloadValidation.ts`
+- `backend/src/modules/report-submissions/reportSubmissionPayloadValidation.test.ts`
 - `backend/src/modules/report-submissions/reportSubmissionRepository.ts`
+- `backend/src/modules/report-submissions/reportSubmissionService.test.ts`
 - `backend/src/modules/report-submissions/reportSubmissionService.ts`
 - `backend/src/platform/db/migrations.ts`
 - `backend/src/platform/db/migrations.test.ts`
@@ -79,6 +96,9 @@ validate scope, lifecycle transition, minimum evidence, required justification, 
 - `mobile/src/features/sync/evidenceUploadOrchestrator.test.ts`
 - `mobile/src/features/sync/syncStateService.ts`
 - `mobile/src/features/sync/syncStateService.test.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
 
 ## Change Log
 - 2026-04-24: Implemented Story 5.4 server validation, conflict rejection, structured sync issues, and post-sync local refresh.
+- 2026-04-28: Fixed QA findings for deterministic duplicate/conflict handling, malformed payload structured rejection, local unsynced-work reconciliation, and report-submission contract naming.
+- 2026-04-28: Added QA follow-up guard and regression test for top-level `null` report-submission JSON bodies.

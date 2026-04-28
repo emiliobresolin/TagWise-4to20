@@ -1,6 +1,7 @@
 import { secureStorageKeys, type SecureKeyValueStore } from '../../platform/secure-storage/secureStorageBoundary';
 
 export const EVIDENCE_SYNC_API_CONTRACT_VERSION = '2026-04-v1' as const;
+export const REPORT_SUBMISSION_API_CONTRACT_VERSION = '2026-04-v1' as const;
 
 export interface EvidenceUploadMetadataRequest {
   contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
@@ -50,6 +51,7 @@ export interface EvidenceBinaryFinalizationResponse {
 
 export interface ReportSubmissionSyncIssue {
   reasonCode:
+    | 'malformed-report-payload'
     | 'out-of-scope'
     | 'invalid-lifecycle-transition'
     | 'minimum-evidence-missing'
@@ -61,7 +63,7 @@ export interface ReportSubmissionSyncIssue {
 }
 
 export interface ReportSubmissionRequest {
-  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
+  contractVersion: typeof REPORT_SUBMISSION_API_CONTRACT_VERSION;
   reportId: string;
   workPackageId: string;
   tagId: string;
@@ -98,7 +100,7 @@ export interface ReportSubmissionRequest {
 }
 
 export interface ReportSubmissionResponse {
-  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
+  contractVersion: typeof REPORT_SUBMISSION_API_CONTRACT_VERSION;
   reportId: string;
   serverReportVersion: string;
   reportState: 'submitted-pending-review';
@@ -283,6 +285,7 @@ function isReportSubmissionIssueReasonCode(
 ): value is ReportSubmissionSyncIssue['reasonCode'] {
   return (
     value === 'out-of-scope' ||
+    value === 'malformed-report-payload' ||
     value === 'invalid-lifecycle-transition' ||
     value === 'minimum-evidence-missing' ||
     value === 'required-justification-missing' ||

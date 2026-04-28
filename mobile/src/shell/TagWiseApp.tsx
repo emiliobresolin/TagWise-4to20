@@ -181,6 +181,7 @@ export function TagWiseApp() {
             secureStorage,
           }),
           binaryUploadBoundary: evidenceBinaryUploadBoundary,
+          localWorkState: runtime.repositories.localWorkState,
         });
         const syncStateService = new SyncStateService({
           userPartitions: runtime.repositories.userPartitions,

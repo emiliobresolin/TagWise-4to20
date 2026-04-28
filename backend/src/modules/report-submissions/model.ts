@@ -7,6 +7,7 @@ export type ReportSubmissionLifecycleState = 'Submitted - Pending Supervisor Rev
 export type ReportSubmissionSyncState = 'synced';
 
 export type ReportSubmissionIssueReasonCode =
+  | 'malformed-report-payload'
   | 'out-of-scope'
   | 'invalid-lifecycle-transition'
   | 'minimum-evidence-missing'

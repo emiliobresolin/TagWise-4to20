@@ -8,12 +8,12 @@ import {
 } from '../modules/evidence-sync/model';
 import type { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import {
-  REPORT_SUBMISSION_API_CONTRACT_VERSION,
   ReportSubmissionError,
-  type ReportSubmissionEvidenceReference,
-  type ReportSubmissionPhotoAttachment,
-  type ReportSubmissionRiskFlag,
 } from '../modules/report-submissions/model';
+import {
+  malformedReportSubmissionPayload,
+  parseReportSubmissionRequestPayload,
+} from '../modules/report-submissions/reportSubmissionPayloadValidation';
 import type { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
@@ -326,72 +326,12 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
     if (method === 'POST' && url === '/sync/report-submissions') {
       try {
         const user = await authenticateRequest(request, dependencies.authService);
-        const body = await readJsonBody<{
-          contractVersion?: string;
-          reportId?: string;
-          workPackageId?: string;
-          tagId?: string;
-          templateId?: string;
-          templateVersion?: string;
-          reportState?: 'submitted-pending-sync';
-          lifecycleState?: 'Submitted - Pending Sync';
-          syncState?: 'queued' | 'syncing' | 'pending-validation';
-          objectVersion?: string;
-          idempotencyKey?: string;
-          submittedAt?: string;
-          executionSummary?: string;
-          historySummary?: string;
-          draftDiagnosisSummary?: string;
-          evidenceReferences?: unknown[];
-          riskFlags?: unknown[];
-          photoAttachments?: unknown[];
-        }>(request);
+        const body = await readReportSubmissionJsonBody(request);
 
-        assertReportSubmissionContractVersion(body.contractVersion);
-
-        if (
-          !body.reportId ||
-          !body.workPackageId ||
-          !body.tagId ||
-          !body.templateId ||
-          !body.templateVersion ||
-          !body.reportState ||
-          !body.lifecycleState ||
-          !body.syncState ||
-          !body.objectVersion ||
-          !body.idempotencyKey ||
-          !body.submittedAt ||
-          !body.executionSummary ||
-          !body.historySummary ||
-          !body.draftDiagnosisSummary ||
-          !Array.isArray(body.evidenceReferences) ||
-          !Array.isArray(body.riskFlags) ||
-          !Array.isArray(body.photoAttachments)
-        ) {
-          writeJson(response, 400, { message: 'Report submission validation requires the full report payload.' });
-          return true;
-        }
-
-        const accepted = await dependencies.reportSubmissionService.submitForValidation(user, {
-          contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
-          reportId: body.reportId,
-          workPackageId: body.workPackageId,
-          tagId: body.tagId,
-          templateId: body.templateId,
-          templateVersion: body.templateVersion,
-          reportState: body.reportState,
-          lifecycleState: body.lifecycleState,
-          syncState: body.syncState,
-          objectVersion: body.objectVersion,
-          idempotencyKey: body.idempotencyKey,
-          submittedAt: body.submittedAt,
-          executionSummary: body.executionSummary,
-          historySummary: body.historySummary,
-          draftDiagnosisSummary: body.draftDiagnosisSummary,
-          evidenceReferences: body.evidenceReferences as ReportSubmissionEvidenceReference[],
-          riskFlags: body.riskFlags as ReportSubmissionRiskFlag[],
-          photoAttachments: body.photoAttachments as ReportSubmissionPhotoAttachment[],
-        });
+        const accepted = await dependencies.reportSubmissionService.submitForValidation(
+          user,
+          parseReportSubmissionRequestPayload(body),
+        );
 
         context.logger.info('report-submission.validation.accepted', {
           actorId: user.id,
@@ -446,6 +386,16 @@ async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
 
   const raw = Buffer.concat(chunks).toString('utf-8');
   return (raw ? JSON.parse(raw) : {}) as T;
+}
+
+async function readReportSubmissionJsonBody(
+  request: IncomingMessage,
+): Promise<Record<string, unknown>> {
+  try {
+    return await readJsonBody<Record<string, unknown>>(request);
+  } catch {
+    throw malformedReportSubmissionPayload('Report submission body must be valid JSON.', 400);
+  }
 }
 
 function writeAuthError(response: ServerResponse, error: unknown) {
@@ -505,15 +455,6 @@ function assertEvidenceSyncContractVersion(contractVersion: unknown): void {
   if (contractVersion !== EVIDENCE_SYNC_API_CONTRACT_VERSION) {
     throw new EvidenceSyncError(
       `Evidence sync contractVersion must be ${EVIDENCE_SYNC_API_CONTRACT_VERSION}.`,
-      400,
-    );
-  }
-}
-
-function assertReportSubmissionContractVersion(contractVersion: unknown): void {
-  if (contractVersion !== REPORT_SUBMISSION_API_CONTRACT_VERSION) {
-    throw new ReportSubmissionError(
-      `Report submission contractVersion must be ${REPORT_SUBMISSION_API_CONTRACT_VERSION}.`,
       400,
     );
   }
