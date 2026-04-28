@@ -46,6 +46,18 @@ describe('SupervisorReviewService', () => {
       async escalateSupervisorReport() {
         throw new Error('not used');
       },
+      async listManagerQueue() {
+        throw new Error('not used');
+      },
+      async getManagerReportDetail() {
+        throw new Error('not used');
+      },
+      async approveManagerReport() {
+        throw new Error('not used');
+      },
+      async returnManagerReport() {
+        throw new Error('not used');
+      },
     });
 
     await expect(service.refreshQueue(buildSession())).resolves.toHaveLength(1);
@@ -66,6 +78,18 @@ describe('SupervisorReviewService', () => {
         throw new Error('offline sessions must not call the review API');
       },
       async escalateSupervisorReport() {
+        throw new Error('offline sessions must not call the review API');
+      },
+      async listManagerQueue() {
+        throw new Error('offline sessions must not call the review API');
+      },
+      async getManagerReportDetail() {
+        throw new Error('offline sessions must not call the review API');
+      },
+      async approveManagerReport() {
+        throw new Error('offline sessions must not call the review API');
+      },
+      async returnManagerReport() {
         throw new Error('offline sessions must not call the review API');
       },
     });
@@ -90,6 +114,18 @@ describe('SupervisorReviewService', () => {
         throw new Error('technicians must not call the review API');
       },
       async escalateSupervisorReport() {
+        throw new Error('technicians must not call the review API');
+      },
+      async listManagerQueue() {
+        throw new Error('technicians must not call the review API');
+      },
+      async getManagerReportDetail() {
+        throw new Error('technicians must not call the review API');
+      },
+      async approveManagerReport() {
+        throw new Error('technicians must not call the review API');
+      },
+      async returnManagerReport() {
         throw new Error('technicians must not call the review API');
       },
     });
@@ -150,6 +186,18 @@ describe('SupervisorReviewService', () => {
           comment: rationale,
           managerReviewerUserId: 'user-manager',
         };
+      },
+      async listManagerQueue() {
+        throw new Error('not used');
+      },
+      async getManagerReportDetail() {
+        throw new Error('not used');
+      },
+      async approveManagerReport() {
+        throw new Error('not used');
+      },
+      async returnManagerReport() {
+        throw new Error('not used');
       },
     });
 
@@ -218,6 +266,18 @@ describe('SupervisorReviewService', () => {
       async escalateSupervisorReport() {
         throw new Error('not used');
       },
+      async listManagerQueue() {
+        throw new Error('not used');
+      },
+      async getManagerReportDetail() {
+        throw new Error('not used');
+      },
+      async approveManagerReport() {
+        throw new Error('not used');
+      },
+      async returnManagerReport() {
+        throw new Error('not used');
+      },
     });
 
     await expect(
@@ -242,10 +302,231 @@ describe('SupervisorReviewService', () => {
       async escalateSupervisorReport() {
         throw new Error('blank escalation rationales must not call the review API');
       },
+      async listManagerQueue() {
+        throw new Error('not used');
+      },
+      async getManagerReportDetail() {
+        throw new Error('not used');
+      },
+      async approveManagerReport() {
+        throw new Error('not used');
+      },
+      async returnManagerReport() {
+        throw new Error('not used');
+      },
     });
 
     await expect(
       service.escalateReport(buildSession(), 'tag-report:wp-seed-1001:tag-pt-101', '   '),
+    ).rejects.toBeInstanceOf(SupervisorReviewAccessError);
+  });
+
+  it('sends connected manager queue, detail, approve, and return commands through the backend client', async () => {
+    const calls: Array<{ action: string; reportId?: string; comment?: string }> = [];
+    const service = new SupervisorReviewService({
+      async listSupervisorQueue() {
+        throw new Error('not used');
+      },
+      async getSupervisorReportDetail() {
+        throw new Error('not used');
+      },
+      async approveSupervisorReport() {
+        throw new Error('not used');
+      },
+      async returnSupervisorReport() {
+        throw new Error('not used');
+      },
+      async escalateSupervisorReport() {
+        throw new Error('not used');
+      },
+      async listManagerQueue() {
+        calls.push({ action: 'manager-queue' });
+        return {
+          contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+          items: [
+            {
+              reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+              serverReportVersion: 'server-report:user-tech:tag-report:wp-seed-1001:tag-pt-101:v2',
+              technicianUserId: 'user-tech',
+              workPackageId: 'wp-seed-1001',
+              tagId: 'tag-pt-101',
+              templateId: 'tpl-pressure-as-found',
+              templateVersion: '2026-04-v1',
+              reportState: 'escalated-pending-manager-review',
+              lifecycleState: 'Escalated - Pending Manager Review',
+              syncState: 'synced',
+              submittedAt: '2026-04-23T14:06:00.000Z',
+              acceptedAt: '2026-04-23T14:30:00.000Z',
+              executionSummary: 'Structured pressure readings are captured.',
+              riskFlagCount: 1,
+              pendingEvidenceCount: 0,
+            },
+          ],
+        };
+      },
+      async getManagerReportDetail(reportId) {
+        calls.push({ action: 'manager-detail', reportId });
+        return {
+          contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+          report: {
+            reportId,
+            serverReportVersion: 'server-report:user-tech:tag-report:wp-seed-1001:tag-pt-101:v2',
+            technicianUserId: 'user-tech',
+            workPackageId: 'wp-seed-1001',
+            tagId: 'tag-pt-101',
+            templateId: 'tpl-pressure-as-found',
+            templateVersion: '2026-04-v1',
+            reportState: 'escalated-pending-manager-review',
+            lifecycleState: 'Escalated - Pending Manager Review',
+            syncState: 'synced',
+            submittedAt: '2026-04-23T14:06:00.000Z',
+            acceptedAt: '2026-04-23T14:30:00.000Z',
+            executionSummary: 'Structured pressure readings are captured.',
+            riskFlagCount: 1,
+            pendingEvidenceCount: 0,
+            historySummary: 'History available.',
+            draftDiagnosisSummary: 'No local diagnosis.',
+            evidenceReferences: [],
+            riskFlags: [],
+            photoAttachments: [],
+            evidenceStatus: {
+              state: 'no-photo-evidence',
+              totalPhotoAttachments: 0,
+              finalizedPhotoAttachments: 0,
+              pendingPhotoAttachments: 0,
+              message: 'No photo evidence is attached to this accepted report.',
+            },
+            approvalHistory: {
+              items: [
+                {
+                  auditEventId: 'audit-escalate',
+                  actorRole: 'supervisor',
+                  actionType: 'report.supervisor.escalated',
+                  occurredAt: '2026-04-23T15:10:00.000Z',
+                  correlationId: 'corr-escalate',
+                  priorState: 'Submitted - Pending Supervisor Review',
+                  nextState: 'Escalated - Pending Manager Review',
+                  comment: 'Higher-risk review needed.',
+                },
+              ],
+              placeholder: '',
+            },
+          },
+        };
+      },
+      async approveManagerReport(reportId) {
+        calls.push({ action: 'manager-approve', reportId });
+        return {
+          contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+          reportId,
+          decisionType: 'approved',
+          reportState: 'approved',
+          lifecycleState: 'Approved',
+          syncState: 'synced',
+          decidedAt: '2026-04-23T15:30:00.000Z',
+          auditEventId: 'audit-manager-approve',
+          comment: null,
+        };
+      },
+      async returnManagerReport(reportId, comment) {
+        calls.push({ action: 'manager-return', reportId, comment });
+        return {
+          contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+          reportId,
+          decisionType: 'returned',
+          reportState: 'returned-by-manager',
+          lifecycleState: 'Returned by Manager',
+          syncState: 'synced',
+          decidedAt: '2026-04-23T15:35:00.000Z',
+          auditEventId: 'audit-manager-return',
+          comment,
+        };
+      },
+    });
+    const managerSession = buildSession({
+      userId: 'user-manager',
+      email: 'manager@tagwise.local',
+      displayName: 'Operations Manager',
+      role: 'manager',
+    });
+
+    await expect(service.refreshManagerQueue(managerSession)).resolves.toHaveLength(1);
+    await expect(
+      service.loadManagerReportDetail(managerSession, 'tag-report:wp-seed-1001:tag-pt-101'),
+    ).resolves.toMatchObject({
+      lifecycleState: 'Escalated - Pending Manager Review',
+      approvalHistory: {
+        items: [
+          expect.objectContaining({
+            actionType: 'report.supervisor.escalated',
+            comment: 'Higher-risk review needed.',
+          }),
+        ],
+      },
+    });
+    await expect(
+      service.approveManagerReport(managerSession, 'tag-report:wp-seed-1001:tag-pt-101'),
+    ).resolves.toMatchObject({
+      decisionType: 'approved',
+      lifecycleState: 'Approved',
+    });
+    await expect(
+      service.returnManagerReport(
+        managerSession,
+        'tag-report:wp-seed-1001:tag-pt-101',
+        '  Needs technician rework.  ',
+      ),
+    ).resolves.toMatchObject({
+      decisionType: 'returned',
+      lifecycleState: 'Returned by Manager',
+      comment: 'Needs technician rework.',
+    });
+
+    expect(calls).toEqual([
+      { action: 'manager-queue' },
+      { action: 'manager-detail', reportId: 'tag-report:wp-seed-1001:tag-pt-101' },
+      { action: 'manager-approve', reportId: 'tag-report:wp-seed-1001:tag-pt-101' },
+      {
+        action: 'manager-return',
+        reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+        comment: 'Needs technician rework.',
+      },
+    ]);
+  });
+
+  it('blocks blank manager return comments before sending a manager return command', async () => {
+    const service = new SupervisorReviewService({
+      async listSupervisorQueue() {
+        throw new Error('not used');
+      },
+      async getSupervisorReportDetail() {
+        throw new Error('not used');
+      },
+      async approveSupervisorReport() {
+        throw new Error('not used');
+      },
+      async returnSupervisorReport() {
+        throw new Error('not used');
+      },
+      async escalateSupervisorReport() {
+        throw new Error('not used');
+      },
+      async listManagerQueue() {
+        throw new Error('not used');
+      },
+      async getManagerReportDetail() {
+        throw new Error('not used');
+      },
+      async approveManagerReport() {
+        throw new Error('not used');
+      },
+      async returnManagerReport() {
+        throw new Error('blank manager return comments must not call the review API');
+      },
+    });
+
+    await expect(
+      service.returnManagerReport(buildSession({ role: 'manager' }), 'tag-report:wp-seed-1001:tag-pt-101', '   '),
     ).rejects.toBeInstanceOf(SupervisorReviewAccessError);
   });
 });

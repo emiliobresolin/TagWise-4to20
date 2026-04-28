@@ -14,7 +14,10 @@ import { ReportSubmissionService } from '../modules/report-submissions/reportSub
 import { REPORT_SUBMISSION_API_CONTRACT_VERSION } from '../modules/report-submissions/model';
 import { SUPERVISOR_REVIEW_API_CONTRACT_VERSION } from '../modules/review/model';
 import { SupervisorReviewRepository } from '../modules/review/supervisorReviewRepository';
-import { SupervisorReviewService } from '../modules/review/supervisorReviewService';
+import {
+  ManagerReviewService,
+  SupervisorReviewService,
+} from '../modules/review/supervisorReviewService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createServiceRuntime, type ServiceRuntimeHandle } from '../runtime/serviceRuntime';
@@ -99,6 +102,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        managerReviewService: new ManagerReviewService(new SupervisorReviewRepository(pool)),
         reportSubmissionService,
         supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
@@ -193,6 +197,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        managerReviewService: new ManagerReviewService(new SupervisorReviewRepository(pool)),
         reportSubmissionService,
         supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
@@ -299,6 +304,7 @@ describe('createApiRequestHandler', () => {
           new ReportSubmissionRepository(pool),
           assignedWorkPackageService,
         ),
+        managerReviewService: new ManagerReviewService(new SupervisorReviewRepository(pool)),
         supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
     });
@@ -381,6 +387,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        managerReviewService: new ManagerReviewService(new SupervisorReviewRepository(pool)),
         reportSubmissionService,
         supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
@@ -532,6 +539,7 @@ describe('createApiRequestHandler', () => {
         authService,
         assignedWorkPackageService,
         evidenceSyncService,
+        managerReviewService: new ManagerReviewService(new SupervisorReviewRepository(pool)),
         reportSubmissionService,
         supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
@@ -1410,6 +1418,287 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('serves manager review for escalated reports and records manager approve or return decisions', async () => {
+    const { authService, auditRepository, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-manager-review-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-manager-review-supervisor-login',
+      },
+    );
+    const managerLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.manager.email,
+        password: authConfig.seedUsers.manager.password,
+      },
+      {
+        correlationId: 'corr-manager-review-manager-login',
+      },
+    );
+
+    const firstReportId = 'tag-report:wp-seed-1001:tag-manager-return';
+    const secondReportId = 'tag-report:wp-seed-1001:tag-manager-approve';
+    const submitReport = (reportId: string, objectVersion: string) =>
+      fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildValidReportSubmissionPayload({
+            reportId,
+            objectVersion,
+            idempotencyKey: `submit-report:${reportId}:${objectVersion}`,
+          }),
+        ),
+      });
+    const escalateReport = (reportId: string, rationale: string) =>
+      fetch(
+        `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+          reportId,
+        )}/escalate`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ rationale }),
+        },
+      );
+
+    expect((await submitReport(firstReportId, '2026-04-23T14:40:00.000Z')).status).toBe(200);
+    expect((await escalateReport(firstReportId, 'Supervisor flagged higher-risk history.')).status).toBe(200);
+
+    const technicianQueue = await fetch(`http://127.0.0.1:${port}/review/manager/reports`, {
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+      },
+    });
+    expect(technicianQueue.status).toBe(403);
+
+    const supervisorManagerReturn = await fetch(
+      `http://127.0.0.1:${port}/review/manager/reports/${encodeURIComponent(firstReportId)}/return`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ comment: 'Supervisors cannot return manager escalations.' }),
+      },
+    );
+    expect(supervisorManagerReturn.status).toBe(403);
+
+    const queue = await fetch(`http://127.0.0.1:${port}/review/manager/reports`, {
+      headers: {
+        authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+      },
+    });
+    const queueBody = (await queue.json()) as {
+      contractVersion: string;
+      items: Array<{ reportId: string; lifecycleState: string; riskFlagCount: number }>;
+    };
+    expect(queue.status).toBe(200);
+    expect(queueBody.contractVersion).toBe(SUPERVISOR_REVIEW_API_CONTRACT_VERSION);
+    expect(queueBody.items).toEqual([
+      expect.objectContaining({
+        reportId: firstReportId,
+        lifecycleState: 'Escalated - Pending Manager Review',
+        riskFlagCount: 1,
+      }),
+    ]);
+
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/review/manager/reports/${encodeURIComponent(firstReportId)}`,
+      {
+        headers: {
+          authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    const detailBody = (await detail.json()) as {
+      report: {
+        reportId: string;
+        lifecycleState: string;
+        approvalHistory: {
+          items: Array<{
+            actionType: string;
+            comment: string | null;
+            nextState: string | null;
+          }>;
+        };
+      };
+    };
+    expect(detail.status).toBe(200);
+    expect(detailBody.report).toMatchObject({
+      reportId: firstReportId,
+      lifecycleState: 'Escalated - Pending Manager Review',
+    });
+    expect(detailBody.report.approvalHistory.items).toEqual([
+      expect.objectContaining({
+        actionType: 'report.supervisor.escalated',
+        comment: 'Supervisor flagged higher-risk history.',
+        nextState: 'Escalated - Pending Manager Review',
+      }),
+    ]);
+
+    const blankReturn = await fetch(
+      `http://127.0.0.1:${port}/review/manager/reports/${encodeURIComponent(firstReportId)}/return`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ comment: '   ' }),
+      },
+    );
+    expect(blankReturn.status).toBe(400);
+    expect(await blankReturn.json()).toEqual({
+      message: 'Manager return comment is required before returning a report.',
+    });
+
+    const returned = await fetch(
+      `http://127.0.0.1:${port}/review/manager/reports/${encodeURIComponent(firstReportId)}/return`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+          'x-correlation-id': 'corr-manager-return-command',
+        },
+        body: JSON.stringify({ comment: 'Manager needs additional field confirmation.' }),
+      },
+    );
+    const returnedBody = (await returned.json()) as {
+      auditEventId: string;
+      decisionType: string;
+      reportState: string;
+      lifecycleState: string;
+      comment: string | null;
+    };
+    expect(returned.status).toBe(200);
+    expect(returnedBody).toMatchObject({
+      decisionType: 'returned',
+      reportState: 'returned-by-manager',
+      lifecycleState: 'Returned by Manager',
+      comment: 'Manager needs additional field confirmation.',
+    });
+
+    const staleApprove = await fetch(
+      `http://127.0.0.1:${port}/review/manager/reports/${encodeURIComponent(firstReportId)}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    expect(staleApprove.status).toBe(409);
+    expect(await staleApprove.json()).toEqual({
+      message: 'Report is no longer pending manager review.',
+    });
+
+    const reportRows = (await pool.query(
+      `
+        SELECT report_state, lifecycle_state, sync_state
+        FROM report_submission_records
+        WHERE report_id = $1;
+      `,
+      [firstReportId],
+    )) as {
+      rows: Array<{
+        report_state: string;
+        lifecycle_state: string;
+        sync_state: string;
+      }>;
+    };
+    expect(reportRows.rows[0]).toEqual({
+      report_state: 'returned-by-manager',
+      lifecycle_state: 'Returned by Manager',
+      sync_state: 'synced',
+    });
+
+    const auditEvents = await auditRepository.listEventsByTarget('report', firstReportId);
+    expect(auditEvents).toHaveLength(2);
+    expect(auditEvents[1]).toMatchObject({
+      id: returnedBody.auditEventId,
+      actorRole: 'manager',
+      actionType: 'report.manager.returned',
+      correlationId: 'corr-manager-return-command',
+      priorState: 'Escalated - Pending Manager Review',
+      nextState: 'Returned by Manager',
+      comment: 'Manager needs additional field confirmation.',
+    });
+
+    expect((await submitReport(secondReportId, '2026-04-23T14:50:00.000Z')).status).toBe(200);
+    expect((await escalateReport(secondReportId, 'Supervisor requests manager approval.')).status).toBe(200);
+
+    const approval = await fetch(
+      `http://127.0.0.1:${port}/review/manager/reports/${encodeURIComponent(secondReportId)}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+          'x-correlation-id': 'corr-manager-approve-command',
+        },
+      },
+    );
+    const approvalBody = (await approval.json()) as {
+      auditEventId: string;
+      decisionType: string;
+      reportState: string;
+      lifecycleState: string;
+      comment: string | null;
+    };
+    expect(approval.status).toBe(200);
+    expect(approvalBody).toMatchObject({
+      decisionType: 'approved',
+      reportState: 'approved',
+      lifecycleState: 'Approved',
+      comment: null,
+    });
+
+    const approvalAuditEvents = await auditRepository.listEventsByTarget('report', secondReportId);
+    expect(approvalAuditEvents).toHaveLength(2);
+    expect(approvalAuditEvents[1]).toMatchObject({
+      id: approvalBody.auditEventId,
+      actorRole: 'manager',
+      actionType: 'report.manager.approved',
+      correlationId: 'corr-manager-approve-command',
+      priorState: 'Escalated - Pending Manager Review',
+      nextState: 'Approved',
+      comment: null,
+    });
+
+    const emptyQueue = await fetch(`http://127.0.0.1:${port}/review/manager/reports`, {
+      headers: {
+        authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+      },
+    });
+    expect(emptyQueue.status).toBe(200);
+    expect((await emptyQueue.json()) as unknown).toEqual({
+      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+      items: [],
+    });
+
+    await pool.end();
+  });
 });
 
 function createTestEvidenceObjectStorageClient(
@@ -1478,6 +1767,10 @@ async function startReportSubmissionRuntime() {
     () => new Date('2026-04-23T15:00:00.000Z'),
     manager.id,
   );
+  const managerReviewService = new ManagerReviewService(
+    new SupervisorReviewRepository(pool),
+    () => new Date('2026-04-23T15:30:00.000Z'),
+  );
   await supervisorReviewService.ensureSeedRoutes(
     supervisor.id,
     seededWorkPackages.map((workPackage) => workPackage.id),
@@ -1493,6 +1786,7 @@ async function startReportSubmissionRuntime() {
       authService,
       assignedWorkPackageService,
       evidenceSyncService,
+      managerReviewService,
       reportSubmissionService,
       supervisorReviewService,
     }),

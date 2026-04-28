@@ -1531,9 +1531,10 @@ export function TagWiseApp() {
     );
 
     try {
-      const supervisorReviewQueue = await readyState.supervisorReviewService.refreshQueue(
-        readyState.session,
-      );
+      const isManagerReview = readyState.session.role === 'manager';
+      const supervisorReviewQueue = isManagerReview
+        ? await readyState.supervisorReviewService.refreshManagerQueue(readyState.session)
+        : await readyState.supervisorReviewService.refreshQueue(readyState.session);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1545,7 +1546,9 @@ export function TagWiseApp() {
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `${supervisorReviewQueue.length} supervisor review report(s) loaded.`,
+              authMessage: `${supervisorReviewQueue.length} ${
+                isManagerReview ? 'manager' : 'supervisor'
+              } review report(s) loaded.`,
             },
       );
     } catch (error) {
@@ -1558,7 +1561,7 @@ export function TagWiseApp() {
               authMessage:
                 error instanceof Error
                   ? error.message
-                  : 'Supervisor review queue failed without a detailed message.',
+                  : 'Review queue failed without a detailed message.',
             },
       );
     }
@@ -1581,10 +1584,15 @@ export function TagWiseApp() {
 
     try {
       const selectedSupervisorReviewReport =
-        await readyState.supervisorReviewService.loadReportDetail(
-          readyState.session,
-          reportId,
-        );
+        readyState.session.role === 'manager'
+          ? await readyState.supervisorReviewService.loadManagerReportDetail(
+              readyState.session,
+              reportId,
+            )
+          : await readyState.supervisorReviewService.loadReportDetail(
+              readyState.session,
+              reportId,
+            );
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1608,7 +1616,7 @@ export function TagWiseApp() {
               authMessage:
                 error instanceof Error
                   ? error.message
-                  : 'Supervisor report detail failed without a detailed message.',
+                  : 'Review report detail failed without a detailed message.',
             },
       );
     }
@@ -1665,10 +1673,16 @@ export function TagWiseApp() {
     );
 
     try {
-      const decision = await readyState.supervisorReviewService.approveReport(
-        readyState.session,
-        reportId,
-      );
+      const isManagerReview = readyState.session.role === 'manager';
+      const decision = isManagerReview
+        ? await readyState.supervisorReviewService.approveManagerReport(
+            readyState.session,
+            reportId,
+          )
+        : await readyState.supervisorReviewService.approveReport(
+            readyState.session,
+            reportId,
+          );
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1682,7 +1696,9 @@ export function TagWiseApp() {
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `Report ${decision.reportId} approved and recorded in the audit trail.`,
+              authMessage: `Report ${decision.reportId} approved by ${
+                isManagerReview ? 'manager' : 'supervisor'
+              } and recorded in the audit trail.`,
             },
       );
     } catch (error) {
@@ -1695,7 +1711,7 @@ export function TagWiseApp() {
               authMessage:
                 error instanceof Error
                   ? error.message
-                  : 'Supervisor approval failed without a detailed message.',
+                  : 'Review approval failed without a detailed message.',
             },
       );
     }
@@ -1717,11 +1733,18 @@ export function TagWiseApp() {
     );
 
     try {
-      const decision = await readyState.supervisorReviewService.returnReport(
-        readyState.session,
-        reportId,
-        readyState.supervisorReturnComment,
-      );
+      const isManagerReview = readyState.session.role === 'manager';
+      const decision = isManagerReview
+        ? await readyState.supervisorReviewService.returnManagerReport(
+            readyState.session,
+            reportId,
+            readyState.supervisorReturnComment,
+          )
+        : await readyState.supervisorReviewService.returnReport(
+            readyState.session,
+            reportId,
+            readyState.supervisorReturnComment,
+          );
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1735,7 +1758,9 @@ export function TagWiseApp() {
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `Report ${decision.reportId} returned with supervisor comments.`,
+              authMessage: `Report ${decision.reportId} returned with ${
+                isManagerReview ? 'manager' : 'supervisor'
+              } comments.`,
             },
       );
     } catch (error) {
@@ -1748,7 +1773,7 @@ export function TagWiseApp() {
               authMessage:
                 error instanceof Error
                   ? error.message
-                  : 'Supervisor return failed without a detailed message.',
+                  : 'Review return failed without a detailed message.',
             },
       );
     }
@@ -2842,13 +2867,20 @@ function SupervisorReviewPanel({
   onReturnCommentChange: (value: string) => void;
   onReturnReport: (reportId: string) => void;
 }) {
-  const canRefresh = session?.role === 'supervisor' && session.connectionMode === 'connected';
+  const reviewerRole = session?.role === 'manager' ? 'manager' : 'supervisor';
+  const canRefresh =
+    (session?.role === 'supervisor' || session?.role === 'manager') &&
+    session.connectionMode === 'connected';
 
   return (
     <View style={styles.panel}>
-      <Text style={styles.panelTitle}>Supervisor review</Text>
+      <Text style={styles.panelTitle}>
+        {reviewerRole === 'manager' ? 'Manager review' : 'Supervisor review'}
+      </Text>
       <Text style={styles.panelBody}>
-        Server-accepted per-tag reports appear here for connected supervisor review.
+        {reviewerRole === 'manager'
+          ? 'Escalated per-tag reports appear here for connected manager review.'
+          : 'Server-accepted per-tag reports appear here for connected supervisor review.'}
       </Text>
 
       <View style={styles.metricGrid}>
@@ -2872,7 +2904,7 @@ function SupervisorReviewPanel({
 
       {!canRefresh ? (
         <Text style={styles.helperText}>
-          Supervisor review requires a connected supervisor session.
+          Review requires a connected supervisor or manager session.
         </Text>
       ) : null}
 
@@ -2891,7 +2923,11 @@ function SupervisorReviewPanel({
           onReturnReport={onReturnReport}
         />
       ) : queue.length === 0 ? (
-        <Text style={styles.helperText}>No server-accepted reports are currently routed here.</Text>
+        <Text style={styles.helperText}>
+          {reviewerRole === 'manager'
+            ? 'No escalated reports are currently routed here.'
+            : 'No server-accepted reports are currently routed here.'}
+        </Text>
       ) : (
         queue.map((item) => (
           <View key={item.reportId} style={styles.listCard}>
@@ -2947,7 +2983,11 @@ function SupervisorReviewDetailPanel({
   onReturnCommentChange: (value: string) => void;
   onReturnReport: (reportId: string) => void;
 }) {
-  const canAct = session?.role === 'supervisor' && session.connectionMode === 'connected';
+  const isManagerReview = session?.role === 'manager';
+  const canAct =
+    (session?.role === 'supervisor' || session?.role === 'manager') &&
+    session.connectionMode === 'connected';
+  const canEscalate = session?.role === 'supervisor' && session.connectionMode === 'connected';
   const returnCommentReady = returnComment.trim().length > 0;
   const escalationRationaleReady = escalationRationale.trim().length > 0;
 
@@ -3038,7 +3078,7 @@ function SupervisorReviewDetailPanel({
         ))
       )}
 
-      <Text style={styles.sectionTitle}>Supervisor decision</Text>
+      <Text style={styles.sectionTitle}>Review decision</Text>
       <TextInput
         autoCapitalize="sentences"
         autoCorrect
@@ -3049,16 +3089,18 @@ function SupervisorReviewDetailPanel({
         style={styles.input}
         value={returnComment}
       />
-      <TextInput
-        autoCapitalize="sentences"
-        autoCorrect
-        editable={canAct && !busy}
-        multiline
-        onChangeText={onEscalationRationaleChange}
-        placeholder="Required escalation rationale."
-        style={styles.input}
-        value={escalationRationale}
-      />
+      {canEscalate ? (
+        <TextInput
+          autoCapitalize="sentences"
+          autoCorrect
+          editable={canAct && !busy}
+          multiline
+          onChangeText={onEscalationRationaleChange}
+          placeholder="Required escalation rationale."
+          style={styles.input}
+          value={escalationRationale}
+        />
+      ) : null}
       <View style={styles.metricGrid}>
         <Pressable
           accessibilityRole="button"
@@ -3067,7 +3109,11 @@ function SupervisorReviewDetailPanel({
           style={[styles.primaryButton, !canAct || busy ? styles.buttonDisabled : null]}
         >
           <Text style={styles.primaryButtonLabel}>
-            {busy ? 'Submitting...' : 'Approve standard case'}
+            {busy
+              ? 'Submitting...'
+              : isManagerReview
+              ? 'Approve escalated case'
+              : 'Approve standard case'}
           </Text>
         </Pressable>
         <Pressable
@@ -3082,17 +3128,19 @@ function SupervisorReviewDetailPanel({
           <Text style={styles.secondaryButtonLabel}>Return with comment</Text>
         </Pressable>
       </View>
-      <Pressable
-        accessibilityRole="button"
-        disabled={!canAct || busy || !escalationRationaleReady}
-        onPress={() => onEscalateReport(report.reportId)}
-        style={[
-          styles.secondaryButton,
-          !canAct || busy || !escalationRationaleReady ? styles.buttonDisabled : null,
-        ]}
-      >
-        <Text style={styles.secondaryButtonLabel}>Escalate to manager</Text>
-      </Pressable>
+      {canEscalate ? (
+        <Pressable
+          accessibilityRole="button"
+          disabled={!canAct || busy || !escalationRationaleReady}
+          onPress={() => onEscalateReport(report.reportId)}
+          style={[
+            styles.secondaryButton,
+            !canAct || busy || !escalationRationaleReady ? styles.buttonDisabled : null,
+          ]}
+        >
+          <Text style={styles.secondaryButtonLabel}>Escalate to manager</Text>
+        </Pressable>
+      ) : null}
 
       <Pressable accessibilityRole="button" onPress={onCloseReport} style={styles.secondaryButton}>
         <Text style={styles.secondaryButtonLabel}>Back to review queue</Text>

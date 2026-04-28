@@ -145,12 +145,14 @@ const postgresMigrations: PostgresMigration[] = [
           'submitted-pending-review',
           'escalated-pending-manager-review',
           'returned-by-supervisor',
+          'returned-by-manager',
           'approved'
         )),
         lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN (
           'Submitted - Pending Supervisor Review',
           'Escalated - Pending Manager Review',
           'Returned by Supervisor',
+          'Returned by Manager',
           'Approved'
         )),
         sync_state TEXT NOT NULL CHECK (sync_state IN ('synced')),
@@ -252,6 +254,36 @@ const postgresMigrations: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS idx_manager_review_routes_manager
       ON manager_review_routes (manager_user_id, route_state, routed_at ASC, report_id);
+    `,
+  },
+  {
+    id: '0010_manager_decision_states',
+    sql: `
+      ALTER TABLE report_submission_records
+        DROP CONSTRAINT IF EXISTS report_submission_records_report_state_check;
+
+      ALTER TABLE report_submission_records
+        ADD CONSTRAINT report_submission_records_report_state_check
+        CHECK (report_state IN (
+          'submitted-pending-review',
+          'escalated-pending-manager-review',
+          'returned-by-supervisor',
+          'returned-by-manager',
+          'approved'
+        ));
+
+      ALTER TABLE report_submission_records
+        DROP CONSTRAINT IF EXISTS report_submission_records_lifecycle_state_check;
+
+      ALTER TABLE report_submission_records
+        ADD CONSTRAINT report_submission_records_lifecycle_state_check
+        CHECK (lifecycle_state IN (
+          'Submitted - Pending Supervisor Review',
+          'Escalated - Pending Manager Review',
+          'Returned by Supervisor',
+          'Returned by Manager',
+          'Approved'
+        ));
     `,
   },
 ];

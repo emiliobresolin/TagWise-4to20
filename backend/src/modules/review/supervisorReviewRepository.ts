@@ -4,6 +4,7 @@ import type { QueryResultRow } from 'pg';
 import type { AuditEventRecord } from '../audit/model';
 import type { QueryableDatabase } from '../../platform/db/postgres';
 import type {
+  ManagerReviewDecisionResponse,
   ReviewableReportRecord,
   SupervisorReviewApprovalHistoryItem,
   SupervisorReviewDecisionResponse,
@@ -168,7 +169,9 @@ export class SupervisorReviewRepository {
           AND action_type IN (
             'report.supervisor.approved',
             'report.supervisor.returned',
-            'report.supervisor.escalated'
+            'report.supervisor.escalated',
+            'report.manager.approved',
+            'report.manager.returned'
           )
         ORDER BY occurred_at ASC, id ASC;
       `,
@@ -216,6 +219,111 @@ export class SupervisorReviewRepository {
         LIMIT 1;
       `,
       [supervisorUserId, reportId],
+    );
+
+    const row = result.rows[0];
+    return row ? mapReviewableReportRow(row) : null;
+  }
+
+  async listManagerQueue(managerUserId: string): Promise<ReviewableReportRecord[]> {
+    const result = await this.database.query<ReviewableReportRow>(
+      `
+        SELECT
+          report.owner_user_id,
+          report.report_id,
+          report.work_package_id,
+          report.tag_id,
+          report.template_id,
+          report.template_version,
+          report.server_report_version,
+          report.report_state,
+          report.lifecycle_state,
+          report.sync_state,
+          report.submitted_at,
+          report.accepted_at,
+          report.payload_json
+        FROM report_submission_records report
+        INNER JOIN manager_review_routes route
+          ON route.owner_user_id = report.owner_user_id
+          AND route.report_id = report.report_id
+        WHERE route.manager_user_id = $1
+          AND route.route_state = 'active'
+          AND report.lifecycle_state = 'Escalated - Pending Manager Review'
+        ORDER BY route.routed_at ASC, report.report_id ASC;
+      `,
+      [managerUserId],
+    );
+
+    return result.rows.map(mapReviewableReportRow);
+  }
+
+  async getManagerReportDetail(
+    managerUserId: string,
+    reportId: string,
+  ): Promise<ReviewableReportRecord | null> {
+    const result = await this.database.query<ReviewableReportRow>(
+      `
+        SELECT
+          report.owner_user_id,
+          report.report_id,
+          report.work_package_id,
+          report.tag_id,
+          report.template_id,
+          report.template_version,
+          report.server_report_version,
+          report.report_state,
+          report.lifecycle_state,
+          report.sync_state,
+          report.submitted_at,
+          report.accepted_at,
+          report.payload_json
+        FROM report_submission_records report
+        INNER JOIN manager_review_routes route
+          ON route.owner_user_id = report.owner_user_id
+          AND route.report_id = report.report_id
+        WHERE route.manager_user_id = $1
+          AND route.route_state = 'active'
+          AND report.report_id = $2
+          AND report.lifecycle_state = 'Escalated - Pending Manager Review'
+        LIMIT 1;
+      `,
+      [managerUserId, reportId],
+    );
+
+    const row = result.rows[0];
+    return row ? mapReviewableReportRow(row) : null;
+  }
+
+  async getManagerRoutedReportById(
+    managerUserId: string,
+    reportId: string,
+  ): Promise<ReviewableReportRecord | null> {
+    const result = await this.database.query<ReviewableReportRow>(
+      `
+        SELECT
+          report.owner_user_id,
+          report.report_id,
+          report.work_package_id,
+          report.tag_id,
+          report.template_id,
+          report.template_version,
+          report.server_report_version,
+          report.report_state,
+          report.lifecycle_state,
+          report.sync_state,
+          report.submitted_at,
+          report.accepted_at,
+          report.payload_json
+        FROM report_submission_records report
+        INNER JOIN manager_review_routes route
+          ON route.owner_user_id = report.owner_user_id
+          AND route.report_id = report.report_id
+        WHERE route.manager_user_id = $1
+          AND route.route_state = 'active'
+          AND report.report_id = $2
+        LIMIT 1;
+      `,
+      [managerUserId, reportId],
     );
 
     const row = result.rows[0];
@@ -337,6 +445,145 @@ export class SupervisorReviewRepository {
       `,
       [
         input.supervisorUserId,
+        input.reportId,
+        input.reportState,
+        input.lifecycleState,
+        input.decidedAt,
+        input.priorState,
+        auditEventId,
+        input.actorRole,
+        input.actionType,
+        input.correlationId,
+        input.comment,
+        JSON.stringify(input.metadata),
+        input.ownerUserId,
+      ],
+    );
+
+    const row = result.rows[0];
+    return row
+      ? {
+          report: mapReviewableReportRow(row),
+          auditEvent: mapSupervisorDecisionAuditEvent(row),
+        }
+      : null;
+  }
+
+  async recordManagerDecision(input: {
+    managerUserId: string;
+    actorRole: AuditEventRecord['actorRole'];
+    ownerUserId: string;
+    reportId: string;
+    reportState: ManagerReviewDecisionResponse['reportState'];
+    lifecycleState: ManagerReviewDecisionResponse['lifecycleState'];
+    decidedAt: string;
+    correlationId: string;
+    actionType: string;
+    priorState: string;
+    comment: string | null;
+    metadata: Record<string, unknown>;
+  }): Promise<SupervisorDecisionPersistenceResult | null> {
+    const auditEventId = randomUUID();
+    const result = await this.database.query<SupervisorDecisionRow>(
+      `
+        WITH updated AS (
+          UPDATE report_submission_records
+          SET
+            report_state = $3,
+            lifecycle_state = $4,
+            sync_state = 'synced',
+            updated_at = $5
+          WHERE owner_user_id = $13
+            AND report_id = $2
+            AND lifecycle_state = $6
+          RETURNING
+            owner_user_id,
+            report_id,
+            work_package_id,
+            tag_id,
+            template_id,
+            template_version,
+            server_report_version,
+            report_state,
+            lifecycle_state,
+            sync_state,
+            submitted_at,
+            accepted_at,
+            payload_json
+        ),
+        audit AS (
+          INSERT INTO audit_events (
+            id,
+            actor_id,
+            actor_role,
+            action_type,
+            target_object_type,
+            target_object_id,
+            occurred_at,
+            correlation_id,
+            prior_state,
+            next_state,
+            comment,
+            metadata_json
+          )
+          SELECT
+            $7,
+            $1,
+            $8,
+            $9,
+            'report',
+            updated.report_id,
+            $5,
+            $10,
+            $6,
+            $4,
+            $11,
+            $12::jsonb
+          FROM updated
+          RETURNING
+            id AS audit_id,
+            actor_id AS audit_actor_id,
+            actor_role AS audit_actor_role,
+            action_type AS audit_action_type,
+            target_object_type AS audit_target_object_type,
+            target_object_id AS audit_target_object_id,
+            occurred_at AS audit_occurred_at,
+            correlation_id AS audit_correlation_id,
+            prior_state AS audit_prior_state,
+            next_state AS audit_next_state,
+            comment AS audit_comment,
+            metadata_json AS audit_metadata_json
+        )
+        SELECT
+          updated.owner_user_id,
+          updated.report_id,
+          updated.work_package_id,
+          updated.tag_id,
+          updated.template_id,
+          updated.template_version,
+          updated.server_report_version,
+          updated.report_state,
+          updated.lifecycle_state,
+          updated.sync_state,
+          updated.submitted_at,
+          updated.accepted_at,
+          updated.payload_json,
+          audit.audit_id,
+          audit.audit_actor_id,
+          audit.audit_actor_role,
+          audit.audit_action_type,
+          audit.audit_target_object_type,
+          audit.audit_target_object_id,
+          audit.audit_occurred_at,
+          audit.audit_correlation_id,
+          audit.audit_prior_state,
+          audit.audit_next_state,
+          audit.audit_comment,
+          audit.audit_metadata_json
+        FROM updated, audit;
+      `,
+      [
+        input.managerUserId,
         input.reportId,
         input.reportState,
         input.lifecycleState,

@@ -15,8 +15,11 @@ import {
   parseReportSubmissionRequestPayload,
 } from '../modules/report-submissions/reportSubmissionPayloadValidation';
 import type { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
-import { SupervisorReviewError } from '../modules/review/model';
-import type { SupervisorReviewService } from '../modules/review/supervisorReviewService';
+import { ManagerReviewError, SupervisorReviewError } from '../modules/review/model';
+import type {
+  ManagerReviewService,
+  SupervisorReviewService,
+} from '../modules/review/supervisorReviewService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
@@ -25,6 +28,7 @@ export interface ApiRequestHandlerDependencies {
   assignedWorkPackageService: AssignedWorkPackageService;
   evidenceSyncService: EvidenceSyncService;
   reportSubmissionService: ReportSubmissionService;
+  managerReviewService: ManagerReviewService;
   supervisorReviewService: SupervisorReviewService;
 }
 
@@ -392,6 +396,36 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    if (method === 'GET' && url === '/review/manager/reports') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const queue = await dependencies.managerReviewService.listManagerQueue(user);
+
+        context.logger.info('manager-review.queue.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportCount: queue.items.length,
+        });
+        writeJson(response, 200, queue);
+      } catch (error) {
+        context.logger.warn('manager-review.queue.failed', {
+          statusCode:
+            error instanceof ManagerReviewError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeManagerReviewError(
+          response,
+          error,
+          'Manager review queue failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
     const supervisorReportDecisionMatch =
       method === 'POST'
         ? url.match(/^\/review\/supervisor\/reports\/([^/]+)\/(approve|return|escalate)$/)
@@ -451,6 +485,56 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    const managerReportDecisionMatch =
+      method === 'POST'
+        ? url.match(/^\/review\/manager\/reports\/([^/]+)\/(approve|return)$/)
+        : null;
+    if (managerReportDecisionMatch) {
+      const reportId = decodeURIComponent(managerReportDecisionMatch[1] ?? '');
+      const action = managerReportDecisionMatch[2];
+
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const decision =
+          action === 'approve'
+            ? await dependencies.managerReviewService.approveEscalatedReport(
+                user,
+                reportId,
+                { correlationId: context.correlationId },
+              )
+            : await dependencies.managerReviewService.returnEscalatedReport(
+                user,
+                reportId,
+                getStringProperty(await readManagerReviewJsonBody(request), 'comment'),
+                { correlationId: context.correlationId },
+              );
+
+        context.logger.info('manager-review.decision.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: decision.reportId,
+          decisionType: decision.decisionType,
+        });
+        writeJson(response, 200, decision);
+      } catch (error) {
+        context.logger.warn('manager-review.decision.failed', {
+          statusCode:
+            error instanceof ManagerReviewError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeManagerReviewError(
+          response,
+          error,
+          'Manager review decision failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
     const supervisorReportMatch =
       method === 'GET' ? url.match(/^\/review\/supervisor\/reports\/([^/]+)$/) : null;
     if (supervisorReportMatch) {
@@ -480,6 +564,41 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           response,
           error,
           'Supervisor review report failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
+    const managerReportMatch =
+      method === 'GET' ? url.match(/^\/review\/manager\/reports\/([^/]+)$/) : null;
+    if (managerReportMatch) {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const report = await dependencies.managerReviewService.getManagerReportDetail(
+          user,
+          decodeURIComponent(managerReportMatch[1] ?? ''),
+        );
+
+        context.logger.info('manager-review.detail.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: report.report.reportId,
+        });
+        writeJson(response, 200, report);
+      } catch (error) {
+        context.logger.warn('manager-review.detail.failed', {
+          statusCode:
+            error instanceof ManagerReviewError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeManagerReviewError(
+          response,
+          error,
+          'Manager review report failed. Please retry while connected.',
         );
       }
 
@@ -533,6 +652,17 @@ async function readSupervisorReviewJsonBody(
     return isRecord(body) ? body : {};
   } catch {
     throw new SupervisorReviewError('Supervisor review body must be valid JSON.', 400);
+  }
+}
+
+async function readManagerReviewJsonBody(
+  request: IncomingMessage,
+): Promise<Record<string, unknown>> {
+  try {
+    const body = await readJsonBody<unknown>(request);
+    return isRecord(body) ? body : {};
+  } catch {
+    throw new ManagerReviewError('Manager review body must be valid JSON.', 400);
   }
 }
 
@@ -600,6 +730,24 @@ function writeSupervisorReviewError(
   }
 
   if (error instanceof SupervisorReviewError) {
+    writeJson(response, error.statusCode, { message: error.message });
+    return;
+  }
+
+  writeJson(response, 500, { message: fallbackMessage });
+}
+
+function writeManagerReviewError(
+  response: ServerResponse,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  if (error instanceof ManagerReviewError) {
     writeJson(response, error.statusCode, { message: error.message });
     return;
   }

@@ -53,11 +53,13 @@ export interface SupervisorReviewQueueItem {
     | 'submitted-pending-review'
     | 'escalated-pending-manager-review'
     | 'returned-by-supervisor'
+    | 'returned-by-manager'
     | 'approved';
   lifecycleState:
     | 'Submitted - Pending Supervisor Review'
     | 'Escalated - Pending Manager Review'
     | 'Returned by Supervisor'
+    | 'Returned by Manager'
     | 'Approved';
   syncState: 'synced';
   submittedAt: string;
@@ -103,4 +105,18 @@ export interface SupervisorReviewDecisionResponse {
   auditEventId: string;
   comment: string | null;
   managerReviewerUserId?: string;
+}
+
+export type ManagerReviewDecisionType = 'approved' | 'returned';
+
+export interface ManagerReviewDecisionResponse {
+  contractVersion: typeof SUPERVISOR_REVIEW_API_CONTRACT_VERSION;
+  reportId: string;
+  decisionType: ManagerReviewDecisionType;
+  reportState: 'approved' | 'returned-by-manager';
+  lifecycleState: 'Approved' | 'Returned by Manager';
+  syncState: 'synced';
+  decidedAt: string;
+  auditEventId: string;
+  comment: string | null;
 }

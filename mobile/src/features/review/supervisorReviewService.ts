@@ -1,5 +1,6 @@
 import type { ActiveUserSession } from '../auth/model';
 import type {
+  ManagerReviewDecisionResponse,
   SupervisorReviewDecisionResponse,
   SupervisorReviewQueueItem,
   SupervisorReviewReportDetail,
@@ -73,6 +74,47 @@ export class SupervisorReviewService {
 
     return this.apiClient.escalateSupervisorReport(reportId, trimmedRationale);
   }
+
+  async refreshManagerQueue(session: ActiveUserSession): Promise<SupervisorReviewQueueItem[]> {
+    assertConnectedManager(session);
+
+    const response = await this.apiClient.listManagerQueue();
+    return response.items;
+  }
+
+  async loadManagerReportDetail(
+    session: ActiveUserSession,
+    reportId: string,
+  ): Promise<SupervisorReviewReportDetail> {
+    assertConnectedManager(session);
+
+    const response = await this.apiClient.getManagerReportDetail(reportId);
+    return response.report;
+  }
+
+  async approveManagerReport(
+    session: ActiveUserSession,
+    reportId: string,
+  ): Promise<ManagerReviewDecisionResponse> {
+    assertConnectedManager(session);
+
+    return this.apiClient.approveManagerReport(reportId);
+  }
+
+  async returnManagerReport(
+    session: ActiveUserSession,
+    reportId: string,
+    comment: string,
+  ): Promise<ManagerReviewDecisionResponse> {
+    assertConnectedManager(session);
+
+    const trimmedComment = comment.trim();
+    if (trimmedComment.length === 0) {
+      throw new SupervisorReviewAccessError('Manager return comment is required before returning a report.');
+    }
+
+    return this.apiClient.returnManagerReport(reportId, trimmedComment);
+  }
 }
 
 function assertConnectedSupervisor(session: ActiveUserSession): void {
@@ -82,5 +124,15 @@ function assertConnectedSupervisor(session: ActiveUserSession): void {
 
   if (session.connectionMode !== 'connected') {
     throw new SupervisorReviewAccessError('Connected supervisor session is required for review.');
+  }
+}
+
+function assertConnectedManager(session: ActiveUserSession): void {
+  if (session.role !== 'manager') {
+    throw new SupervisorReviewAccessError('Manager role is required for the review queue.');
+  }
+
+  if (session.connectionMode !== 'connected') {
+    throw new SupervisorReviewAccessError('Connected manager session is required for review.');
   }
 }

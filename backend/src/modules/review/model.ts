@@ -9,6 +9,7 @@ import type {
 } from '../report-submissions/model';
 
 export const SUPERVISOR_REVIEW_API_CONTRACT_VERSION = '2026-04-v1' as const;
+export const MANAGER_REVIEW_API_CONTRACT_VERSION = SUPERVISOR_REVIEW_API_CONTRACT_VERSION;
 
 export type SupervisorReviewEvidencePresenceState =
   | 'no-photo-evidence'
@@ -90,6 +91,30 @@ export interface SupervisorReviewDecisionResponse {
   managerReviewerUserId?: string;
 }
 
+export interface ManagerReviewQueueResponse {
+  contractVersion: typeof MANAGER_REVIEW_API_CONTRACT_VERSION;
+  items: SupervisorReviewQueueItem[];
+}
+
+export interface ManagerReviewReportResponse {
+  contractVersion: typeof MANAGER_REVIEW_API_CONTRACT_VERSION;
+  report: SupervisorReviewReportDetail;
+}
+
+export type ManagerReviewDecisionType = 'approved' | 'returned';
+
+export interface ManagerReviewDecisionResponse {
+  contractVersion: typeof MANAGER_REVIEW_API_CONTRACT_VERSION;
+  reportId: string;
+  decisionType: ManagerReviewDecisionType;
+  reportState: 'approved' | 'returned-by-manager';
+  lifecycleState: 'Approved' | 'Returned by Manager';
+  syncState: ReportSubmissionSyncState;
+  decidedAt: string;
+  auditEventId: string;
+  comment: string | null;
+}
+
 export interface ReviewableReportRecord {
   ownerUserId: string;
   reportId: string;
@@ -116,8 +141,24 @@ export class SupervisorReviewError extends Error {
   }
 }
 
+export class ManagerReviewError extends Error {
+  readonly statusCode: number;
+
+  constructor(message: string, statusCode: number = 400) {
+    super(message);
+    this.name = 'ManagerReviewError';
+    this.statusCode = statusCode;
+  }
+}
+
 export function assertSupervisorCanReview(user: AuthenticatedUser): void {
   if (user.role !== 'supervisor') {
     throw new SupervisorReviewError('Only supervisors can access the supervisor review queue.', 403);
+  }
+}
+
+export function assertManagerCanReview(user: AuthenticatedUser): void {
+  if (user.role !== 'manager') {
+    throw new ManagerReviewError('Only managers can access the manager review queue.', 403);
   }
 }

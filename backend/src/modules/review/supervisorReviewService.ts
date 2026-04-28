@@ -6,9 +6,16 @@ import type {
   ReportSubmissionRiskFlag,
 } from '../report-submissions/model';
 import {
+  assertManagerCanReview,
   assertSupervisorCanReview,
+  MANAGER_REVIEW_API_CONTRACT_VERSION,
+  ManagerReviewError,
   SupervisorReviewError,
   SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+  type ManagerReviewDecisionResponse,
+  type ManagerReviewDecisionType,
+  type ManagerReviewQueueResponse,
+  type ManagerReviewReportResponse,
   type ReviewableReportRecord,
   type SupervisorReviewDecisionResponse,
   type SupervisorReviewDecisionType,
@@ -226,6 +233,141 @@ export class SupervisorReviewService {
 
     return {
       contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+      reportId: persisted.report.reportId,
+      decisionType: decision.decisionType,
+      reportState: decision.reportState,
+      lifecycleState: decision.lifecycleState,
+      syncState: persisted.report.syncState,
+      decidedAt,
+      auditEventId: persisted.auditEvent.id,
+      comment: decision.comment,
+    };
+  }
+}
+
+export class ManagerReviewService {
+  constructor(
+    private readonly repository: SupervisorReviewRepository,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+
+  async listManagerQueue(user: AuthenticatedUser): Promise<ManagerReviewQueueResponse> {
+    assertManagerCanReview(user);
+
+    const records = await this.repository.listManagerQueue(user.id);
+    return {
+      contractVersion: MANAGER_REVIEW_API_CONTRACT_VERSION,
+      items: records.map(toQueueItem),
+    };
+  }
+
+  async getManagerReportDetail(
+    user: AuthenticatedUser,
+    reportId: string,
+  ): Promise<ManagerReviewReportResponse> {
+    assertManagerCanReview(user);
+
+    const record = await this.repository.getManagerReportDetail(user.id, reportId);
+    if (!record) {
+      throw new ManagerReviewError('Escalated report was not found in manager scope.', 404);
+    }
+    const approvalHistoryItems = await this.repository.listReportApprovalHistory(record.reportId);
+
+    return {
+      contractVersion: MANAGER_REVIEW_API_CONTRACT_VERSION,
+      report: toReportDetail(record, approvalHistoryItems),
+    };
+  }
+
+  async approveEscalatedReport(
+    user: AuthenticatedUser,
+    reportId: string,
+    context: { correlationId: string },
+  ): Promise<ManagerReviewDecisionResponse> {
+    return this.recordDecision(user, reportId, {
+      decisionType: 'approved',
+      reportState: 'approved',
+      lifecycleState: 'Approved',
+      actionType: 'report.manager.approved',
+      comment: null,
+      correlationId: context.correlationId,
+    });
+  }
+
+  async returnEscalatedReport(
+    user: AuthenticatedUser,
+    reportId: string,
+    comment: string,
+    context: { correlationId: string },
+  ): Promise<ManagerReviewDecisionResponse> {
+    const trimmedComment = comment.trim();
+    if (trimmedComment.length === 0) {
+      throw new ManagerReviewError('Manager return comment is required before returning a report.', 400);
+    }
+
+    return this.recordDecision(user, reportId, {
+      decisionType: 'returned',
+      reportState: 'returned-by-manager',
+      lifecycleState: 'Returned by Manager',
+      actionType: 'report.manager.returned',
+      comment: trimmedComment,
+      correlationId: context.correlationId,
+    });
+  }
+
+  private async recordDecision(
+    user: AuthenticatedUser,
+    reportId: string,
+    decision: {
+      decisionType: ManagerReviewDecisionType;
+      reportState: ManagerReviewDecisionResponse['reportState'];
+      lifecycleState: ManagerReviewDecisionResponse['lifecycleState'];
+      actionType: string;
+      comment: string | null;
+      correlationId: string;
+    },
+  ): Promise<ManagerReviewDecisionResponse> {
+    assertManagerCanReview(user);
+
+    const current = await this.repository.getManagerRoutedReportById(user.id, reportId);
+    if (!current) {
+      throw new ManagerReviewError('Escalated report was not found in manager scope.', 404);
+    }
+
+    if (current.lifecycleState !== 'Escalated - Pending Manager Review') {
+      throw new ManagerReviewError('Report is no longer pending manager review.', 409);
+    }
+
+    const decidedAt = this.now().toISOString();
+    const persisted = await this.repository.recordManagerDecision({
+      managerUserId: user.id,
+      actorRole: user.role,
+      ownerUserId: current.ownerUserId,
+      reportId,
+      reportState: decision.reportState,
+      lifecycleState: decision.lifecycleState,
+      decidedAt,
+      correlationId: decision.correlationId,
+      actionType: decision.actionType,
+      priorState: current.lifecycleState,
+      comment: decision.comment,
+      metadata: {
+        decisionType: decision.decisionType,
+        reviewLevel: 'manager',
+        escalatedCase: true,
+        workPackageId: current.workPackageId,
+        tagId: current.tagId,
+        technicianUserId: current.ownerUserId,
+        serverReportVersion: current.serverReportVersion,
+      },
+    });
+
+    if (!persisted) {
+      throw new ManagerReviewError('Report is no longer pending manager review.', 409);
+    }
+
+    return {
+      contractVersion: MANAGER_REVIEW_API_CONTRACT_VERSION,
       reportId: persisted.report.reportId,
       decisionType: decision.decisionType,
       reportState: decision.reportState,

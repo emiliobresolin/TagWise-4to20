@@ -1,5 +1,6 @@
 import { secureStorageKeys, type SecureKeyValueStore } from '../../platform/secure-storage/secureStorageBoundary';
 import type {
+  ManagerReviewDecisionResponse,
   SupervisorReviewDecisionResponse,
   SupervisorReviewQueueResponse,
   SupervisorReviewReportResponse,
@@ -17,6 +18,13 @@ export interface SupervisorReviewApiClient {
     reportId: string,
     rationale: string,
   ): Promise<SupervisorReviewDecisionResponse>;
+  listManagerQueue(): Promise<SupervisorReviewQueueResponse>;
+  getManagerReportDetail(reportId: string): Promise<SupervisorReviewReportResponse>;
+  approveManagerReport(reportId: string): Promise<ManagerReviewDecisionResponse>;
+  returnManagerReport(
+    reportId: string,
+    comment: string,
+  ): Promise<ManagerReviewDecisionResponse>;
 }
 
 export class SupervisorReviewApiError extends Error {
@@ -90,6 +98,45 @@ export function createFetchSupervisorReviewApiClient(options: {
         fetchImplementation,
         timeoutMs,
         { rationale },
+      );
+    },
+    listManagerQueue() {
+      return getJson<SupervisorReviewQueueResponse>(
+        buildUrl(options.baseUrl, '/review/manager/reports'),
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+      );
+    },
+    getManagerReportDetail(reportId) {
+      return getJson<SupervisorReviewReportResponse>(
+        buildUrl(options.baseUrl, `/review/manager/reports/${encodeURIComponent(reportId)}`),
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+      );
+    },
+    approveManagerReport(reportId) {
+      return postJson<ManagerReviewDecisionResponse>(
+        buildUrl(
+          options.baseUrl,
+          `/review/manager/reports/${encodeURIComponent(reportId)}/approve`,
+        ),
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+      );
+    },
+    returnManagerReport(reportId, comment) {
+      return postJson<ManagerReviewDecisionResponse>(
+        buildUrl(
+          options.baseUrl,
+          `/review/manager/reports/${encodeURIComponent(reportId)}/return`,
+        ),
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+        { comment },
       );
     },
   };

@@ -14,7 +14,10 @@ import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncServic
 import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
 import { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
 import { SupervisorReviewRepository } from '../modules/review/supervisorReviewRepository';
-import { SupervisorReviewService } from '../modules/review/supervisorReviewService';
+import {
+  ManagerReviewService,
+  SupervisorReviewService,
+} from '../modules/review/supervisorReviewService';
 import { createApiRequestHandler } from './createApiRequestHandler';
 import { createS3EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
 
@@ -67,6 +70,9 @@ async function main() {
     undefined,
     manager.id,
   );
+  const managerReviewService = new ManagerReviewService(
+    new SupervisorReviewRepository(pool),
+  );
   await supervisorReviewService.ensureSeedRoutes(
     supervisor.id,
     seededWorkPackages.map((workPackage) => workPackage.id),
@@ -83,6 +89,7 @@ async function main() {
       authService,
       assignedWorkPackageService,
       evidenceSyncService,
+      managerReviewService,
       reportSubmissionService,
       supervisorReviewService,
     }),

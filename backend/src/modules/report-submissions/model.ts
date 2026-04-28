@@ -6,11 +6,13 @@ export type ReportSubmissionState =
   | 'submitted-pending-review'
   | 'escalated-pending-manager-review'
   | 'returned-by-supervisor'
+  | 'returned-by-manager'
   | 'approved';
 export type ReportSubmissionLifecycleState =
   | 'Submitted - Pending Supervisor Review'
   | 'Escalated - Pending Manager Review'
   | 'Returned by Supervisor'
+  | 'Returned by Manager'
   | 'Approved';
 export type ReportSubmissionSyncState = 'synced';
 
