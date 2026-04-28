@@ -218,8 +218,8 @@ function structuredIssue(
 function toAcceptedResult(record: {
   reportId: string;
   serverReportVersion: string;
-  reportState: 'submitted-pending-review';
-  lifecycleState: 'Submitted - Pending Supervisor Review';
+  reportState: ReportSubmissionAcceptedResult['reportState'];
+  lifecycleState: ReportSubmissionAcceptedResult['lifecycleState'];
   syncState: 'synced';
   acceptedAt: string;
 }): ReportSubmissionAcceptedResult {

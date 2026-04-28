@@ -141,8 +141,18 @@ const postgresMigrations: PostgresMigration[] = [
         local_object_version TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         server_report_version TEXT NOT NULL,
-        report_state TEXT NOT NULL CHECK (report_state IN ('submitted-pending-review')),
-        lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('Submitted - Pending Supervisor Review')),
+        report_state TEXT NOT NULL CHECK (report_state IN (
+          'submitted-pending-review',
+          'escalated-pending-manager-review',
+          'returned-by-supervisor',
+          'approved'
+        )),
+        lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN (
+          'Submitted - Pending Supervisor Review',
+          'Escalated - Pending Manager Review',
+          'Returned by Supervisor',
+          'Approved'
+        )),
         sync_state TEXT NOT NULL CHECK (sync_state IN ('synced')),
         submitted_at TEXT NOT NULL,
         accepted_at TEXT NOT NULL,
@@ -172,6 +182,76 @@ const postgresMigrations: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS idx_supervisor_review_routes_supervisor
       ON supervisor_review_routes (supervisor_user_id, route_state, work_package_id);
+    `,
+  },
+  {
+    id: '0008_supervisor_standard_decision_states',
+    sql: `
+      ALTER TABLE report_submission_records
+        DROP CONSTRAINT IF EXISTS report_submission_records_report_state_check;
+
+      ALTER TABLE report_submission_records
+        ADD CONSTRAINT report_submission_records_report_state_check
+        CHECK (report_state IN (
+          'submitted-pending-review',
+          'returned-by-supervisor',
+          'approved'
+        ));
+
+      ALTER TABLE report_submission_records
+        DROP CONSTRAINT IF EXISTS report_submission_records_lifecycle_state_check;
+
+      ALTER TABLE report_submission_records
+        ADD CONSTRAINT report_submission_records_lifecycle_state_check
+        CHECK (lifecycle_state IN (
+          'Submitted - Pending Supervisor Review',
+          'Returned by Supervisor',
+          'Approved'
+        ));
+    `,
+  },
+  {
+    id: '0009_supervisor_escalation_manager_routes',
+    sql: `
+      ALTER TABLE report_submission_records
+        DROP CONSTRAINT IF EXISTS report_submission_records_report_state_check;
+
+      ALTER TABLE report_submission_records
+        ADD CONSTRAINT report_submission_records_report_state_check
+        CHECK (report_state IN (
+          'submitted-pending-review',
+          'escalated-pending-manager-review',
+          'returned-by-supervisor',
+          'approved'
+        ));
+
+      ALTER TABLE report_submission_records
+        DROP CONSTRAINT IF EXISTS report_submission_records_lifecycle_state_check;
+
+      ALTER TABLE report_submission_records
+        ADD CONSTRAINT report_submission_records_lifecycle_state_check
+        CHECK (lifecycle_state IN (
+          'Submitted - Pending Supervisor Review',
+          'Escalated - Pending Manager Review',
+          'Returned by Supervisor',
+          'Approved'
+        ));
+
+      CREATE TABLE IF NOT EXISTS manager_review_routes (
+        manager_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+        owner_user_id TEXT NOT NULL,
+        report_id TEXT NOT NULL,
+        route_state TEXT NOT NULL CHECK (route_state IN ('active')),
+        routed_at TEXT NOT NULL,
+        escalation_audit_event_id TEXT NOT NULL REFERENCES audit_events(id) ON DELETE RESTRICT,
+        PRIMARY KEY (manager_user_id, owner_user_id, report_id),
+        FOREIGN KEY (owner_user_id, report_id)
+          REFERENCES report_submission_records(owner_user_id, report_id)
+          ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_manager_review_routes_manager
+      ON manager_review_routes (manager_user_id, route_state, routed_at ASC, report_id);
     `,
   },
 ];

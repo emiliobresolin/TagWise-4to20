@@ -127,6 +127,8 @@ type BootstrapStatus =
       reportSyncDetail: ReportSyncDetail | null;
       supervisorReviewQueue: SupervisorReviewQueueItem[];
       selectedSupervisorReviewReport: SupervisorReviewReportDetail | null;
+      supervisorReturnComment: string;
+      supervisorEscalationRationale: string;
       qrScannerVisible: boolean;
       qrManualPayload: string;
       qrScanResult: LocalQrScanResult | null;
@@ -270,6 +272,8 @@ export function TagWiseApp() {
           reportSyncDetail: null,
           supervisorReviewQueue: [],
           selectedSupervisorReviewReport: null,
+          supervisorReturnComment: '',
+          supervisorEscalationRationale: '',
           qrScannerVisible: false,
           qrManualPayload: '',
           qrScanResult: null,
@@ -434,6 +438,8 @@ export function TagWiseApp() {
               reportSyncDetail: null,
               supervisorReviewQueue: [],
               selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
               qrScannerVisible: false,
               qrManualPayload: '',
               qrScanResult: null,
@@ -495,6 +501,8 @@ export function TagWiseApp() {
               reportSyncDetail: null,
               supervisorReviewQueue: [],
               selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -557,6 +565,8 @@ export function TagWiseApp() {
               executionShell: null,
               reportSyncDetail: null,
               selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -1348,6 +1358,10 @@ export function TagWiseApp() {
               result.state === 'cleared' ? [] : current.supervisorReviewQueue,
             selectedSupervisorReviewReport:
               result.state === 'cleared' ? null : current.selectedSupervisorReviewReport,
+            supervisorReturnComment:
+              result.state === 'cleared' ? '' : current.supervisorReturnComment,
+            supervisorEscalationRationale:
+              result.state === 'cleared' ? '' : current.supervisorEscalationRationale,
             qrScannerVisible: result.state === 'cleared' ? false : current.qrScannerVisible,
             qrManualPayload: result.state === 'cleared' ? '' : current.qrManualPayload,
             qrScanResult: result.state === 'cleared' ? null : current.qrScanResult,
@@ -1529,6 +1543,8 @@ export function TagWiseApp() {
               reviewBusy: false,
               supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
               authMessage: `${supervisorReviewQueue.length} supervisor review report(s) loaded.`,
             },
       );
@@ -1577,6 +1593,8 @@ export function TagWiseApp() {
               ...current,
               reviewBusy: false,
               selectedSupervisorReviewReport,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
               authMessage: `Review report loaded for ${selectedSupervisorReviewReport.tagId}.`,
             },
       );
@@ -1603,8 +1621,190 @@ export function TagWiseApp() {
         : {
             ...current,
             selectedSupervisorReviewReport: null,
+            supervisorReturnComment: '',
+            supervisorEscalationRationale: '',
           },
     );
+  }
+
+  function handleSupervisorReturnCommentChange(value: string) {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            supervisorReturnComment: value,
+          },
+    );
+  }
+
+  function handleSupervisorEscalationRationaleChange(value: string) {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            supervisorEscalationRationale: value,
+          },
+    );
+  }
+
+  async function handleApproveSupervisorReviewReport(reportId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            reviewBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const decision = await readyState.supervisorReviewService.approveReport(
+        readyState.session,
+        reportId,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              supervisorReviewQueue: current.supervisorReviewQueue.filter(
+                (item) => item.reportId !== decision.reportId,
+              ),
+              selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
+              authMessage: `Report ${decision.reportId} approved and recorded in the audit trail.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Supervisor approval failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  async function handleReturnSupervisorReviewReport(reportId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            reviewBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const decision = await readyState.supervisorReviewService.returnReport(
+        readyState.session,
+        reportId,
+        readyState.supervisorReturnComment,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              supervisorReviewQueue: current.supervisorReviewQueue.filter(
+                (item) => item.reportId !== decision.reportId,
+              ),
+              selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
+              authMessage: `Report ${decision.reportId} returned with supervisor comments.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Supervisor return failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  async function handleEscalateSupervisorReviewReport(reportId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            reviewBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const decision = await readyState.supervisorReviewService.escalateReport(
+        readyState.session,
+        reportId,
+        readyState.supervisorEscalationRationale,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              supervisorReviewQueue: current.supervisorReviewQueue.filter(
+                (item) => item.reportId !== decision.reportId,
+              ),
+              selectedSupervisorReviewReport: null,
+              supervisorReturnComment: '',
+              supervisorEscalationRationale: '',
+              authMessage: `Report ${decision.reportId} escalated for manager review.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Supervisor escalation failed without a detailed message.',
+            },
+      );
+    }
   }
 
   const selectedExecutionStep =
@@ -2499,12 +2699,19 @@ export function TagWiseApp() {
             ) : readyState.route === 'review' ? (
               <SupervisorReviewPanel
                 busy={readyState.reviewBusy}
+                escalationRationale={readyState.supervisorEscalationRationale}
                 queue={readyState.supervisorReviewQueue}
+                returnComment={readyState.supervisorReturnComment}
                 selectedReport={readyState.selectedSupervisorReviewReport}
                 session={readyState.session}
+                onApproveReport={(reportId) => void handleApproveSupervisorReviewReport(reportId)}
                 onCloseReport={handleCloseSupervisorReviewReport}
+                onEscalateReport={(reportId) => void handleEscalateSupervisorReviewReport(reportId)}
+                onEscalationRationaleChange={handleSupervisorEscalationRationaleChange}
                 onOpenReport={(reportId) => void handleOpenSupervisorReviewReport(reportId)}
                 onRefresh={() => void handleRefreshSupervisorReviewQueue()}
+                onReturnCommentChange={handleSupervisorReturnCommentChange}
+                onReturnReport={(reportId) => void handleReturnSupervisorReviewReport(reportId)}
               />
             ) : (
               <View style={styles.panel}>
@@ -2606,22 +2813,36 @@ function SyncStateBadge({ label, tone }: { label: string; tone: SyncStateTone })
 
 function SupervisorReviewPanel({
   busy,
+  escalationRationale,
   queue,
+  returnComment,
   selectedReport,
   session,
+  onApproveReport,
   onCloseReport,
+  onEscalateReport,
+  onEscalationRationaleChange,
   onOpenReport,
   onRefresh,
+  onReturnCommentChange,
+  onReturnReport,
 }: {
   busy: boolean;
+  escalationRationale: string;
   queue: SupervisorReviewQueueItem[];
+  returnComment: string;
   selectedReport: SupervisorReviewReportDetail | null;
-  session: ActiveUserSession;
+  session: ActiveUserSession | null;
+  onApproveReport: (reportId: string) => void;
   onCloseReport: () => void;
+  onEscalateReport: (reportId: string) => void;
+  onEscalationRationaleChange: (value: string) => void;
   onOpenReport: (reportId: string) => void;
   onRefresh: () => void;
+  onReturnCommentChange: (value: string) => void;
+  onReturnReport: (reportId: string) => void;
 }) {
-  const canRefresh = session.role === 'supervisor' && session.connectionMode === 'connected';
+  const canRefresh = session?.role === 'supervisor' && session.connectionMode === 'connected';
 
   return (
     <View style={styles.panel}>
@@ -2657,9 +2878,17 @@ function SupervisorReviewPanel({
 
       {selectedReport ? (
         <SupervisorReviewDetailPanel
+          busy={busy}
+          escalationRationale={escalationRationale}
           report={selectedReport}
+          returnComment={returnComment}
           session={session}
+          onApproveReport={onApproveReport}
           onCloseReport={onCloseReport}
+          onEscalateReport={onEscalateReport}
+          onEscalationRationaleChange={onEscalationRationaleChange}
+          onReturnCommentChange={onReturnCommentChange}
+          onReturnReport={onReturnReport}
         />
       ) : queue.length === 0 ? (
         <Text style={styles.helperText}>No server-accepted reports are currently routed here.</Text>
@@ -2694,14 +2923,34 @@ function SupervisorReviewPanel({
 }
 
 function SupervisorReviewDetailPanel({
+  busy,
+  escalationRationale,
   report,
+  returnComment,
   session,
+  onApproveReport,
   onCloseReport,
+  onEscalateReport,
+  onEscalationRationaleChange,
+  onReturnCommentChange,
+  onReturnReport,
 }: {
+  busy: boolean;
+  escalationRationale: string;
   report: SupervisorReviewReportDetail;
-  session: ActiveUserSession;
+  returnComment: string;
+  session: ActiveUserSession | null;
+  onApproveReport: (reportId: string) => void;
   onCloseReport: () => void;
+  onEscalateReport: (reportId: string) => void;
+  onEscalationRationaleChange: (value: string) => void;
+  onReturnCommentChange: (value: string) => void;
+  onReturnReport: (reportId: string) => void;
 }) {
+  const canAct = session?.role === 'supervisor' && session.connectionMode === 'connected';
+  const returnCommentReady = returnComment.trim().length > 0;
+  const escalationRationaleReady = escalationRationale.trim().length > 0;
+
   return (
     <View style={styles.listCard}>
       <Text style={styles.listCardTitle}>Report detail</Text>
@@ -2722,7 +2971,7 @@ function SupervisorReviewDetailPanel({
       <View style={styles.metricGrid}>
         <MetricCard
           label="Official actions"
-          value={session.reviewActionsAvailable ? 'Connected' : 'Unavailable'}
+          value={session?.reviewActionsAvailable ? 'Connected' : 'Unavailable'}
         />
         <MetricCard label="Evidence" value={report.evidenceStatus.state} />
       </View>
@@ -2772,7 +3021,78 @@ function SupervisorReviewDetailPanel({
       ))}
 
       <Text style={styles.sectionTitle}>Approval history</Text>
-      <Text style={styles.helperText}>{report.approvalHistory.placeholder}</Text>
+      {report.approvalHistory.items.length === 0 ? (
+        <Text style={styles.helperText}>{report.approvalHistory.placeholder}</Text>
+      ) : (
+        report.approvalHistory.items.map((item) => (
+          <View key={item.auditEventId} style={styles.metricCard}>
+            <Text style={styles.metricLabel}>{item.actorRole}</Text>
+            <Text style={styles.metricValue}>{item.actionType}</Text>
+            <Text style={styles.helperText}>At: {formatTimestamp(item.occurredAt)}</Text>
+            <Text style={styles.helperText}>
+              State: {item.priorState ?? 'Unknown'} to {item.nextState ?? 'Unknown'}
+            </Text>
+            <Text style={styles.helperText}>Correlation: {item.correlationId}</Text>
+            {item.comment ? <Text style={styles.helperText}>{item.comment}</Text> : null}
+          </View>
+        ))
+      )}
+
+      <Text style={styles.sectionTitle}>Supervisor decision</Text>
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        editable={canAct && !busy}
+        multiline
+        onChangeText={onReturnCommentChange}
+        placeholder="Required return comment."
+        style={styles.input}
+        value={returnComment}
+      />
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        editable={canAct && !busy}
+        multiline
+        onChangeText={onEscalationRationaleChange}
+        placeholder="Required escalation rationale."
+        style={styles.input}
+        value={escalationRationale}
+      />
+      <View style={styles.metricGrid}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!canAct || busy}
+          onPress={() => onApproveReport(report.reportId)}
+          style={[styles.primaryButton, !canAct || busy ? styles.buttonDisabled : null]}
+        >
+          <Text style={styles.primaryButtonLabel}>
+            {busy ? 'Submitting...' : 'Approve standard case'}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!canAct || busy || !returnCommentReady}
+          onPress={() => onReturnReport(report.reportId)}
+          style={[
+            styles.secondaryButton,
+            !canAct || busy || !returnCommentReady ? styles.buttonDisabled : null,
+          ]}
+        >
+          <Text style={styles.secondaryButtonLabel}>Return with comment</Text>
+        </Pressable>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        disabled={!canAct || busy || !escalationRationaleReady}
+        onPress={() => onEscalateReport(report.reportId)}
+        style={[
+          styles.secondaryButton,
+          !canAct || busy || !escalationRationaleReady ? styles.buttonDisabled : null,
+        ]}
+      >
+        <Text style={styles.secondaryButtonLabel}>Escalate to manager</Text>
+      </Pressable>
 
       <Pressable accessibilityRole="button" onPress={onCloseReport} style={styles.secondaryButton}>
         <Text style={styles.secondaryButtonLabel}>Back to review queue</Text>

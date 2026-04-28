@@ -392,6 +392,65 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    const supervisorReportDecisionMatch =
+      method === 'POST'
+        ? url.match(/^\/review\/supervisor\/reports\/([^/]+)\/(approve|return|escalate)$/)
+        : null;
+    if (supervisorReportDecisionMatch) {
+      const reportId = decodeURIComponent(supervisorReportDecisionMatch[1] ?? '');
+      const action = supervisorReportDecisionMatch[2];
+
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        let decision: Awaited<ReturnType<SupervisorReviewService['approveStandardReport']>>;
+        if (action === 'approve') {
+          decision = await dependencies.supervisorReviewService.approveStandardReport(
+            user,
+            reportId,
+            { correlationId: context.correlationId },
+          );
+        } else if (action === 'return') {
+          decision = await dependencies.supervisorReviewService.returnStandardReport(
+            user,
+            reportId,
+            getStringProperty(await readSupervisorReviewJsonBody(request), 'comment'),
+            { correlationId: context.correlationId },
+          );
+        } else {
+          decision = await dependencies.supervisorReviewService.escalateHigherRiskReport(
+            user,
+            reportId,
+            getStringProperty(await readSupervisorReviewJsonBody(request), 'rationale'),
+            { correlationId: context.correlationId },
+          );
+        }
+
+        context.logger.info('supervisor-review.decision.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: decision.reportId,
+          decisionType: decision.decisionType,
+        });
+        writeJson(response, 200, decision);
+      } catch (error) {
+        context.logger.warn('supervisor-review.decision.failed', {
+          statusCode:
+            error instanceof SupervisorReviewError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeSupervisorReviewError(
+          response,
+          error,
+          'Supervisor review decision failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
     const supervisorReportMatch =
       method === 'GET' ? url.match(/^\/review\/supervisor\/reports\/([^/]+)$/) : null;
     if (supervisorReportMatch) {
@@ -463,6 +522,17 @@ async function readReportSubmissionJsonBody(
     return await readJsonBody<Record<string, unknown>>(request);
   } catch {
     throw malformedReportSubmissionPayload('Report submission body must be valid JSON.', 400);
+  }
+}
+
+async function readSupervisorReviewJsonBody(
+  request: IncomingMessage,
+): Promise<Record<string, unknown>> {
+  try {
+    const body = await readJsonBody<unknown>(request);
+    return isRecord(body) ? body : {};
+  } catch {
+    throw new SupervisorReviewError('Supervisor review body must be valid JSON.', 400);
   }
 }
 
@@ -551,6 +621,15 @@ function withEvidenceSyncContractVersion<T extends object>(payload: T) {
     contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
     ...payload,
   };
+}
+
+function getStringProperty(record: Record<string, unknown>, property: string): string {
+  const value = record[property];
+  return typeof value === 'string' ? value : '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {

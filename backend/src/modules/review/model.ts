@@ -46,6 +46,17 @@ export interface SupervisorReviewQueueResponse {
   items: SupervisorReviewQueueItem[];
 }
 
+export interface SupervisorReviewApprovalHistoryItem {
+  auditEventId: string;
+  actorRole: string;
+  actionType: string;
+  occurredAt: string;
+  correlationId: string;
+  priorState: string | null;
+  nextState: string | null;
+  comment: string | null;
+}
+
 export interface SupervisorReviewReportDetail extends SupervisorReviewQueueItem {
   historySummary: string;
   draftDiagnosisSummary: string;
@@ -54,7 +65,7 @@ export interface SupervisorReviewReportDetail extends SupervisorReviewQueueItem 
   photoAttachments: ReportSubmissionPhotoAttachment[];
   evidenceStatus: SupervisorReviewEvidenceStatus;
   approvalHistory: {
-    items: [];
+    items: SupervisorReviewApprovalHistoryItem[];
     placeholder: string;
   };
 }
@@ -62,6 +73,21 @@ export interface SupervisorReviewReportDetail extends SupervisorReviewQueueItem 
 export interface SupervisorReviewReportResponse {
   contractVersion: typeof SUPERVISOR_REVIEW_API_CONTRACT_VERSION;
   report: SupervisorReviewReportDetail;
+}
+
+export type SupervisorReviewDecisionType = 'approved' | 'returned' | 'escalated';
+
+export interface SupervisorReviewDecisionResponse {
+  contractVersion: typeof SUPERVISOR_REVIEW_API_CONTRACT_VERSION;
+  reportId: string;
+  decisionType: SupervisorReviewDecisionType;
+  reportState: 'approved' | 'returned-by-supervisor' | 'escalated-pending-manager-review';
+  lifecycleState: 'Approved' | 'Returned by Supervisor' | 'Escalated - Pending Manager Review';
+  syncState: ReportSubmissionSyncState;
+  decidedAt: string;
+  auditEventId: string;
+  comment: string | null;
+  managerReviewerUserId?: string;
 }
 
 export interface ReviewableReportRecord {

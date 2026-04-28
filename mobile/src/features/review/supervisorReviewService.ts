@@ -1,5 +1,6 @@
 import type { ActiveUserSession } from '../auth/model';
 import type {
+  SupervisorReviewDecisionResponse,
   SupervisorReviewQueueItem,
   SupervisorReviewReportDetail,
 } from './model';
@@ -30,6 +31,47 @@ export class SupervisorReviewService {
 
     const response = await this.apiClient.getSupervisorReportDetail(reportId);
     return response.report;
+  }
+
+  async approveReport(
+    session: ActiveUserSession,
+    reportId: string,
+  ): Promise<SupervisorReviewDecisionResponse> {
+    assertConnectedSupervisor(session);
+
+    return this.apiClient.approveSupervisorReport(reportId);
+  }
+
+  async returnReport(
+    session: ActiveUserSession,
+    reportId: string,
+    comment: string,
+  ): Promise<SupervisorReviewDecisionResponse> {
+    assertConnectedSupervisor(session);
+
+    const trimmedComment = comment.trim();
+    if (trimmedComment.length === 0) {
+      throw new SupervisorReviewAccessError('Return comment is required before returning a report.');
+    }
+
+    return this.apiClient.returnSupervisorReport(reportId, trimmedComment);
+  }
+
+  async escalateReport(
+    session: ActiveUserSession,
+    reportId: string,
+    rationale: string,
+  ): Promise<SupervisorReviewDecisionResponse> {
+    assertConnectedSupervisor(session);
+
+    const trimmedRationale = rationale.trim();
+    if (trimmedRationale.length === 0) {
+      throw new SupervisorReviewAccessError(
+        'Escalation rationale is required before escalating a report.',
+      );
+    }
+
+    return this.apiClient.escalateSupervisorReport(reportId, trimmedRationale);
   }
 }
 

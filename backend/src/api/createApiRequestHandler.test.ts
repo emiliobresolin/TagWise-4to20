@@ -897,6 +897,519 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('approves a standard supervisor report with an auditable decision and removes it from the queue', async () => {
+    const { authService, auditRepository, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-review-approve-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-review-approve-supervisor-login',
+      },
+    );
+
+    const accepted = await fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(buildValidReportSubmissionPayload()),
+    });
+    expect(accepted.status).toBe(200);
+
+    const forbiddenTechnicianDecision = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    expect(forbiddenTechnicianDecision.status).toBe(403);
+
+    const approval = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'x-correlation-id': 'corr-review-approve-command',
+        },
+      },
+    );
+    const approvalBody = (await approval.json()) as {
+      contractVersion: string;
+      reportId: string;
+      decisionType: string;
+      reportState: string;
+      lifecycleState: string;
+      syncState: string;
+      decidedAt: string;
+      auditEventId: string;
+      comment: string | null;
+    };
+
+    expect(approval.status).toBe(200);
+    expect(approvalBody).toMatchObject({
+      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+      reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+      decisionType: 'approved',
+      reportState: 'approved',
+      lifecycleState: 'Approved',
+      syncState: 'synced',
+      decidedAt: '2026-04-23T15:00:00.000Z',
+      comment: null,
+    });
+    expect(approvalBody.auditEventId).toBeTruthy();
+
+    const queue = await fetch(`http://127.0.0.1:${port}/review/supervisor/reports`, {
+      headers: {
+        authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+      },
+    });
+    expect(queue.status).toBe(200);
+    expect((await queue.json()) as unknown).toEqual({
+      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+      items: [],
+    });
+
+    const auditEvents = await auditRepository.listEventsByTarget(
+      'report',
+      'tag-report:wp-seed-1001:tag-pt-101',
+    );
+    expect(auditEvents).toHaveLength(1);
+    expect(auditEvents[0]).toMatchObject({
+      id: approvalBody.auditEventId,
+      actorRole: 'supervisor',
+      actionType: 'report.supervisor.approved',
+      targetObjectType: 'report',
+      targetObjectId: 'tag-report:wp-seed-1001:tag-pt-101',
+      occurredAt: '2026-04-23T15:00:00.000Z',
+      correlationId: 'corr-review-approve-command',
+      priorState: 'Submitted - Pending Supervisor Review',
+      nextState: 'Approved',
+      comment: null,
+    });
+
+    const staleApproval = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    expect(staleApproval.status).toBe(409);
+    expect(await staleApproval.json()).toEqual({
+      message: 'Report is no longer pending supervisor review.',
+    });
+
+    await pool.end();
+  });
+
+  it('returns a standard supervisor report only with a mandatory comment and persists returned state', async () => {
+    const { authService, auditRepository, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-review-return-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-review-return-supervisor-login',
+      },
+    );
+
+    const accepted = await fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(buildValidReportSubmissionPayload()),
+    });
+    expect(accepted.status).toBe(200);
+
+    const blankReturn = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/return`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ comment: '   ' }),
+      },
+    );
+    expect(blankReturn.status).toBe(400);
+    expect(await blankReturn.json()).toEqual({
+      message: 'Return comment is required before returning a report.',
+    });
+
+    const returned = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/return`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+          'x-correlation-id': 'corr-review-return-command',
+        },
+        body: JSON.stringify({ comment: 'Clarify instrument note before approval.' }),
+      },
+    );
+    const returnedBody = (await returned.json()) as {
+      auditEventId: string;
+      decisionType: string;
+      reportState: string;
+      lifecycleState: string;
+      comment: string | null;
+    };
+
+    expect(returned.status).toBe(200);
+    expect(returnedBody).toMatchObject({
+      decisionType: 'returned',
+      reportState: 'returned-by-supervisor',
+      lifecycleState: 'Returned by Supervisor',
+      comment: 'Clarify instrument note before approval.',
+    });
+
+    const reportRows = (await pool.query(
+      `
+        SELECT report_state, lifecycle_state, sync_state
+        FROM report_submission_records
+        WHERE report_id = $1;
+      `,
+      ['tag-report:wp-seed-1001:tag-pt-101'],
+    )) as {
+      rows: Array<{
+        report_state: string;
+        lifecycle_state: string;
+        sync_state: string;
+      }>;
+    };
+    expect(reportRows.rows[0]).toEqual({
+      report_state: 'returned-by-supervisor',
+      lifecycle_state: 'Returned by Supervisor',
+      sync_state: 'synced',
+    });
+
+    const auditEvents = await auditRepository.listEventsByTarget(
+      'report',
+      'tag-report:wp-seed-1001:tag-pt-101',
+    );
+    expect(auditEvents).toHaveLength(1);
+    expect(auditEvents[0]).toMatchObject({
+      id: returnedBody.auditEventId,
+      actorRole: 'supervisor',
+      actionType: 'report.supervisor.returned',
+      correlationId: 'corr-review-return-command',
+      priorState: 'Submitted - Pending Supervisor Review',
+      nextState: 'Returned by Supervisor',
+      comment: 'Clarify instrument note before approval.',
+    });
+
+    await pool.end();
+  });
+
+  it('escalates a higher-risk supervisor report with rationale and routes it to manager review', async () => {
+    const { authService, auditRepository, manager, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-review-escalate-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-review-escalate-supervisor-login',
+      },
+    );
+    const managerLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.manager.email,
+        password: authConfig.seedUsers.manager.password,
+      },
+      {
+        correlationId: 'corr-review-escalate-manager-login',
+      },
+    );
+
+    const accepted = await fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(buildValidReportSubmissionPayload()),
+    });
+    expect(accepted.status).toBe(200);
+
+    const blankEscalation = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/escalate`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ rationale: '   ' }),
+      },
+    );
+    expect(blankEscalation.status).toBe(400);
+    expect(await blankEscalation.json()).toEqual({
+      message: 'Escalation rationale is required before escalating a report.',
+    });
+
+    const forbiddenTechnicianEscalation = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/escalate`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ rationale: 'Manager should review this risk.' }),
+      },
+    );
+    expect(forbiddenTechnicianEscalation.status).toBe(403);
+
+    const forbiddenManagerEscalation = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/escalate`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${managerLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ rationale: 'Manager should review this risk.' }),
+      },
+    );
+    expect(forbiddenManagerEscalation.status).toBe(403);
+
+    const escalation = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/escalate`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+          'x-correlation-id': 'corr-review-escalate-command',
+        },
+        body: JSON.stringify({ rationale: 'Higher-risk review needed before approval.' }),
+      },
+    );
+    const escalationBody = (await escalation.json()) as {
+      auditEventId: string;
+      decisionType: string;
+      reportState: string;
+      lifecycleState: string;
+      syncState: string;
+      comment: string | null;
+      managerReviewerUserId?: string;
+    };
+
+    expect(escalation.status).toBe(200);
+    expect(escalationBody).toMatchObject({
+      decisionType: 'escalated',
+      reportState: 'escalated-pending-manager-review',
+      lifecycleState: 'Escalated - Pending Manager Review',
+      syncState: 'synced',
+      comment: 'Higher-risk review needed before approval.',
+      managerReviewerUserId: manager.id,
+    });
+    expect(escalationBody.auditEventId).toBeTruthy();
+
+    const queue = await fetch(`http://127.0.0.1:${port}/review/supervisor/reports`, {
+      headers: {
+        authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+      },
+    });
+    expect(queue.status).toBe(200);
+    expect(await queue.json()).toEqual({
+      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+      items: [],
+    });
+
+    const reportRows = (await pool.query(
+      `
+        SELECT report_state, lifecycle_state, sync_state
+        FROM report_submission_records
+        WHERE report_id = $1;
+      `,
+      ['tag-report:wp-seed-1001:tag-pt-101'],
+    )) as {
+      rows: Array<{
+        report_state: string;
+        lifecycle_state: string;
+        sync_state: string;
+      }>;
+    };
+    expect(reportRows.rows[0]).toEqual({
+      report_state: 'escalated-pending-manager-review',
+      lifecycle_state: 'Escalated - Pending Manager Review',
+      sync_state: 'synced',
+    });
+
+    const managerRouteRows = (await pool.query(
+      `
+        SELECT manager_user_id, owner_user_id, report_id, route_state, escalation_audit_event_id
+        FROM manager_review_routes
+        WHERE report_id = $1;
+      `,
+      ['tag-report:wp-seed-1001:tag-pt-101'],
+    )) as {
+      rows: Array<{
+        manager_user_id: string;
+        owner_user_id: string;
+        report_id: string;
+        route_state: string;
+        escalation_audit_event_id: string;
+      }>;
+    };
+    expect(managerRouteRows.rows[0]).toEqual({
+      manager_user_id: manager.id,
+      owner_user_id: technicianLogin.user.id,
+      report_id: 'tag-report:wp-seed-1001:tag-pt-101',
+      route_state: 'active',
+      escalation_audit_event_id: escalationBody.auditEventId,
+    });
+
+    const auditEvents = await auditRepository.listEventsByTarget(
+      'report',
+      'tag-report:wp-seed-1001:tag-pt-101',
+    );
+    expect(auditEvents).toHaveLength(1);
+    expect(auditEvents[0]).toMatchObject({
+      id: escalationBody.auditEventId,
+      actorRole: 'supervisor',
+      actionType: 'report.supervisor.escalated',
+      targetObjectType: 'report',
+      targetObjectId: 'tag-report:wp-seed-1001:tag-pt-101',
+      occurredAt: '2026-04-23T15:00:00.000Z',
+      correlationId: 'corr-review-escalate-command',
+      priorState: 'Submitted - Pending Supervisor Review',
+      nextState: 'Escalated - Pending Manager Review',
+      comment: 'Higher-risk review needed before approval.',
+    });
+    const auditMetadata =
+      typeof auditEvents[0]?.metadataJson === 'string'
+        ? JSON.parse(auditEvents[0].metadataJson)
+        : {};
+    expect(auditMetadata).toMatchObject({
+      decisionType: 'escalated',
+      escalationFlag: true,
+      reviewLevel: 'supervisor',
+      managerReviewerUserId: manager.id,
+      productSignals: {
+        riskFlagCount: 1,
+        pendingEvidenceCount: 0,
+      },
+    });
+
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}`,
+      {
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    const detailBody = (await detail.json()) as {
+      report: {
+        lifecycleState: string;
+        approvalHistory: {
+          items: Array<{
+            auditEventId: string;
+            actionType: string;
+            comment: string | null;
+            nextState: string | null;
+          }>;
+          placeholder: string;
+        };
+      };
+    };
+    expect(detail.status).toBe(200);
+    expect(detailBody.report.lifecycleState).toBe('Escalated - Pending Manager Review');
+    expect(detailBody.report.approvalHistory.placeholder).toBe('');
+    expect(detailBody.report.approvalHistory.items).toEqual([
+      expect.objectContaining({
+        auditEventId: escalationBody.auditEventId,
+        actionType: 'report.supervisor.escalated',
+        comment: 'Higher-risk review needed before approval.',
+        nextState: 'Escalated - Pending Manager Review',
+      }),
+    ]);
+
+    const staleEscalation = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}/escalate`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ rationale: 'Try to escalate twice.' }),
+      },
+    );
+    expect(staleEscalation.status).toBe(409);
+    expect(await staleEscalation.json()).toEqual({
+      message: 'Report is no longer pending supervisor review.',
+    });
+
+    await pool.end();
+  });
 });
 
 function createTestEvidenceObjectStorageClient(
@@ -926,10 +1439,11 @@ async function startReportSubmissionRuntime() {
   await runPostgresMigrations(pool);
 
   const authRepository = new AuthRepository(pool);
+  const auditRepository = new AuditEventRepository(pool);
   const authService = new AuthService(
     authRepository,
     authConfig,
-    new AuditEventService(new AuditEventRepository(pool)),
+    new AuditEventService(auditRepository),
   );
   await authService.ensureSeedUsers();
   const technician = await authRepository.findByEmail(authConfig.seedUsers.technician.email);
@@ -939,6 +1453,10 @@ async function startReportSubmissionRuntime() {
   const supervisor = await authRepository.findByEmail(authConfig.seedUsers.supervisor.email);
   if (!supervisor) {
     throw new Error('Missing seeded supervisor for report submission test.');
+  }
+  const manager = await authRepository.findByEmail(authConfig.seedUsers.manager.email);
+  if (!manager) {
+    throw new Error('Missing seeded manager for report submission test.');
   }
 
   const assignedWorkPackageService = new AssignedWorkPackageService(
@@ -957,6 +1475,8 @@ async function startReportSubmissionRuntime() {
   );
   const supervisorReviewService = new SupervisorReviewService(
     new SupervisorReviewRepository(pool),
+    () => new Date('2026-04-23T15:00:00.000Z'),
+    manager.id,
   );
   await supervisorReviewService.ensureSeedRoutes(
     supervisor.id,
@@ -980,7 +1500,7 @@ async function startReportSubmissionRuntime() {
   runtimes.push(runtime);
 
   const { port } = await runtime.start();
-  return { authService, pool, port };
+  return { authService, auditRepository, manager, pool, port };
 }
 
 function buildValidReportSubmissionPayload(

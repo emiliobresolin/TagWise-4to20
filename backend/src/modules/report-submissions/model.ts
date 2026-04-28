@@ -2,8 +2,16 @@ import type { AuthenticatedUser } from '../auth/model';
 
 export const REPORT_SUBMISSION_API_CONTRACT_VERSION = '2026-04-v1' as const;
 
-export type ReportSubmissionState = 'submitted-pending-review';
-export type ReportSubmissionLifecycleState = 'Submitted - Pending Supervisor Review';
+export type ReportSubmissionState =
+  | 'submitted-pending-review'
+  | 'escalated-pending-manager-review'
+  | 'returned-by-supervisor'
+  | 'approved';
+export type ReportSubmissionLifecycleState =
+  | 'Submitted - Pending Supervisor Review'
+  | 'Escalated - Pending Manager Review'
+  | 'Returned by Supervisor'
+  | 'Approved';
 export type ReportSubmissionSyncState = 'synced';
 
 export type ReportSubmissionIssueReasonCode =

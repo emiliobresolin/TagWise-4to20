@@ -45,6 +45,10 @@ async function main() {
   if (!supervisor) {
     throw new Error('Seed supervisor account is missing after auth bootstrap.');
   }
+  const manager = await authRepository.findByEmail(environment.auth.seedUsers.manager.email);
+  if (!manager) {
+    throw new Error('Seed manager account is missing after auth bootstrap.');
+  }
   const assignedWorkPackageService = new AssignedWorkPackageService(
     new AssignedWorkPackageRepository(pool),
   );
@@ -60,6 +64,8 @@ async function main() {
   );
   const supervisorReviewService = new SupervisorReviewService(
     new SupervisorReviewRepository(pool),
+    undefined,
+    manager.id,
   );
   await supervisorReviewService.ensureSeedRoutes(
     supervisor.id,

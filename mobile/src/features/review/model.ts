@@ -30,6 +30,17 @@ export interface SupervisorReviewEvidenceStatus {
   message: string;
 }
 
+export interface SupervisorReviewApprovalHistoryItem {
+  auditEventId: string;
+  actorRole: string;
+  actionType: string;
+  occurredAt: string;
+  correlationId: string;
+  priorState: string | null;
+  nextState: string | null;
+  comment: string | null;
+}
+
 export interface SupervisorReviewQueueItem {
   reportId: string;
   serverReportVersion: string;
@@ -38,8 +49,16 @@ export interface SupervisorReviewQueueItem {
   tagId: string;
   templateId: string;
   templateVersion: string;
-  reportState: 'submitted-pending-review';
-  lifecycleState: 'Submitted - Pending Supervisor Review';
+  reportState:
+    | 'submitted-pending-review'
+    | 'escalated-pending-manager-review'
+    | 'returned-by-supervisor'
+    | 'approved';
+  lifecycleState:
+    | 'Submitted - Pending Supervisor Review'
+    | 'Escalated - Pending Manager Review'
+    | 'Returned by Supervisor'
+    | 'Approved';
   syncState: 'synced';
   submittedAt: string;
   acceptedAt: string;
@@ -56,7 +75,7 @@ export interface SupervisorReviewReportDetail extends SupervisorReviewQueueItem 
   photoAttachments: SupervisorReviewPhotoAttachment[];
   evidenceStatus: SupervisorReviewEvidenceStatus;
   approvalHistory: {
-    items: [];
+    items: SupervisorReviewApprovalHistoryItem[];
     placeholder: string;
   };
 }
@@ -69,4 +88,19 @@ export interface SupervisorReviewQueueResponse {
 export interface SupervisorReviewReportResponse {
   contractVersion: typeof SUPERVISOR_REVIEW_API_CONTRACT_VERSION;
   report: SupervisorReviewReportDetail;
+}
+
+export type SupervisorReviewDecisionType = 'approved' | 'returned' | 'escalated';
+
+export interface SupervisorReviewDecisionResponse {
+  contractVersion: typeof SUPERVISOR_REVIEW_API_CONTRACT_VERSION;
+  reportId: string;
+  decisionType: SupervisorReviewDecisionType;
+  reportState: 'approved' | 'returned-by-supervisor' | 'escalated-pending-manager-review';
+  lifecycleState: 'Approved' | 'Returned by Supervisor' | 'Escalated - Pending Manager Review';
+  syncState: 'synced';
+  decidedAt: string;
+  auditEventId: string;
+  comment: string | null;
+  managerReviewerUserId?: string;
 }
