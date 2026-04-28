@@ -11,6 +11,7 @@ import type { ActiveUserSession } from '../auth/model';
 import { AssignedWorkPackageApiError } from './workPackageApiClient';
 import { AssignedWorkPackageCatalogService } from './assignedWorkPackageCatalogService';
 import type { AssignedWorkPackageSnapshot, AssignedWorkPackageSummary } from './model';
+import { LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE } from '../sync/queueContracts';
 
 const createdDirectories: string[] = [];
 
@@ -386,4 +387,172 @@ describe('AssignedWorkPackageCatalogService', () => {
 
     await runtime.database.closeAsync?.();
   });
+
+  it('derives local work-package roll-up status from child report outcomes', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-rollup-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const session: ActiveUserSession = {
+      userId: 'user-technician',
+      email: 'tech@tagwise.local',
+      displayName: 'Field Technician',
+      role: 'technician',
+      lastAuthenticatedAt: '2026-04-19T09:00:00.000Z',
+      accessTokenExpiresAt: '2026-04-19T10:00:00.000Z',
+      refreshTokenExpiresAt: '2026-04-20T10:00:00.000Z',
+      connectionMode: 'offline',
+      reviewActionsAvailable: false,
+    };
+    const service = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [seedSummary],
+        downloadAssignedPackage: async () => seedSnapshot,
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-19T10:15:00.000Z'),
+    });
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(seedSnapshot, '2026-04-19T10:15:00.000Z');
+
+    await saveReportDraft(runtime, session, {
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      state: 'submitted-pending-review',
+      syncState: 'synced',
+    });
+    await expect(service.loadLocalCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'pending_review' },
+    ]);
+
+    await saveReportDraft(runtime, session, {
+      lifecycleState: 'Returned by Supervisor',
+      state: 'technician-owned-draft',
+      syncState: 'synced',
+    });
+    await expect(service.loadLocalCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'attention_needed' },
+    ]);
+
+    await saveReportDraft(runtime, session, {
+      lifecycleState: 'Approved',
+      state: 'submitted-pending-review',
+      syncState: 'synced',
+    });
+    await expect(service.loadLocalCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'completed' },
+    ]);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('preserves connected server roll-up statuses when local report drafts are stale', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-connected-rollup-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const session: ActiveUserSession = {
+      userId: 'user-technician',
+      email: 'tech@tagwise.local',
+      displayName: 'Field Technician',
+      role: 'technician',
+      lastAuthenticatedAt: '2026-04-19T09:00:00.000Z',
+      accessTokenExpiresAt: '2026-04-19T10:00:00.000Z',
+      refreshTokenExpiresAt: '2026-04-20T10:00:00.000Z',
+      connectionMode: 'connected',
+      reviewActionsAvailable: false,
+    };
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(seedSnapshot, '2026-04-19T10:15:00.000Z');
+    await saveReportDraft(runtime, session, {
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      state: 'submitted-pending-review',
+      syncState: 'synced',
+    });
+
+    const completedService = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [
+          {
+            ...seedSummary,
+            status: 'completed',
+            updatedAt: '2026-04-20T10:00:00.000Z',
+          },
+        ],
+        downloadAssignedPackage: async () => seedSnapshot,
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-20T10:15:00.000Z'),
+    });
+
+    await expect(completedService.refreshConnectedCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'completed' },
+    ]);
+    await expect(
+      runtime.repositories.userPartitions.forUser(session.userId).workPackages.listSummaries(),
+    ).resolves.toMatchObject([{ id: seedSummary.id, status: 'completed' }]);
+
+    const attentionNeededService = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [
+          {
+            ...seedSummary,
+            status: 'attention_needed',
+            updatedAt: '2026-04-20T10:30:00.000Z',
+          },
+        ],
+        downloadAssignedPackage: async () => seedSnapshot,
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-20T10:45:00.000Z'),
+    });
+
+    await expect(attentionNeededService.refreshConnectedCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'attention_needed' },
+    ]);
+    await expect(
+      runtime.repositories.userPartitions.forUser(session.userId).workPackages.listSummaries(),
+    ).resolves.toMatchObject([{ id: seedSummary.id, status: 'attention_needed' }]);
+
+    await runtime.database.closeAsync?.();
+  });
 });
+
+async function saveReportDraft(
+  runtime: Awaited<ReturnType<typeof bootstrapLocalDatabase>>,
+  session: ActiveUserSession,
+  input: {
+    lifecycleState:
+      | 'Submitted - Pending Supervisor Review'
+      | 'Returned by Supervisor'
+      | 'Approved';
+    state: 'technician-owned-draft' | 'submitted-pending-review';
+    syncState: 'synced';
+  },
+): Promise<void> {
+  await runtime.repositories.userPartitions.forUser(session.userId).drafts.saveDraft({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId: 'tag-report:wp-local-001:tag-001',
+    summaryText: `${input.lifecycleState} report for tag-001`,
+    payloadJson: JSON.stringify({
+      reportId: 'tag-report:wp-local-001:tag-001',
+      workPackageId: seedSummary.id,
+      tagId: 'tag-001',
+      templateId: 'tpl-pressure-as-found',
+      templateVersion: '2026-04-v1',
+      state: input.state,
+      lifecycleState: input.lifecycleState,
+      syncState: input.syncState,
+      updatedAt: '2026-04-19T10:15:00.000Z',
+    }),
+  });
+}

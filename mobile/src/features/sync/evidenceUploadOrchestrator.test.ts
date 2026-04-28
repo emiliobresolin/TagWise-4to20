@@ -116,6 +116,7 @@ describe('EvidenceUploadOrchestrator', () => {
         authorizeEvidenceBinaryUpload,
         finalizeEvidenceBinaryUpload,
         submitReportForValidation: vi.fn(),
+        getReportSubmissionStatus: vi.fn(),
       },
       binaryUploadBoundary: { uploadBinary },
       now: () => new Date('2026-04-23T14:11:00.000Z'),
@@ -346,6 +347,138 @@ describe('EvidenceUploadOrchestrator', () => {
       syncIssue: null,
     });
     await expect(runtime.repositories.localWorkState.getUnsyncedWorkCount()).resolves.toBe(0);
+  });
+
+  it('cleans no-op evidence queue items when returned report resubmission is accepted with finalized photo evidence', async () => {
+    const syncedAttachment = buildPhotoAttachment({
+      metadataSyncedAt: '2026-04-23T14:10:00.000Z',
+      serverEvidenceId: 'server-evidence-1',
+      presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+      syncState: 'synced',
+    });
+    const { runtime, store, shell, attachment } = await createFixture(syncedAttachment);
+    await seedReportDraftAndSubmitQueue(store, shell);
+    await seedEvidenceQueueItems(store, shell, attachment, { binaryDependencyStatus: 'ready' });
+    await runtime.repositories.localWorkState.setUnsyncedWorkCount(1);
+    const syncEvidenceMetadata = vi.fn();
+    const authorizeEvidenceBinaryUpload = vi.fn();
+    const finalizeEvidenceBinaryUpload = vi.fn();
+    const submitReportForValidation = vi.fn(
+      async (
+        request: Parameters<EvidenceUploadApiClient['submitReportForValidation']>[0],
+      ) => ({
+        contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+        reportId: request.reportId,
+        serverReportVersion: 'server-report-version-resubmitted',
+        reportState: 'submitted-pending-review' as const,
+        lifecycleState: 'Submitted - Pending Supervisor Review' as const,
+        syncState: 'synced' as const,
+        acceptedAt: '2026-04-23T16:30:00.000Z',
+      }),
+    );
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata,
+        authorizeEvidenceBinaryUpload,
+        finalizeEvidenceBinaryUpload,
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      localWorkState: runtime.repositories.localWorkState,
+      now: () => new Date('2026-04-23T16:20:00.000Z'),
+    });
+
+    await expect(listEvidenceQueuePayloads(store, shell.report.reportId)).resolves.toHaveLength(2);
+
+    await orchestrator.syncSubmittedReportEvidence(connectedSession, shell);
+
+    expect(syncEvidenceMetadata).not.toHaveBeenCalled();
+    expect(authorizeEvidenceBinaryUpload).not.toHaveBeenCalled();
+    expect(finalizeEvidenceBinaryUpload).not.toHaveBeenCalled();
+    expect(submitReportForValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: shell.report.reportId,
+        photoAttachments: [
+          expect.objectContaining({
+            evidenceId: attachment.evidenceId,
+            serverEvidenceId: 'server-evidence-1',
+            presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+          }),
+        ],
+      }),
+    );
+    await expect(listEvidenceQueuePayloads(store, shell.report.reportId)).resolves.toEqual([]);
+    await expect(loadSubmitQueuePayload(store, shell.report.reportId)).resolves.toBeNull();
+    await expect(runtime.repositories.localWorkState.getUnsyncedWorkCount()).resolves.toBe(0);
+  });
+
+  it('refreshes returned server status into editable local rework state with approval history', async () => {
+    const syncedAttachment = buildPhotoAttachment({
+      metadataSyncedAt: '2026-04-23T14:10:00.000Z',
+      serverEvidenceId: 'server-evidence-1',
+      presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+      syncState: 'synced',
+    });
+    const { store, shell } = await createFixture(syncedAttachment);
+    await seedReportDraftAndSubmitQueue(store, shell);
+    await store.queueItems.deleteQueueItem(buildSubmitReportQueueItemId(shell.report.reportId));
+    const getReportSubmissionStatus = vi.fn(async () => ({
+      contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+      reportId: shell.report.reportId,
+      serverReportVersion: 'server-report-version-returned',
+      reportState: 'returned-by-supervisor' as const,
+      lifecycleState: 'Returned by Supervisor' as const,
+      syncState: 'synced' as const,
+      acceptedAt: '2026-04-23T15:30:00.000Z',
+      approvalHistory: {
+        items: [
+          {
+            auditEventId: 'audit-return-1',
+            actorRole: 'supervisor',
+            actionType: 'report.supervisor.returned',
+            occurredAt: '2026-04-23T15:30:00.000Z',
+            correlationId: 'corr-return-1',
+            priorState: 'Submitted - Pending Supervisor Review',
+            nextState: 'Returned by Supervisor',
+            comment: 'Rework the observations before approval.',
+          },
+        ],
+        placeholder: '',
+      },
+    }));
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata: vi.fn(),
+        authorizeEvidenceBinaryUpload: vi.fn(),
+        finalizeEvidenceBinaryUpload: vi.fn(),
+        submitReportForValidation: vi.fn(),
+        getReportSubmissionStatus,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      now: () => new Date('2026-04-23T15:31:00.000Z'),
+    });
+
+    await orchestrator.refreshReportServerStatus(connectedSession, shell);
+
+    expect(getReportSubmissionStatus).toHaveBeenCalledWith(shell.report.reportId);
+    await expect(loadReportDraftPayload(store, shell.report.reportId)).resolves.toMatchObject({
+      state: 'technician-owned-draft',
+      lifecycleState: 'Returned by Supervisor',
+      syncState: 'synced',
+      syncIssue: null,
+      syncIssueReasonCode: null,
+      approvalHistory: {
+        items: [
+          expect.objectContaining({
+            actionType: 'report.supervisor.returned',
+            comment: 'Rework the observations before approval.',
+          }),
+        ],
+      },
+      updatedAt: '2026-04-23T15:30:00.000Z',
+    });
   });
 
   it('keeps rejected submissions queued with the structured server sync issue', async () => {

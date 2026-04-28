@@ -25,7 +25,10 @@ import {
 interface SyncStateServiceDependencies {
   userPartitions: UserPartitionedLocalStoreFactory;
   executionShellService: Pick<SharedExecutionShellService, 'loadShell'>;
-  evidenceUploadOrchestrator: Pick<EvidenceUploadOrchestrator, 'syncSubmittedReportEvidence'>;
+  evidenceUploadOrchestrator: Pick<
+    EvidenceUploadOrchestrator,
+    'syncSubmittedReportEvidence' | 'refreshReportServerStatus'
+  >;
 }
 
 interface StoredReportSyncPayload {
@@ -205,6 +208,26 @@ export class SyncStateService {
     );
   }
 
+  async refreshReportServerStatus(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+  ): Promise<SharedExecutionShell> {
+    if (session.connectionMode !== 'connected') {
+      return shell;
+    }
+
+    await this.dependencies.evidenceUploadOrchestrator.refreshReportServerStatus(session, shell);
+
+    return (
+      (await this.dependencies.executionShellService.loadShell(
+        session,
+        shell.workPackageId,
+        shell.tagId,
+        shell.template.id,
+      )) ?? shell
+    );
+  }
+
   async retryEligibleReports(session: ActiveUserSession): Promise<SyncRetrySummary> {
     if (session.connectionMode !== 'connected') {
       return {
@@ -343,6 +366,10 @@ function isSharedExecutionLifecycleState(
     value === 'In Progress' ||
     value === 'Ready to Submit' ||
     value === 'Submitted - Pending Sync' ||
-    value === 'Submitted - Pending Supervisor Review'
+    value === 'Submitted - Pending Supervisor Review' ||
+    value === 'Escalated - Pending Manager Review' ||
+    value === 'Returned by Supervisor' ||
+    value === 'Returned by Manager' ||
+    value === 'Approved'
   );
 }

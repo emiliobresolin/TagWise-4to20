@@ -1,6 +1,6 @@
 ﻿# Story 6.5: Approval History, Work-Package Roll-Up, and Returned-Report Re-entry
 
-Status: ready-for-dev
+Status: review
 
 ## Metadata
 - Story key: 6-5-approval-history-work-package-roll-up-and-returned-report-re-entry
@@ -41,3 +41,59 @@ derive work-package status from child report states; preserve immutable decision
 - [architecture.md](../planning-artifacts/architecture.md)
 - [epics.md](../planning-artifacts/epics.md)
 - [story-map.md](../planning-artifacts/story-map.md)
+
+## Dev Agent Record
+
+### Selected Next Story Verification
+- Verified `story-index.md` order: Story 6.4 is followed by Story 6.5.
+- Verified `story-map.md` E6-S5 scope and acceptance criteria for approval history, work-package roll-up, and returned-report re-entry.
+- Verified PRD and Architecture source references: per-tag report remains the canonical review unit, approval decisions remain server-authoritative and append-only, work-package state is derived from child report outcomes, and returned reports reopen only for technician rework/resubmission.
+
+### Scope Implemented
+- Added technician report status refresh with approval history for submitted/returned/escalated/approved report outcomes.
+- Preserved approval/return/escalation audit history and displayed it in technician report detail and reviewer detail.
+- Reopened returned report records for technician resubmission by updating the existing server report record back to `Submitted - Pending Supervisor Review` after validation.
+- Derived work-package roll-up status from child per-tag report states on backend list/download and mobile local catalog load.
+- Refreshed mobile local report state from server outcomes, mapping returned reports back to technician-owned editable local state while preserving report/evidence data and queue integrity.
+
+### Scope Adjustment
+- Minimal adjustment: reactivated existing `manager_review_routes` on repeated escalation for the same report route. This is required because Story 6.5 allows returned manager reports to re-enter technician rework and later resubmission, which can legitimately escalate again without creating a duplicate route or leaking a database conflict.
+
+### Tests Added / Updated
+- Backend API tests for returned report status refresh, approval history persistence after resubmission, and work-package roll-up through `assigned`, `in_progress`, `attention_needed`, `pending_review`, and `completed`.
+- Mobile orchestrator test for server returned-status refresh into editable local rework state with approval history.
+- Mobile sync-state service test for connected server-status refresh and shell reload.
+- Mobile work-package catalog test for local roll-up status derived from child report outcomes.
+- QA follow-up: mobile orchestrator regression for accepted returned-report resubmission with already finalized photo evidence and no stale evidence queue items.
+- QA follow-up: mobile catalog regression ensuring connected server roll-up statuses (`completed`, `attention_needed`) are preserved over stale local report drafts.
+
+### Validation Results
+- `cd backend && npm run typecheck` - passed.
+- `cd backend && npm test -- createApiRequestHandler` - passed, 15 tests.
+- `cd backend && npm test` - passed, 9 files / 34 tests.
+- `cd mobile && npm run typecheck` - passed.
+- `cd mobile && npm test -- evidenceUploadOrchestrator syncState assignedWorkPackageCatalog` - passed, 5 files / 28 tests.
+- `cd mobile && npm test` - passed, 21 files / 120 tests.
+- `git diff --check` - passed; only line-ending warnings from existing Git attributes.
+
+### File List
+- `backend/src/api/createApiRequestHandler.ts`
+- `backend/src/api/createApiRequestHandler.test.ts`
+- `backend/src/modules/report-submissions/model.ts`
+- `backend/src/modules/report-submissions/reportSubmissionRepository.ts`
+- `backend/src/modules/report-submissions/reportSubmissionService.ts`
+- `backend/src/modules/review/supervisorReviewRepository.ts`
+- `backend/src/modules/work-packages/assignedWorkPackageRepository.ts`
+- `backend/src/modules/work-packages/model.ts`
+- `mobile/src/features/execution/model.ts`
+- `mobile/src/features/execution/sharedExecutionShellService.ts`
+- `mobile/src/features/sync/evidenceUploadApiClient.ts`
+- `mobile/src/features/sync/evidenceUploadOrchestrator.ts`
+- `mobile/src/features/sync/evidenceUploadOrchestrator.test.ts`
+- `mobile/src/features/sync/syncStateService.ts`
+- `mobile/src/features/sync/syncStateService.test.ts`
+- `mobile/src/features/work-packages/assignedWorkPackageCatalogService.ts`
+- `mobile/src/features/work-packages/assignedWorkPackageCatalogService.test.ts`
+- `mobile/src/features/work-packages/model.ts`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/6-5-approval-history-work-package-roll-up-and-returned-report-re-entry.md`

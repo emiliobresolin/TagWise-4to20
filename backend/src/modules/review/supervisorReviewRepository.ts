@@ -711,6 +711,10 @@ export class SupervisorReviewRepository {
             $5,
             audit.audit_id
           FROM updated, audit
+          ON CONFLICT (manager_user_id, owner_user_id, report_id) DO UPDATE SET
+            route_state = 'active',
+            routed_at = EXCLUDED.routed_at,
+            escalation_audit_event_id = EXCLUDED.escalation_audit_event_id
           RETURNING manager_user_id AS routed_manager_user_id
         )
         SELECT

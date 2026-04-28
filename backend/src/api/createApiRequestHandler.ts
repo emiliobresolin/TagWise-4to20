@@ -366,6 +366,42 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    const reportSubmissionStatusMatch =
+      method === 'GET' ? url.match(/^\/sync\/report-submissions\/([^/]+)\/status$/) : null;
+    if (reportSubmissionStatusMatch) {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const status = await dependencies.reportSubmissionService.getReportStatus(
+          user,
+          decodeURIComponent(reportSubmissionStatusMatch[1] ?? ''),
+        );
+
+        context.logger.info('report-submission.status.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: status.reportId,
+          lifecycleState: status.lifecycleState,
+        });
+        writeJson(response, 200, status);
+      } catch (error) {
+        context.logger.warn('report-submission.status.failed', {
+          statusCode:
+            error instanceof ReportSubmissionError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeReportSubmissionError(
+          response,
+          error,
+          'Report submission status refresh failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
     if (method === 'GET' && url === '/review/supervisor/reports') {
       try {
         const user = await authenticateRequest(request, dependencies.authService);

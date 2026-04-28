@@ -104,6 +104,24 @@ export interface ReportSubmissionAcceptedResult {
   acceptedAt: string;
 }
 
+export interface ReportSubmissionApprovalHistoryItem {
+  auditEventId: string;
+  actorRole: string;
+  actionType: string;
+  occurredAt: string;
+  correlationId: string;
+  priorState: string | null;
+  nextState: string | null;
+  comment: string | null;
+}
+
+export interface ReportSubmissionStatusResult extends ReportSubmissionAcceptedResult {
+  approvalHistory: {
+    items: ReportSubmissionApprovalHistoryItem[];
+    placeholder: string;
+  };
+}
+
 export class ReportSubmissionError extends Error {
   readonly statusCode: number;
   readonly syncIssue: ReportSubmissionSyncIssue | null;

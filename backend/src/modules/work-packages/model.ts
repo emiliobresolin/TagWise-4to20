@@ -1,5 +1,10 @@
 export type AssignedWorkPackagePriority = 'routine' | 'high';
-export type AssignedWorkPackageStatus = 'assigned' | 'in_progress' | 'pending_review' | 'completed';
+export type AssignedWorkPackageStatus =
+  | 'assigned'
+  | 'in_progress'
+  | 'pending_review'
+  | 'attention_needed'
+  | 'completed';
 
 export interface AssignedWorkPackageDueWindow {
   startsAt: string | null;

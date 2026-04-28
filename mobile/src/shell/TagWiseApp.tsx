@@ -1515,6 +1515,78 @@ export function TagWiseApp() {
     }
   }
 
+  async function handleRefreshExecutionReportServerStatus() {
+    if (status.type !== 'ready' || !readyState.session || !readyState.executionShell) {
+      return;
+    }
+
+    if (readyState.session.connectionMode !== 'connected') {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage: 'Reconnect before refreshing server report status.',
+            },
+      );
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            syncBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const executionShell = await readyState.syncStateService.refreshReportServerStatus(
+        readyState.session,
+        readyState.executionShell,
+      );
+      const workPackages = await readyState.workPackageCatalog.loadLocalCatalog(
+        readyState.session,
+      );
+      const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+        readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+        readyState.syncStateService.listWorkPackageSyncSummaries(
+          readyState.session,
+          workPackages,
+        ),
+      ]);
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              syncBusy: false,
+              workPackages,
+              executionShell,
+              reportSyncDetail,
+              packageSyncSummaries,
+              authMessage: `Server status refreshed for ${executionShell.tagCode}.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              syncBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? `Server status refresh failed: ${error.message}`
+                  : 'Server status refresh failed without a detailed message.',
+            },
+      );
+    }
+  }
+
   async function handleRefreshSupervisorReviewQueue() {
     if (status.type !== 'ready' || !readyState.session) {
       return;
@@ -2553,6 +2625,9 @@ export function TagWiseApp() {
                               readyState.executionShell.report.state === 'technician-owned-draft'
                             }
                             onReviewNotesChange={handleReportReviewNotesChange}
+                            onRefreshServerStatus={() =>
+                              void handleRefreshExecutionReportServerStatus()
+                            }
                             onRetrySync={() => void handleRetryExecutionReportSync()}
                             onSaveReportDraft={() => void handleSaveReportDraft()}
                             onSubmitReport={() => void handleSubmitExecutionReport()}
@@ -3225,6 +3300,7 @@ function ExecutionReportDraftPanel({
   syncBusy,
   editable,
   onReviewNotesChange,
+  onRefreshServerStatus,
   onRetrySync,
   onSaveReportDraft,
   onSubmitReport,
@@ -3234,11 +3310,13 @@ function ExecutionReportDraftPanel({
   syncBusy: boolean;
   editable: boolean;
   onReviewNotesChange: (value: string) => void;
+  onRefreshServerStatus: () => void;
   onRetrySync: () => void;
   onSaveReportDraft: () => void;
   onSubmitReport: () => void;
 }) {
   const canSubmit = editable && report.lifecycleState === 'Ready to Submit';
+  const canRefreshServerStatus = report.syncState === 'synced' && !syncBusy;
   const syncBadge = syncDetail
     ? buildSyncStateBadgeModel(syncDetail.syncState, syncDetail.detail)
     : buildSyncStateBadgeModel(report.syncState);
@@ -3252,8 +3330,7 @@ function ExecutionReportDraftPanel({
       </Text>
       {!editable ? (
         <Text style={styles.helperText}>
-          This report was already submitted locally and queued for sync. Execution evidence and
-          final notes are now locked until a later lifecycle story changes the state.
+          This report is read-only in the current server lifecycle state.
         </Text>
       ) : null}
 
@@ -3307,7 +3384,41 @@ function ExecutionReportDraftPanel({
             {syncBusy ? 'Retrying sync...' : 'Retry sync'}
           </Text>
         </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!canRefreshServerStatus}
+          onPress={onRefreshServerStatus}
+          style={[
+            styles.secondaryButton,
+            !canRefreshServerStatus ? styles.buttonDisabled : null,
+          ]}
+        >
+          <Text style={styles.secondaryButtonLabel}>
+            {syncBusy ? 'Refreshing status...' : 'Refresh server status'}
+          </Text>
+        </Pressable>
       </View>
+
+      <Text style={styles.sectionTitle}>Approval history</Text>
+      {(report.approvalHistory?.items.length ?? 0) === 0 ? (
+        <Text style={styles.helperText}>
+          {report.approvalHistory?.placeholder ??
+            'No approval decisions have been recorded for this report yet.'}
+        </Text>
+      ) : (
+        report.approvalHistory!.items.map((item) => (
+          <View key={item.auditEventId} style={styles.metricCard}>
+            <Text style={styles.metricLabel}>{item.actorRole}</Text>
+            <Text style={styles.metricValue}>{item.actionType}</Text>
+            <Text style={styles.helperText}>At: {formatTimestamp(item.occurredAt)}</Text>
+            <Text style={styles.helperText}>
+              State: {item.priorState ?? 'Unknown'} to {item.nextState ?? 'Unknown'}
+            </Text>
+            <Text style={styles.helperText}>Correlation: {item.correlationId}</Text>
+            {item.comment ? <Text style={styles.helperText}>{item.comment}</Text> : null}
+          </View>
+        ))
+      )}
 
       <View style={styles.metricCard}>
         <Text style={styles.metricLabel}>Execution summary</Text>

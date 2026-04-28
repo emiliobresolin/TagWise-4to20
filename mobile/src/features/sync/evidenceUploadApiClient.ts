@@ -1,4 +1,8 @@
 import { secureStorageKeys, type SecureKeyValueStore } from '../../platform/secure-storage/secureStorageBoundary';
+import type {
+  SharedExecutionApprovalHistoryItem,
+  SharedExecutionReportLifecycleState,
+} from '../execution/model';
 
 export const EVIDENCE_SYNC_API_CONTRACT_VERSION = '2026-04-v1' as const;
 export const REPORT_SUBMISSION_API_CONTRACT_VERSION = '2026-04-v1' as const;
@@ -103,10 +107,22 @@ export interface ReportSubmissionResponse {
   contractVersion: typeof REPORT_SUBMISSION_API_CONTRACT_VERSION;
   reportId: string;
   serverReportVersion: string;
-  reportState: 'submitted-pending-review';
-  lifecycleState: 'Submitted - Pending Supervisor Review';
+  reportState:
+    | 'submitted-pending-review'
+    | 'escalated-pending-manager-review'
+    | 'returned-by-supervisor'
+    | 'returned-by-manager'
+    | 'approved';
+  lifecycleState: SharedExecutionReportLifecycleState;
   syncState: 'synced';
   acceptedAt: string;
+}
+
+export interface ReportSubmissionStatusResponse extends ReportSubmissionResponse {
+  approvalHistory: {
+    items: SharedExecutionApprovalHistoryItem[];
+    placeholder: string;
+  };
 }
 
 export interface EvidenceUploadApiClient {
@@ -123,6 +139,7 @@ export interface EvidenceUploadApiClient {
     serverEvidenceId: string;
   }): Promise<EvidenceBinaryFinalizationResponse>;
   submitReportForValidation(request: ReportSubmissionRequest): Promise<ReportSubmissionResponse>;
+  getReportSubmissionStatus(reportId: string): Promise<ReportSubmissionStatusResponse>;
 }
 
 export class EvidenceUploadApiError extends Error {
@@ -190,7 +207,33 @@ export function createFetchEvidenceUploadApiClient(options: {
         timeoutMs,
       );
     },
+    getReportSubmissionStatus(reportId) {
+      return getJson<ReportSubmissionStatusResponse>(
+        buildUrl(
+          options.baseUrl,
+          `/sync/report-submissions/${encodeURIComponent(reportId)}/status`,
+        ),
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+      );
+    },
   };
+}
+
+async function getJson<T>(
+  url: string,
+  secureStorage: SecureKeyValueStore,
+  fetchImplementation: typeof fetch,
+  timeoutMs: number,
+): Promise<T> {
+  return requestJson<T>({
+    url,
+    secureStorage,
+    fetchImplementation,
+    timeoutMs,
+    init: { method: 'GET' },
+  });
 }
 
 async function postJson<T>(
@@ -200,7 +243,29 @@ async function postJson<T>(
   fetchImplementation: typeof fetch,
   timeoutMs: number,
 ): Promise<T> {
-  const accessToken = await secureStorage.getItem(secureStorageKeys.sessionAccessToken);
+  return requestJson<T>({
+    url,
+    secureStorage,
+    fetchImplementation,
+    timeoutMs,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    },
+  });
+}
+
+async function requestJson<T>(input: {
+  url: string;
+  secureStorage: SecureKeyValueStore;
+  fetchImplementation: typeof fetch;
+  timeoutMs: number;
+  init: RequestInit;
+}): Promise<T> {
+  const accessToken = await input.secureStorage.getItem(secureStorageKeys.sessionAccessToken);
   if (!accessToken) {
     throw new EvidenceUploadApiError(
       'Connected session is required before uploading evidence.',
@@ -210,16 +275,15 @@ async function postJson<T>(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
 
   try {
-    const response = await fetchImplementation(url, {
-      method: 'POST',
+    const response = await input.fetchImplementation(input.url, {
+      ...input.init,
       headers: {
+        ...(input.init.headers ?? {}),
         authorization: `Bearer ${accessToken}`,
-        'content-type': 'application/json',
       },
-      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 

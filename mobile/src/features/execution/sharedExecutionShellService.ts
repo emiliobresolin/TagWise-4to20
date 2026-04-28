@@ -19,6 +19,7 @@ import type {
   SharedExecutionLinkedGuidanceSnippet,
   SharedExecutionPhotoAttachment,
   SharedExecutionPhotoAttachmentInput,
+  SharedExecutionApprovalHistoryItem,
   SharedExecutionReportChecklistOutcome,
   SharedExecutionReportDraftState,
   SharedExecutionReportEvidenceReference,
@@ -79,6 +80,10 @@ interface StoredPerTagReportDraftPayload {
   state: SharedExecutionReportState;
   lifecycleState?: SharedExecutionReportLifecycleState;
   syncState?: SharedExecutionSyncState;
+  approvalHistory?: {
+    items: SharedExecutionApprovalHistoryItem[];
+    placeholder: string;
+  };
   reviewNotes?: string;
   savedAt?: string | null;
   submittedAt?: string | null;
@@ -648,41 +653,51 @@ export class SharedExecutionShellService {
         });
       }
 
-        for (const attachment of shell.evidence.photoAttachments) {
-          const metadataQueueItemId = buildUploadEvidenceMetadataQueueItemId(attachment.evidenceId);
-          const binaryQueueItemId = buildUploadEvidenceBinaryQueueItemId(attachment.evidenceId);
-          const existingMetadataQueueItem = await store.queueItems.getQueueItemById(metadataQueueItemId);
-          const existingBinaryQueueItem = await store.queueItems.getQueueItemById(binaryQueueItemId);
+      for (const attachment of shell.evidence.photoAttachments) {
+        const metadataQueueItemId = buildUploadEvidenceMetadataQueueItemId(attachment.evidenceId);
+        const binaryQueueItemId = buildUploadEvidenceBinaryQueueItemId(attachment.evidenceId);
 
-          if (!existingMetadataQueueItem) {
-            await store.queueItems.enqueue({
-              queueItemId: metadataQueueItemId,
-              businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
-              businessObjectId: shell.report.reportId,
-              itemKind: UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
-              payloadJson: JSON.stringify(
-                buildUploadEvidenceMetadataQueuePayload(shell, attachment, updatedAt),
-              ),
-            });
-          }
-
-          if (!existingBinaryQueueItem) {
-            await store.queueItems.enqueue({
-              queueItemId: binaryQueueItemId,
-              businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
-              businessObjectId: shell.report.reportId,
-              itemKind: UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
-              payloadJson: JSON.stringify(
-                buildUploadEvidenceBinaryQueuePayload(
-                  shell,
-                  attachment,
-                  metadataQueueItemId,
-                  updatedAt,
-                ),
-              ),
-            });
-          }
+        if (isFinalizedPhotoAttachment(attachment)) {
+          await store.queueItems.deleteQueueItem(metadataQueueItemId);
+          await store.queueItems.deleteQueueItem(binaryQueueItemId);
+          continue;
         }
+
+        const existingMetadataQueueItem = await store.queueItems.getQueueItemById(metadataQueueItemId);
+        const existingBinaryQueueItem = await store.queueItems.getQueueItemById(binaryQueueItemId);
+        const metadataAlreadySynced = isMetadataSyncedPhotoAttachment(attachment);
+
+        if (metadataAlreadySynced) {
+          await store.queueItems.deleteQueueItem(metadataQueueItemId);
+        } else if (!existingMetadataQueueItem) {
+          await store.queueItems.enqueue({
+            queueItemId: metadataQueueItemId,
+            businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+            businessObjectId: shell.report.reportId,
+            itemKind: UPLOAD_EVIDENCE_METADATA_QUEUE_ITEM_KIND,
+            payloadJson: JSON.stringify(
+              buildUploadEvidenceMetadataQueuePayload(shell, attachment, updatedAt),
+            ),
+          });
+        }
+
+        if (!existingBinaryQueueItem) {
+          await store.queueItems.enqueue({
+            queueItemId: binaryQueueItemId,
+            businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+            businessObjectId: shell.report.reportId,
+            itemKind: UPLOAD_EVIDENCE_BINARY_QUEUE_ITEM_KIND,
+            payloadJson: JSON.stringify(
+              buildUploadEvidenceBinaryQueuePayload(
+                shell,
+                attachment,
+                metadataQueueItemId,
+                updatedAt,
+              ),
+            ),
+          });
+        }
+      }
 
       if (this.dependencies.localWorkState && !existingReportQueueItem) {
         const currentUnsyncedCount = await this.dependencies.localWorkState.getUnsyncedWorkCount();
@@ -1325,6 +1340,10 @@ function buildReportDraftState(input: {
     submittedAt: storedPayload?.submittedAt ?? null,
     syncIssue: storedPayload?.syncIssue ?? null,
     syncIssueReasonCode: storedPayload?.syncIssueReasonCode ?? null,
+    approvalHistory: storedPayload?.approvalHistory ?? {
+      items: [],
+      placeholder: 'No approval decisions have been recorded for this report yet.',
+    },
   };
 }
 
@@ -1373,6 +1392,10 @@ function deriveReportDraftState(
     submittedAt: overrides?.submittedAt ?? shell.report.submittedAt,
     syncIssue: shell.report.syncIssue ?? null,
     syncIssueReasonCode: shell.report.syncIssueReasonCode ?? null,
+    approvalHistory: shell.report.approvalHistory ?? {
+      items: [],
+      placeholder: 'No approval decisions have been recorded for this report yet.',
+    },
   };
 }
 
@@ -1426,6 +1449,7 @@ function mergeInSessionReportDraftIntoShell(
     syncIssueReasonCode: preserveSubmittedLifecycle
       ? previousShell.report.syncIssueReasonCode ?? null
       : shell.report.syncIssueReasonCode ?? null,
+    approvalHistory: previousShell.report.approvalHistory ?? shell.report.approvalHistory,
   });
 }
 
@@ -1630,6 +1654,22 @@ function buildEvidenceReferenceDetail(
 }
 
 function buildReportStepSummary(report: SharedExecutionReportDraftState): string {
+  if (report.lifecycleState === 'Returned by Supervisor') {
+    return 'Supervisor returned this per-tag report for technician rework.';
+  }
+
+  if (report.lifecycleState === 'Returned by Manager') {
+    return 'Manager returned this escalated per-tag report for technician rework.';
+  }
+
+  if (report.lifecycleState === 'Approved') {
+    return 'Per-tag report has final approval recorded by the server.';
+  }
+
+  if (report.lifecycleState === 'Escalated - Pending Manager Review') {
+    return 'Per-tag report has been escalated and is pending manager review.';
+  }
+
   if (report.lifecycleState === 'Submitted - Pending Supervisor Review') {
     return 'Per-tag report was accepted by the server and is ready for supervisor review.';
   }
@@ -1662,6 +1702,26 @@ function buildReportStepSummary(report: SharedExecutionReportDraftState): string
 }
 
 function buildReportStepDetail(report: SharedExecutionReportDraftState): string {
+  if (
+    report.lifecycleState === 'Returned by Supervisor' ||
+    report.lifecycleState === 'Returned by Manager'
+  ) {
+    const latestComment = [...(report.approvalHistory?.items ?? [])]
+      .reverse()
+      .find((item) => item.comment && item.comment.trim().length > 0)?.comment;
+    return latestComment
+      ? `Reviewer comment: ${latestComment}`
+      : 'This returned report is editable again for technician rework and resubmission.';
+  }
+
+  if (report.lifecycleState === 'Approved') {
+    return 'Server-authoritative approval is recorded. The local report remains read-only.';
+  }
+
+  if (report.lifecycleState === 'Escalated - Pending Manager Review') {
+    return 'Supervisor escalation is recorded and this report is waiting for manager decision.';
+  }
+
   if (report.lifecycleState === 'Submitted - Pending Supervisor Review') {
     return 'Server validation accepted this per-tag report. The local report state now mirrors the server-authoritative review outcome.';
   }
@@ -2591,10 +2651,7 @@ function parseStoredPerTagReportDraftPayload(
       templateVersion: parsed.templateVersion,
       state: parsed.state,
       lifecycleState:
-        parsed.lifecycleState === 'Ready to Submit' ||
-        parsed.lifecycleState === 'In Progress' ||
-        parsed.lifecycleState === 'Submitted - Pending Sync' ||
-        parsed.lifecycleState === 'Submitted - Pending Supervisor Review'
+        isSharedExecutionLifecycleState(parsed.lifecycleState)
           ? parsed.lifecycleState
           : undefined,
       syncState:
@@ -2618,6 +2675,7 @@ function parseStoredPerTagReportDraftPayload(
         typeof parsed.syncIssueReasonCode === 'string' || parsed.syncIssueReasonCode === null
           ? parsed.syncIssueReasonCode
           : undefined,
+      approvalHistory: parseApprovalHistory(parsed.approvalHistory),
       updatedAt: parsed.updatedAt,
     };
   } catch {
@@ -2651,8 +2709,64 @@ function buildStoredPerTagReportDraftPayload(
     submittedAt: input.submittedAt,
     syncIssue: shell.report.syncIssue ?? null,
     syncIssueReasonCode: shell.report.syncIssueReasonCode ?? null,
+    approvalHistory: shell.report.approvalHistory ?? {
+      items: [],
+      placeholder: 'No approval decisions have been recorded for this report yet.',
+    },
     updatedAt: input.updatedAt,
   };
+}
+
+function isSharedExecutionLifecycleState(
+  value: unknown,
+): value is SharedExecutionReportLifecycleState {
+  return (
+    value === 'In Progress' ||
+    value === 'Ready to Submit' ||
+    value === 'Submitted - Pending Sync' ||
+    value === 'Submitted - Pending Supervisor Review' ||
+    value === 'Escalated - Pending Manager Review' ||
+    value === 'Returned by Supervisor' ||
+    value === 'Returned by Manager' ||
+    value === 'Approved'
+  );
+}
+
+function parseApprovalHistory(
+  value: unknown,
+): StoredPerTagReportDraftPayload['approvalHistory'] {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  type StoredApprovalHistory = NonNullable<StoredPerTagReportDraftPayload['approvalHistory']>;
+  const candidate = value as Partial<StoredApprovalHistory>;
+  if (!Array.isArray(candidate.items)) {
+    return undefined;
+  }
+
+  return {
+    items: candidate.items.filter(isApprovalHistoryItem),
+    placeholder: typeof candidate.placeholder === 'string' ? candidate.placeholder : '',
+  };
+}
+
+function isApprovalHistoryItem(value: unknown): value is SharedExecutionApprovalHistoryItem {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<SharedExecutionApprovalHistoryItem>;
+  return (
+    typeof candidate.auditEventId === 'string' &&
+    typeof candidate.actorRole === 'string' &&
+    typeof candidate.actionType === 'string' &&
+    typeof candidate.occurredAt === 'string' &&
+    typeof candidate.correlationId === 'string' &&
+    (typeof candidate.priorState === 'string' || candidate.priorState === null) &&
+    (typeof candidate.nextState === 'string' || candidate.nextState === null) &&
+    (typeof candidate.comment === 'string' || candidate.comment === null)
+  );
 }
 
 function buildDraftSummaryText(
@@ -2746,6 +2860,14 @@ function buildUploadEvidenceBinaryQueuePayload(
     retryCount: 0,
     queuedAt,
   };
+}
+
+function isMetadataSyncedPhotoAttachment(attachment: SharedExecutionPhotoAttachment): boolean {
+  return Boolean(attachment.metadataSyncedAt && attachment.serverEvidenceId);
+}
+
+function isFinalizedPhotoAttachment(attachment: SharedExecutionPhotoAttachment): boolean {
+  return Boolean(attachment.serverEvidenceId && attachment.presenceFinalizedAt);
 }
 
 function buildPhotoAttachmentFileName(

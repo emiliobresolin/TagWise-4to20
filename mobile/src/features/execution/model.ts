@@ -253,7 +253,11 @@ export type SharedExecutionReportLifecycleState =
   | 'In Progress'
   | 'Ready to Submit'
   | 'Submitted - Pending Sync'
-  | 'Submitted - Pending Supervisor Review';
+  | 'Submitted - Pending Supervisor Review'
+  | 'Escalated - Pending Manager Review'
+  | 'Returned by Supervisor'
+  | 'Returned by Manager'
+  | 'Approved';
 
 export type SharedExecutionSyncState =
   | 'local-only'
@@ -288,6 +292,17 @@ export interface SharedExecutionReportChecklistOutcome {
   sourceReference: string;
 }
 
+export interface SharedExecutionApprovalHistoryItem {
+  auditEventId: string;
+  actorRole: string;
+  actionType: string;
+  occurredAt: string;
+  correlationId: string;
+  priorState: string | null;
+  nextState: string | null;
+  comment: string | null;
+}
+
 export interface SharedExecutionReportDraftState {
   reportId: string;
   state: SharedExecutionReportState;
@@ -307,6 +322,10 @@ export interface SharedExecutionReportDraftState {
   submittedAt: string | null;
   syncIssue?: string | null;
   syncIssueReasonCode?: string | null;
+  approvalHistory?: {
+    items: SharedExecutionApprovalHistoryItem[];
+    placeholder: string;
+  };
 }
 
 export interface StoredExecutionProgressRecord {

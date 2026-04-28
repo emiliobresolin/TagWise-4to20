@@ -1,6 +1,9 @@
 import type { ActiveUserSession } from '../auth/model';
 import type {
+  SharedExecutionApprovalHistoryItem,
   SharedExecutionPhotoAttachment,
+  SharedExecutionReportLifecycleState,
+  SharedExecutionReportState,
   SharedExecutionShell,
   SharedExecutionSyncState,
   StoredExecutionPhotoAttachmentPayload,
@@ -14,6 +17,7 @@ import {
   EvidenceUploadApiError,
   REPORT_SUBMISSION_API_CONTRACT_VERSION,
   type EvidenceUploadApiClient,
+  type ReportSubmissionStatusResponse,
   type ReportSubmissionRequest,
   type ReportSubmissionSyncIssue,
 } from './evidenceUploadApiClient';
@@ -65,6 +69,29 @@ export class EvidenceUploadOrchestrator {
     await this.submitReportForServerValidation(store, shell);
   }
 
+  async refreshReportServerStatus(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+  ): Promise<void> {
+    if (session.connectionMode !== 'connected') {
+      return;
+    }
+
+    const status = await this.dependencies.apiClient.getReportSubmissionStatus(
+      shell.report.reportId,
+    );
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    await updateReportDraftRecord(store, shell, {
+      state: mapServerReportStateToLocal(status.reportState),
+      lifecycleState: status.lifecycleState,
+      syncState: status.syncState,
+      syncIssue: null,
+      syncIssueReasonCode: null,
+      approvalHistory: status.approvalHistory,
+      updatedAt: status.acceptedAt || this.now().toISOString(),
+    });
+  }
+
   private async submitReportForServerValidation(
     store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
     shell: SharedExecutionShell,
@@ -107,7 +134,7 @@ export class EvidenceUploadOrchestrator {
       const acceptedAt = accepted.acceptedAt || this.now().toISOString();
 
       await updateReportDraftRecord(store, shell, {
-        state: accepted.reportState,
+        state: mapServerReportStateToLocal(accepted.reportState),
         lifecycleState: accepted.lifecycleState,
         syncState: accepted.syncState,
         syncIssue: null,
@@ -147,7 +174,22 @@ export class EvidenceUploadOrchestrator {
       throw new Error(`Missing local evidence metadata for ${attachment.evidenceId}.`);
     }
 
-    if (!attachment.metadataSyncedAt) {
+    const currentPayload = parsePhotoAttachmentPayload(metadataRecord.payloadJson);
+    if (!currentPayload) {
+      throw new Error(`Unsupported evidence metadata payload for ${attachment.evidenceId}.`);
+    }
+
+    if (currentPayload.presenceFinalizedAt) {
+      await store.queueItems.deleteQueueItem(metadataQueueItemId);
+      await store.queueItems.deleteQueueItem(binaryQueueItemId);
+      return;
+    }
+
+    if (currentPayload.metadataSyncedAt && currentPayload.serverEvidenceId) {
+      await store.queueItems.deleteQueueItem(metadataQueueItemId);
+    }
+
+    if (!currentPayload.metadataSyncedAt || !currentPayload.serverEvidenceId) {
       await ensureMetadataQueueItem(store, shell, attachment, metadataQueueItemId);
       const metadataQueueItem = await store.queueItems.getQueueItemById(metadataQueueItemId);
 
@@ -197,7 +239,13 @@ export class EvidenceUploadOrchestrator {
       throw new Error(`Missing refreshed evidence metadata for ${attachment.evidenceId}.`);
     }
     const refreshedPayload = parsePhotoAttachmentPayload(refreshedMetadataRecord.payloadJson);
-    if (!refreshedPayload?.serverEvidenceId || refreshedPayload.presenceFinalizedAt) {
+    if (refreshedPayload?.presenceFinalizedAt) {
+      await store.queueItems.deleteQueueItem(metadataQueueItemId);
+      await store.queueItems.deleteQueueItem(binaryQueueItemId);
+      return;
+    }
+
+    if (!refreshedPayload?.serverEvidenceId) {
       return;
     }
 
@@ -265,9 +313,13 @@ interface StoredReportSubmissionDraftPayload {
   tagId: string;
   templateId: string;
   templateVersion: string;
-  state: 'technician-owned-draft' | 'submitted-pending-sync' | 'submitted-pending-review';
-  lifecycleState?: 'In Progress' | 'Ready to Submit' | 'Submitted - Pending Sync' | 'Submitted - Pending Supervisor Review';
+  state: SharedExecutionReportState;
+  lifecycleState?: SharedExecutionReportLifecycleState;
   syncState?: SharedExecutionSyncState;
+  approvalHistory?: {
+    items: SharedExecutionApprovalHistoryItem[];
+    placeholder: string;
+  };
   reviewNotes?: string;
   savedAt?: string | null;
   submittedAt?: string | null;
@@ -357,6 +409,7 @@ async function updateReportDraftRecord(
     syncState: SharedExecutionSyncState;
     syncIssue: string | null;
     syncIssueReasonCode: ReportSubmissionSyncIssue['reasonCode'] | null;
+    approvalHistory?: ReportSubmissionStatusResponse['approvalHistory'];
     updatedAt: string;
   },
 ): Promise<void> {
@@ -384,6 +437,7 @@ async function updateReportDraftRecord(
       syncState: input.syncState,
       syncIssue: input.syncIssue,
       syncIssueReasonCode: input.syncIssueReasonCode,
+      approvalHistory: input.approvalHistory ?? payload.approvalHistory,
       updatedAt: input.updatedAt,
     } satisfies StoredReportSubmissionDraftPayload),
   });
@@ -726,10 +780,7 @@ function parseReportSubmissionDraftPayload(
       templateVersion: parsed.templateVersion,
       state: parsed.state,
       lifecycleState:
-        parsed.lifecycleState === 'Ready to Submit' ||
-        parsed.lifecycleState === 'In Progress' ||
-        parsed.lifecycleState === 'Submitted - Pending Sync' ||
-        parsed.lifecycleState === 'Submitted - Pending Supervisor Review'
+        isSharedExecutionLifecycleState(parsed.lifecycleState)
           ? parsed.lifecycleState
           : undefined,
       syncState:
@@ -758,9 +809,70 @@ function parseReportSubmissionDraftPayload(
         typeof parsed.syncIssueReasonCode === 'string' || parsed.syncIssueReasonCode === null
           ? parsed.syncIssueReasonCode
           : undefined,
+      approvalHistory: parseApprovalHistory(parsed.approvalHistory),
       updatedAt: parsed.updatedAt,
     };
   } catch {
     return null;
   }
+}
+
+function mapServerReportStateToLocal(
+  state: ReportSubmissionStatusResponse['reportState'],
+): SharedExecutionReportState {
+  if (state === 'returned-by-supervisor' || state === 'returned-by-manager') {
+    return 'technician-owned-draft';
+  }
+
+  return 'submitted-pending-review';
+}
+
+function isSharedExecutionLifecycleState(
+  value: unknown,
+): value is SharedExecutionReportLifecycleState {
+  return (
+    value === 'In Progress' ||
+    value === 'Ready to Submit' ||
+    value === 'Submitted - Pending Sync' ||
+    value === 'Submitted - Pending Supervisor Review' ||
+    value === 'Escalated - Pending Manager Review' ||
+    value === 'Returned by Supervisor' ||
+    value === 'Returned by Manager' ||
+    value === 'Approved'
+  );
+}
+
+function parseApprovalHistory(value: unknown): StoredReportSubmissionDraftPayload['approvalHistory'] {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+
+  type StoredApprovalHistory = NonNullable<StoredReportSubmissionDraftPayload['approvalHistory']>;
+  const candidate = value as Partial<StoredApprovalHistory>;
+  if (!Array.isArray(candidate.items)) {
+    return undefined;
+  }
+
+  return {
+    items: candidate.items.filter(isApprovalHistoryItem),
+    placeholder: typeof candidate.placeholder === 'string' ? candidate.placeholder : '',
+  };
+}
+
+function isApprovalHistoryItem(value: unknown): value is SharedExecutionApprovalHistoryItem {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<SharedExecutionApprovalHistoryItem>;
+  return (
+    typeof candidate.auditEventId === 'string' &&
+    typeof candidate.actorRole === 'string' &&
+    typeof candidate.actionType === 'string' &&
+    typeof candidate.occurredAt === 'string' &&
+    typeof candidate.correlationId === 'string' &&
+    (typeof candidate.priorState === 'string' || candidate.priorState === null) &&
+    (typeof candidate.nextState === 'string' || candidate.nextState === null) &&
+    (typeof candidate.comment === 'string' || candidate.comment === null)
+  );
 }

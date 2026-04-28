@@ -5,9 +5,12 @@ import {
   REPORT_SUBMISSION_API_CONTRACT_VERSION,
   ReportSubmissionError,
   assertTechnicianCanSubmitReport,
+  type ReportSubmissionApprovalHistoryItem,
   type ReportSubmissionAcceptedResult,
   type ReportSubmissionIssueReasonCode,
+  type ReportSubmissionRecord,
   type ReportSubmissionRequest,
+  type ReportSubmissionStatusResult,
   type ReportSubmissionSyncIssue,
 } from './model';
 
@@ -33,6 +36,25 @@ export class ReportSubmissionService {
         return toAcceptedResult(existing);
       }
 
+      if (isReturnedReport(existing)) {
+        await this.validateAcceptedSubmission(user, request);
+        const acceptedAt = this.now().toISOString();
+        const accepted = await this.repository.replaceReturnedWithAccepted(
+          buildAcceptedRecord(user.id, request, acceptedAt),
+        );
+
+        if (!accepted) {
+          throw structuredIssue(
+            'conflicting-report-version',
+            'Report changed before the returned report could be resubmitted.',
+            409,
+            existing.serverReportVersion,
+          );
+        }
+
+        return toAcceptedResult(accepted);
+      }
+
       throw structuredIssue(
         'conflicting-report-version',
         'Report was already accepted at a different submitted version.',
@@ -41,32 +63,12 @@ export class ReportSubmissionService {
       );
     }
 
-    await this.validateScope(user, request);
-    validateLifecycle(request);
-    validateMinimumEvidence(request);
-    validateRequiredJustifications(request);
-    validateEvidenceArrival(request);
+    await this.validateAcceptedSubmission(user, request);
 
     const acceptedAt = this.now().toISOString();
-    const accepted = await this.repository.insertAcceptedOrGetExisting({
-      ownerUserId: user.id,
-      reportId: request.reportId,
-      workPackageId: request.workPackageId,
-      tagId: request.tagId,
-      templateId: request.templateId,
-      templateVersion: request.templateVersion,
-      localObjectVersion: request.objectVersion,
-      idempotencyKey: request.idempotencyKey,
-      serverReportVersion: buildServerReportVersion(user.id, request.reportId, request.objectVersion),
-      reportState: 'submitted-pending-review',
-      lifecycleState: 'Submitted - Pending Supervisor Review',
-      syncState: 'synced',
-      submittedAt: request.submittedAt,
-      acceptedAt,
-      payloadJson: request,
-      createdAt: acceptedAt,
-      updatedAt: acceptedAt,
-    });
+    const accepted = await this.repository.insertAcceptedOrGetExisting(
+      buildAcceptedRecord(user.id, request, acceptedAt),
+    );
 
     if (
       accepted.localObjectVersion !== request.objectVersion ||
@@ -81,6 +83,32 @@ export class ReportSubmissionService {
     }
 
     return toAcceptedResult(accepted);
+  }
+
+  async getReportStatus(
+    user: AuthenticatedUser,
+    reportId: string,
+  ): Promise<ReportSubmissionStatusResult> {
+    assertTechnicianCanSubmitReport(user);
+
+    const existing = await this.repository.getByReportId(user.id, reportId);
+    if (!existing) {
+      throw new ReportSubmissionError('Report submission was not found for this technician.', 404);
+    }
+
+    const approvalHistoryItems = await this.repository.listReportApprovalHistory(reportId);
+    return toStatusResult(existing, approvalHistoryItems);
+  }
+
+  private async validateAcceptedSubmission(
+    user: AuthenticatedUser,
+    request: ReportSubmissionRequest,
+  ): Promise<void> {
+    await this.validateScope(user, request);
+    validateLifecycle(request);
+    validateMinimumEvidence(request);
+    validateRequiredJustifications(request);
+    validateEvidenceArrival(request);
   }
 
   private async validateScope(user: AuthenticatedUser, request: ReportSubmissionRequest): Promise<void> {
@@ -232,6 +260,55 @@ function toAcceptedResult(record: {
     syncState: record.syncState,
     acceptedAt: record.acceptedAt,
   };
+}
+
+function toStatusResult(
+  record: Parameters<typeof toAcceptedResult>[0],
+  approvalHistoryItems: ReportSubmissionApprovalHistoryItem[],
+): ReportSubmissionStatusResult {
+  return {
+    ...toAcceptedResult(record),
+    approvalHistory: {
+      items: approvalHistoryItems,
+      placeholder:
+        approvalHistoryItems.length === 0
+          ? 'No approval decisions have been recorded for this report yet.'
+          : '',
+    },
+  };
+}
+
+function buildAcceptedRecord(
+  ownerUserId: string,
+  request: ReportSubmissionRequest,
+  acceptedAt: string,
+): ReportSubmissionRecord {
+  return {
+    ownerUserId,
+    reportId: request.reportId,
+    workPackageId: request.workPackageId,
+    tagId: request.tagId,
+    templateId: request.templateId,
+    templateVersion: request.templateVersion,
+    localObjectVersion: request.objectVersion,
+    idempotencyKey: request.idempotencyKey,
+    serverReportVersion: buildServerReportVersion(ownerUserId, request.reportId, request.objectVersion),
+    reportState: 'submitted-pending-review',
+    lifecycleState: 'Submitted - Pending Supervisor Review',
+    syncState: 'synced',
+    submittedAt: request.submittedAt,
+    acceptedAt,
+    payloadJson: request,
+    createdAt: acceptedAt,
+    updatedAt: acceptedAt,
+  };
+}
+
+function isReturnedReport(record: Pick<ReportSubmissionRecord, 'lifecycleState'>): boolean {
+  return (
+    record.lifecycleState === 'Returned by Supervisor' ||
+    record.lifecycleState === 'Returned by Manager'
+  );
 }
 
 function buildServerReportVersion(

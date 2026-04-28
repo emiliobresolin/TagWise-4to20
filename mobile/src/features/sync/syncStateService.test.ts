@@ -128,7 +128,10 @@ describe('SyncStateService', () => {
         ],
       }),
       executionShellService: { loadShell },
-      evidenceUploadOrchestrator: { syncSubmittedReportEvidence },
+      evidenceUploadOrchestrator: {
+        syncSubmittedReportEvidence,
+        refreshReportServerStatus: vi.fn(async () => undefined),
+      },
     });
 
     await expect(service.retryEligibleReports(offlineSession)).resolves.toMatchObject({
@@ -175,7 +178,10 @@ describe('SyncStateService', () => {
         ],
       }),
       executionShellService: { loadShell: vi.fn(async () => shell) },
-      evidenceUploadOrchestrator: { syncSubmittedReportEvidence },
+      evidenceUploadOrchestrator: {
+        syncSubmittedReportEvidence,
+        refreshReportServerStatus: vi.fn(async () => undefined),
+      },
     });
 
     await expect(service.retryEligibleReports(connectedSession)).resolves.toMatchObject({
@@ -225,7 +231,10 @@ describe('SyncStateService', () => {
         ],
       }),
       executionShellService: { loadShell: vi.fn(async () => shell) },
-      evidenceUploadOrchestrator: { syncSubmittedReportEvidence },
+      evidenceUploadOrchestrator: {
+        syncSubmittedReportEvidence,
+        refreshReportServerStatus: vi.fn(async () => undefined),
+      },
     });
 
     await expect(service.retryEligibleReports(connectedSession)).resolves.toMatchObject({
@@ -281,7 +290,10 @@ describe('SyncStateService', () => {
         ],
       }),
       executionShellService: { loadShell: vi.fn(async () => reloadedShell) },
-      evidenceUploadOrchestrator: { syncSubmittedReportEvidence },
+      evidenceUploadOrchestrator: {
+        syncSubmittedReportEvidence,
+        refreshReportServerStatus: vi.fn(async () => undefined),
+      },
     });
 
     const retryResult = await service.retryReportSync(connectedSession, shell);
@@ -289,6 +301,70 @@ describe('SyncStateService', () => {
     expect(syncSubmittedReportEvidence).toHaveBeenCalledOnce();
     expect(retryResult.report.lifecycleState).toBe('Submitted - Pending Sync');
     expect(retryResult.report.syncState).toBe('queued');
+  });
+
+  it('refreshes connected report server status and reloads the local shell', async () => {
+    const shell = buildSubmittedShell({
+      reportId: 'tag-report:wp-1:tag-1',
+      workPackageId: 'wp-1',
+      tagId: 'tag-1',
+      syncState: 'synced',
+      attachmentSyncState: 'synced',
+    });
+    const reloadedShell = {
+      ...shell,
+      report: {
+        ...shell.report,
+        state: 'technician-owned-draft' as const,
+        lifecycleState: 'Returned by Supervisor' as const,
+        approvalHistory: {
+          items: [
+            {
+              auditEventId: 'audit-return-1',
+              actorRole: 'supervisor',
+              actionType: 'report.supervisor.returned',
+              occurredAt: '2026-04-24T12:00:00.000Z',
+              correlationId: 'corr-return-1',
+              priorState: 'Submitted - Pending Supervisor Review',
+              nextState: 'Returned by Supervisor',
+              comment: 'Rework the observations.',
+            },
+          ],
+          placeholder: '',
+        },
+      },
+    };
+    const loadShell = vi.fn(async () => reloadedShell);
+    const refreshReportServerStatus = vi.fn(async () => undefined);
+    const service = new SyncStateService({
+      userPartitions: buildStoreFactory({
+        drafts: [],
+        evidence: [],
+        queueItems: [],
+      }),
+      executionShellService: { loadShell },
+      evidenceUploadOrchestrator: {
+        syncSubmittedReportEvidence: vi.fn(async () => undefined),
+        refreshReportServerStatus,
+      },
+    });
+
+    const refreshed = await service.refreshReportServerStatus(connectedSession, shell);
+
+    expect(refreshReportServerStatus).toHaveBeenCalledWith(connectedSession, shell);
+    expect(loadShell).toHaveBeenCalledWith(connectedSession, 'wp-1', 'tag-1', 'pressure-template');
+    expect(refreshed.report).toMatchObject({
+      state: 'technician-owned-draft',
+      lifecycleState: 'Returned by Supervisor',
+      approvalHistory: {
+        items: [
+          expect.objectContaining({
+            actionType: 'report.supervisor.returned',
+            comment: 'Rework the observations.',
+          }),
+        ],
+      },
+    });
   });
 });
 
@@ -328,6 +404,7 @@ function buildExecutionShellService() {
 function buildEvidenceUploadOrchestrator() {
   return {
     syncSubmittedReportEvidence: vi.fn(async () => undefined),
+    refreshReportServerStatus: vi.fn(async () => undefined),
   };
 }
 

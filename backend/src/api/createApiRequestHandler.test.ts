@@ -1152,6 +1152,251 @@ describe('createApiRequestHandler', () => {
     await pool.end();
   });
 
+  it('reopens returned reports for technician resubmission while preserving approval history', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-report-reentry-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-report-reentry-supervisor-login',
+      },
+    );
+    const reportId = 'tag-report:wp-seed-1001:tag-pt-101';
+
+    const submit = (payload: unknown) =>
+      fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+    expect((await submit(buildValidReportSubmissionPayload())).status).toBe(200);
+    const returned = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(reportId)}/return`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+          'content-type': 'application/json',
+          'x-correlation-id': 'corr-report-reentry-return',
+        },
+        body: JSON.stringify({ comment: 'Rework the observations before approval.' }),
+      },
+    );
+    expect(returned.status).toBe(200);
+
+    const returnedStatus = await fetch(
+      `http://127.0.0.1:${port}/sync/report-submissions/${encodeURIComponent(reportId)}/status`,
+      {
+        headers: {
+          authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    const returnedStatusBody = (await returnedStatus.json()) as {
+      lifecycleState: string;
+      approvalHistory: {
+        items: Array<{ actionType: string; comment: string | null }>;
+      };
+    };
+
+    expect(returnedStatus.status).toBe(200);
+    expect(returnedStatusBody.lifecycleState).toBe('Returned by Supervisor');
+    expect(returnedStatusBody.approvalHistory.items).toMatchObject([
+      {
+        actionType: 'report.supervisor.returned',
+        comment: 'Rework the observations before approval.',
+      },
+    ]);
+
+    const resubmitted = await submit(
+      buildValidReportSubmissionPayload({
+        objectVersion: '2026-04-23T16:05:00.000Z',
+        idempotencyKey:
+          'submit-report:tag-report:wp-seed-1001:tag-pt-101:2026-04-23T16:05:00.000Z',
+        submittedAt: '2026-04-23T16:04:00.000Z',
+      }),
+    );
+    const resubmittedBody = (await resubmitted.json()) as {
+      lifecycleState: string;
+      serverReportVersion: string;
+    };
+
+    expect(resubmitted.status).toBe(200);
+    expect(resubmittedBody.lifecycleState).toBe('Submitted - Pending Supervisor Review');
+    expect(resubmittedBody.serverReportVersion).toContain('2026-04-23T16:05:00.000Z');
+
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(reportId)}`,
+      {
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    const detailBody = (await detail.json()) as {
+      report: {
+        lifecycleState: string;
+        approvalHistory: {
+          items: Array<{ actionType: string; comment: string | null }>;
+        };
+      };
+    };
+
+    expect(detail.status).toBe(200);
+    expect(detailBody.report.lifecycleState).toBe('Submitted - Pending Supervisor Review');
+    expect(detailBody.report.approvalHistory.items).toMatchObject([
+      {
+        actionType: 'report.supervisor.returned',
+        comment: 'Rework the observations before approval.',
+      },
+    ]);
+
+    await pool.end();
+  });
+
+  it('derives work-package roll-up status from child report outcomes', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-rollup-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-rollup-supervisor-login',
+      },
+    );
+    const authHeaders = {
+      authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+    };
+    const submit = (payload: unknown) =>
+      fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+    const listStatus = async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/work-packages`, {
+        headers: authHeaders,
+      });
+      const body = (await response.json()) as {
+        items: Array<{ id: string; status: string }>;
+      };
+      expect(response.status).toBe(200);
+      return body.items.find((item) => item.id === 'wp-seed-1001')?.status;
+    };
+    const supervisorDecision = (reportId: string, action: 'approve' | 'return') =>
+      fetch(
+        `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(reportId)}/${action}`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+            'content-type': 'application/json',
+          },
+          body: action === 'return' ? JSON.stringify({ comment: 'Needs rework.' }) : undefined,
+        },
+      );
+
+    expect(await listStatus()).toBe('assigned');
+    expect((await submit(buildValidReportSubmissionPayload())).status).toBe(200);
+    expect(await listStatus()).toBe('in_progress');
+
+    expect(
+      (await supervisorDecision('tag-report:wp-seed-1001:tag-pt-101', 'return')).status,
+    ).toBe(200);
+    expect(await listStatus()).toBe('attention_needed');
+
+    expect(
+      (
+        await submit(
+          buildValidReportSubmissionPayload({
+            objectVersion: '2026-04-23T16:10:00.000Z',
+            idempotencyKey:
+              'submit-report:tag-report:wp-seed-1001:tag-pt-101:2026-04-23T16:10:00.000Z',
+            submittedAt: '2026-04-23T16:09:00.000Z',
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await submit(
+          buildTagReportPayload({
+            reportId: 'tag-report:wp-seed-1001:tag-tt-205',
+            tagId: 'tag-tt-205',
+            templateId: 'tpl-temperature-input-simulation',
+            objectVersion: '2026-04-23T16:11:00.000Z',
+            minimumEvidenceLabels: ['simulated inputs', 'reported outputs'],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await submit(
+          buildTagReportPayload({
+            reportId: 'tag-report:wp-seed-1001:tag-ai-330',
+            tagId: 'tag-ai-330',
+            templateId: 'tpl-loop-integrity-check',
+            objectVersion: '2026-04-23T16:12:00.000Z',
+            minimumEvidenceLabels: ['loop checkpoints', 'measured current values'],
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(await listStatus()).toBe('pending_review');
+
+    await expect(
+      supervisorDecision('tag-report:wp-seed-1001:tag-pt-101', 'approve'),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      supervisorDecision('tag-report:wp-seed-1001:tag-tt-205', 'approve'),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      supervisorDecision('tag-report:wp-seed-1001:tag-ai-330', 'approve'),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(await listStatus()).toBe('completed');
+
+    const download = await fetch(
+      `http://127.0.0.1:${port}/work-packages/wp-seed-1001/download`,
+      {
+        headers: authHeaders,
+      },
+    );
+    const downloadBody = (await download.json()) as { summary: { status: string } };
+    expect(download.status).toBe(200);
+    expect(downloadBody.summary.status).toBe('completed');
+
+    await pool.end();
+  });
+
   it('escalates a higher-risk supervisor report with rationale and routes it to manager review', async () => {
     const { authService, auditRepository, manager, pool, port } = await startReportSubmissionRuntime();
     const technicianLogin = await authService.loginConnected(
@@ -1844,4 +2089,29 @@ function buildValidReportSubmissionPayload(
     photoAttachments: [],
     ...overrides,
   };
+}
+
+function buildTagReportPayload(input: {
+  reportId: string;
+  tagId: string;
+  templateId: string;
+  objectVersion: string;
+  minimumEvidenceLabels: string[];
+}): Record<string, unknown> {
+  return buildValidReportSubmissionPayload({
+    reportId: input.reportId,
+    tagId: input.tagId,
+    templateId: input.templateId,
+    objectVersion: input.objectVersion,
+    idempotencyKey: `submit-report:${input.reportId}:${input.objectVersion}`,
+    submittedAt: input.objectVersion,
+    executionSummary: `Structured readings are captured for ${input.tagId}.`,
+    evidenceReferences: input.minimumEvidenceLabels.map((label) => ({
+      label,
+      requirementLevel: 'minimum',
+      evidenceKind: label.includes('note') ? 'observation-notes' : 'structured-readings',
+      satisfied: true,
+      detail: `${label} saved locally.`,
+    })),
+  });
 }
