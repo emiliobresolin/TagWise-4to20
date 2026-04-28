@@ -69,6 +69,16 @@ describe('bootstrapLocalDatabase', () => {
     expect(secondRuntime.snapshot.shellRoute).toBe('storage');
     expect(await secondRuntime.repositories.mobileRuntimeErrors.countErrors()).toBe(1);
 
+    await secondRuntime.repositories.appPreferences.setShellRoute('review');
     await secondRuntime.database.closeAsync?.();
+
+    const thirdRuntime = await bootstrapLocalDatabase(() =>
+      Promise.resolve(createNodeSqliteDatabase(databasePath)),
+      () => Promise.resolve(createNodeAppSandboxBoundary(sandboxPath)),
+    );
+
+    expect(thirdRuntime.snapshot.shellRoute).toBe('review');
+
+    await thirdRuntime.database.closeAsync?.();
   });
 });

@@ -62,6 +62,12 @@ import type {
   LocalAssignedWorkPackageSummary,
 } from '../features/work-packages/model';
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
+import { createFetchSupervisorReviewApiClient } from '../features/review/supervisorReviewApiClient';
+import { SupervisorReviewService } from '../features/review/supervisorReviewService';
+import type {
+  SupervisorReviewQueueItem,
+  SupervisorReviewReportDetail,
+} from '../features/review/model';
 import { createFetchEvidenceUploadApiClient } from '../features/sync/evidenceUploadApiClient';
 import { EvidenceUploadOrchestrator } from '../features/sync/evidenceUploadOrchestrator';
 import {
@@ -102,11 +108,13 @@ type BootstrapStatus =
       executionShellService: SharedExecutionShellService;
       evidenceUploadOrchestrator: EvidenceUploadOrchestrator;
       syncStateService: SyncStateService;
+      supervisorReviewService: SupervisorReviewService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
       packageBusy: boolean;
       syncBusy: boolean;
+      reviewBusy: boolean;
       authMessage: string | null;
       packageSyncSummaries: Record<string, WorkPackageSyncSummary>;
       activeTagPackageId: string | null;
@@ -117,6 +125,8 @@ type BootstrapStatus =
       selectedTagContext: LocalTagContext | null;
       executionShell: SharedExecutionShell | null;
       reportSyncDetail: ReportSyncDetail | null;
+      supervisorReviewQueue: SupervisorReviewQueueItem[];
+      selectedSupervisorReviewReport: SupervisorReviewReportDetail | null;
       qrScannerVisible: boolean;
       qrManualPayload: string;
       qrScanResult: LocalQrScanResult | null;
@@ -126,6 +136,7 @@ type BootstrapStatus =
 const placeholderRoutes = [
   { key: 'foundation' as const, label: 'Foundation' },
   { key: 'packages' as const, label: 'Packages' },
+  { key: 'review' as const, label: 'Review' },
   { key: 'storage' as const, label: 'Storage' },
 ];
 
@@ -188,6 +199,12 @@ export function TagWiseApp() {
           executionShellService,
           evidenceUploadOrchestrator,
         });
+        const supervisorReviewService = new SupervisorReviewService(
+          createFetchSupervisorReviewApiClient({
+            baseUrl: getDefaultAuthApiBaseUrl(),
+            secureStorage,
+          }),
+        );
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
@@ -229,11 +246,13 @@ export function TagWiseApp() {
           executionShellService,
           evidenceUploadOrchestrator,
           syncStateService,
+          supervisorReviewService,
           session,
           localOwnership,
           authBusy: false,
           packageBusy: false,
           syncBusy: false,
+          reviewBusy: false,
           authMessage:
             retrySummary.attempted > 0
               ? buildRetrySummaryMessage(retrySummary)
@@ -249,6 +268,8 @@ export function TagWiseApp() {
           selectedTagContext: null,
           executionShell: null,
           reportSyncDetail: null,
+          supervisorReviewQueue: [],
+          selectedSupervisorReviewReport: null,
           qrScannerVisible: false,
           qrManualPayload: '',
           qrScanResult: null,
@@ -411,6 +432,8 @@ export function TagWiseApp() {
               selectedTagContext: null,
               executionShell: null,
               reportSyncDetail: null,
+              supervisorReviewQueue: [],
+              selectedSupervisorReviewReport: null,
               qrScannerVisible: false,
               qrManualPayload: '',
               qrScanResult: null,
@@ -470,6 +493,8 @@ export function TagWiseApp() {
               selectedTagContext: null,
               executionShell: null,
               reportSyncDetail: null,
+              supervisorReviewQueue: [],
+              selectedSupervisorReviewReport: null,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -531,6 +556,7 @@ export function TagWiseApp() {
               selectedTagContext: null,
               executionShell: null,
               reportSyncDetail: null,
+              selectedSupervisorReviewReport: null,
               qrScannerVisible: false,
               qrScanResult: null,
             },
@@ -1305,6 +1331,7 @@ export function TagWiseApp() {
             localOwnership: result.state === 'cleared' ? null : current.localOwnership,
             authBusy: false,
             syncBusy: false,
+            reviewBusy: result.state === 'cleared' ? false : current.reviewBusy,
             workPackages: result.state === 'cleared' ? [] : current.workPackages,
             packageSyncSummaries:
               result.state === 'cleared' ? {} : current.packageSyncSummaries,
@@ -1317,6 +1344,10 @@ export function TagWiseApp() {
             selectedTagContext: result.state === 'cleared' ? null : current.selectedTagContext,
             executionShell: result.state === 'cleared' ? null : current.executionShell,
             reportSyncDetail: result.state === 'cleared' ? null : current.reportSyncDetail,
+            supervisorReviewQueue:
+              result.state === 'cleared' ? [] : current.supervisorReviewQueue,
+            selectedSupervisorReviewReport:
+              result.state === 'cleared' ? null : current.selectedSupervisorReviewReport,
             qrScannerVisible: result.state === 'cleared' ? false : current.qrScannerVisible,
             qrManualPayload: result.state === 'cleared' ? '' : current.qrManualPayload,
             qrScanResult: result.state === 'cleared' ? null : current.qrScanResult,
@@ -1468,6 +1499,112 @@ export function TagWiseApp() {
             },
       );
     }
+  }
+
+  async function handleRefreshSupervisorReviewQueue() {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            reviewBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const supervisorReviewQueue = await readyState.supervisorReviewService.refreshQueue(
+        readyState.session,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              supervisorReviewQueue,
+              selectedSupervisorReviewReport: null,
+              authMessage: `${supervisorReviewQueue.length} supervisor review report(s) loaded.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Supervisor review queue failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  async function handleOpenSupervisorReviewReport(reportId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            reviewBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const selectedSupervisorReviewReport =
+        await readyState.supervisorReviewService.loadReportDetail(
+          readyState.session,
+          reportId,
+        );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              selectedSupervisorReviewReport,
+              authMessage: `Review report loaded for ${selectedSupervisorReviewReport.tagId}.`,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              reviewBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Supervisor report detail failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  function handleCloseSupervisorReviewReport() {
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            selectedSupervisorReviewReport: null,
+          },
+    );
   }
 
   const selectedExecutionStep =
@@ -2359,6 +2496,16 @@ export function TagWiseApp() {
                   );
                 })}
               </View>
+            ) : readyState.route === 'review' ? (
+              <SupervisorReviewPanel
+                busy={readyState.reviewBusy}
+                queue={readyState.supervisorReviewQueue}
+                selectedReport={readyState.selectedSupervisorReviewReport}
+                session={readyState.session}
+                onCloseReport={handleCloseSupervisorReviewReport}
+                onOpenReport={(reportId) => void handleOpenSupervisorReviewReport(reportId)}
+                onRefresh={() => void handleRefreshSupervisorReviewQueue()}
+              />
             ) : (
               <View style={styles.panel}>
                 <Text style={styles.panelTitle}>Local storage diagnostics</Text>
@@ -2453,6 +2600,183 @@ function SyncStateBadge({ label, tone }: { label: string; tone: SyncStateTone })
   return (
     <View style={[styles.syncBadge, getSyncBadgeStyle(tone)]}>
       <Text style={[styles.syncBadgeLabel, getSyncBadgeLabelStyle(tone)]}>{label}</Text>
+    </View>
+  );
+}
+
+function SupervisorReviewPanel({
+  busy,
+  queue,
+  selectedReport,
+  session,
+  onCloseReport,
+  onOpenReport,
+  onRefresh,
+}: {
+  busy: boolean;
+  queue: SupervisorReviewQueueItem[];
+  selectedReport: SupervisorReviewReportDetail | null;
+  session: ActiveUserSession;
+  onCloseReport: () => void;
+  onOpenReport: (reportId: string) => void;
+  onRefresh: () => void;
+}) {
+  const canRefresh = session.role === 'supervisor' && session.connectionMode === 'connected';
+
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.panelTitle}>Supervisor review</Text>
+      <Text style={styles.panelBody}>
+        Server-accepted per-tag reports appear here for connected supervisor review.
+      </Text>
+
+      <View style={styles.metricGrid}>
+        <MetricCard label="Queued reports" value={String(queue.length)} />
+        <MetricCard
+          label="Review access"
+          value={canRefresh ? 'Connected' : 'Unavailable'}
+        />
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        disabled={!canRefresh || busy}
+        onPress={onRefresh}
+        style={[styles.primaryButton, !canRefresh || busy ? styles.buttonDisabled : null]}
+      >
+        <Text style={styles.primaryButtonLabel}>
+          {busy ? 'Loading review queue...' : 'Refresh review queue'}
+        </Text>
+      </Pressable>
+
+      {!canRefresh ? (
+        <Text style={styles.helperText}>
+          Supervisor review requires a connected supervisor session.
+        </Text>
+      ) : null}
+
+      {selectedReport ? (
+        <SupervisorReviewDetailPanel
+          report={selectedReport}
+          session={session}
+          onCloseReport={onCloseReport}
+        />
+      ) : queue.length === 0 ? (
+        <Text style={styles.helperText}>No server-accepted reports are currently routed here.</Text>
+      ) : (
+        queue.map((item) => (
+          <View key={item.reportId} style={styles.listCard}>
+            <Text style={styles.listCardTitle}>{item.tagId}</Text>
+            <Text style={styles.helperText}>{item.reportId}</Text>
+            <View style={styles.metricGrid}>
+              <MetricCard label="Work package" value={item.workPackageId} />
+              <MetricCard label="Lifecycle" value={item.lifecycleState} />
+            </View>
+            <View style={styles.metricGrid}>
+              <MetricCard label="Risk flags" value={String(item.riskFlagCount)} />
+              <MetricCard label="Pending evidence" value={String(item.pendingEvidenceCount)} />
+            </View>
+            <Text style={styles.helperText}>{item.executionSummary}</Text>
+            <Text style={styles.helperText}>Accepted: {formatTimestamp(item.acceptedAt)}</Text>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!canRefresh || busy}
+              onPress={() => onOpenReport(item.reportId)}
+              style={[styles.secondaryButton, !canRefresh || busy ? styles.buttonDisabled : null]}
+            >
+              <Text style={styles.secondaryButtonLabel}>Open report detail</Text>
+            </Pressable>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
+function SupervisorReviewDetailPanel({
+  report,
+  session,
+  onCloseReport,
+}: {
+  report: SupervisorReviewReportDetail;
+  session: ActiveUserSession;
+  onCloseReport: () => void;
+}) {
+  return (
+    <View style={styles.listCard}>
+      <Text style={styles.listCardTitle}>Report detail</Text>
+      <Text style={styles.helperText}>{report.serverReportVersion}</Text>
+
+      <View style={styles.metricGrid}>
+        <MetricCard label="Tag" value={report.tagId} />
+        <MetricCard label="Template" value={report.templateId} />
+      </View>
+      <View style={styles.metricGrid}>
+        <MetricCard label="Lifecycle" value={report.lifecycleState} />
+        <MetricCard label="Sync" value={report.syncState} />
+      </View>
+      <View style={styles.metricGrid}>
+        <MetricCard label="Submitted" value={formatTimestamp(report.submittedAt)} />
+        <MetricCard label="Accepted" value={formatTimestamp(report.acceptedAt)} />
+      </View>
+      <View style={styles.metricGrid}>
+        <MetricCard
+          label="Official actions"
+          value={session.reviewActionsAvailable ? 'Connected' : 'Unavailable'}
+        />
+        <MetricCard label="Evidence" value={report.evidenceStatus.state} />
+      </View>
+
+      <Text style={styles.sectionTitle}>Execution summary</Text>
+      <Text style={styles.helperText}>{report.executionSummary}</Text>
+      <Text style={styles.helperText}>{report.historySummary}</Text>
+      <Text style={styles.helperText}>{report.draftDiagnosisSummary}</Text>
+
+      <Text style={styles.sectionTitle}>Evidence references</Text>
+      {report.evidenceReferences.map((item) => (
+        <View key={`${item.requirementLevel}:${item.label}`} style={styles.metricCard}>
+          <Text style={styles.metricLabel}>{item.requirementLevel}</Text>
+          <Text style={styles.metricValue}>{item.label}</Text>
+          <Text style={styles.helperText}>Kind: {item.evidenceKind}</Text>
+          <Text style={styles.helperText}>Status: {item.satisfied ? 'Satisfied' : 'Missing'}</Text>
+          <Text style={styles.helperText}>{item.detail}</Text>
+        </View>
+      ))}
+
+      <Text style={styles.sectionTitle}>Risk flags</Text>
+      {report.riskFlags.length === 0 ? (
+        <Text style={styles.helperText}>No risk flags are attached to this report.</Text>
+      ) : (
+        report.riskFlags.map((item) => (
+          <View key={item.id} style={styles.metricCard}>
+            <Text style={styles.metricLabel}>{item.reasonType}</Text>
+            <Text style={styles.metricValue}>
+              {item.justificationRequired ? 'Justification required' : 'Justification optional'}
+            </Text>
+            <Text style={styles.helperText}>{item.justificationText}</Text>
+          </View>
+        ))
+      )}
+
+      <Text style={styles.sectionTitle}>Photo evidence</Text>
+      <Text style={styles.helperText}>{report.evidenceStatus.message}</Text>
+      {report.photoAttachments.map((item) => (
+        <View key={item.evidenceId} style={styles.metricCard}>
+          <Text style={styles.metricLabel}>Photo evidence</Text>
+          <Text style={styles.metricValue}>{item.evidenceId}</Text>
+          <Text style={styles.helperText}>Sync: {item.syncState}</Text>
+          <Text style={styles.helperText}>
+            Finalized: {item.presenceFinalizedAt ? formatTimestamp(item.presenceFinalizedAt) : 'No'}
+          </Text>
+        </View>
+      ))}
+
+      <Text style={styles.sectionTitle}>Approval history</Text>
+      <Text style={styles.helperText}>{report.approvalHistory.placeholder}</Text>
+
+      <Pressable accessibilityRole="button" onPress={onCloseReport} style={styles.secondaryButton}>
+        <Text style={styles.secondaryButtonLabel}>Back to review queue</Text>
+      </Pressable>
     </View>
   );
 }
@@ -3340,10 +3664,12 @@ const styles = StyleSheet.create({
   },
   routeRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
   routeButton: {
     flex: 1,
+    flexBasis: '45%',
     borderRadius: 14,
     backgroundColor: '#e7ece8',
     paddingVertical: 12,

@@ -15,6 +15,8 @@ import {
   parseReportSubmissionRequestPayload,
 } from '../modules/report-submissions/reportSubmissionPayloadValidation';
 import type { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
+import { SupervisorReviewError } from '../modules/review/model';
+import type { SupervisorReviewService } from '../modules/review/supervisorReviewService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
@@ -23,6 +25,7 @@ export interface ApiRequestHandlerDependencies {
   assignedWorkPackageService: AssignedWorkPackageService;
   evidenceSyncService: EvidenceSyncService;
   reportSubmissionService: ReportSubmissionService;
+  supervisorReviewService: SupervisorReviewService;
 }
 
 export function createApiRequestHandler(dependencies: ApiRequestHandlerDependencies) {
@@ -359,6 +362,71 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    if (method === 'GET' && url === '/review/supervisor/reports') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const queue = await dependencies.supervisorReviewService.listSupervisorQueue(user);
+
+        context.logger.info('supervisor-review.queue.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportCount: queue.items.length,
+        });
+        writeJson(response, 200, queue);
+      } catch (error) {
+        context.logger.warn('supervisor-review.queue.failed', {
+          statusCode:
+            error instanceof SupervisorReviewError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeSupervisorReviewError(
+          response,
+          error,
+          'Supervisor review queue failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
+    const supervisorReportMatch =
+      method === 'GET' ? url.match(/^\/review\/supervisor\/reports\/([^/]+)$/) : null;
+    if (supervisorReportMatch) {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const report = await dependencies.supervisorReviewService.getSupervisorReportDetail(
+          user,
+          decodeURIComponent(supervisorReportMatch[1] ?? ''),
+        );
+
+        context.logger.info('supervisor-review.detail.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: report.report.reportId,
+        });
+        writeJson(response, 200, report);
+      } catch (error) {
+        context.logger.warn('supervisor-review.detail.failed', {
+          statusCode:
+            error instanceof SupervisorReviewError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeSupervisorReviewError(
+          response,
+          error,
+          'Supervisor review report failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
     return false;
   };
 }
@@ -445,6 +513,24 @@ function writeReportSubmissionError(
       message: error.message,
       ...(error.syncIssue ? { syncIssue: error.syncIssue } : {}),
     });
+    return;
+  }
+
+  writeJson(response, 500, { message: fallbackMessage });
+}
+
+function writeSupervisorReviewError(
+  response: ServerResponse,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  if (error instanceof SupervisorReviewError) {
+    writeJson(response, error.statusCode, { message: error.message });
     return;
   }
 

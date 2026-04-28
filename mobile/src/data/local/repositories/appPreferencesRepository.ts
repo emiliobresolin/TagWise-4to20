@@ -22,7 +22,7 @@ export class AppPreferencesRepository {
       return DEFAULT_SHELL_ROUTE;
     }
 
-    return row.value === 'storage' ? 'storage' : DEFAULT_SHELL_ROUTE;
+    return isShellRoute(row.value) ? row.value : DEFAULT_SHELL_ROUTE;
   }
 
   async setShellRoute(route: ShellRoute): Promise<void> {
@@ -39,4 +39,13 @@ export class AppPreferencesRepository {
       [SHELL_ROUTE_PREFERENCE_KEY, route, now],
     );
   }
+}
+
+function isShellRoute(value: string): value is ShellRoute {
+  return (
+    value === 'foundation' ||
+    value === 'storage' ||
+    value === 'packages' ||
+    value === 'review'
+  );
 }

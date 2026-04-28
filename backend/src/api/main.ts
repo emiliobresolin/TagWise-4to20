@@ -13,6 +13,8 @@ import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRep
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
 import { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
+import { SupervisorReviewRepository } from '../modules/review/supervisorReviewRepository';
+import { SupervisorReviewService } from '../modules/review/supervisorReviewService';
 import { createApiRequestHandler } from './createApiRequestHandler';
 import { createS3EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
 
@@ -39,10 +41,15 @@ async function main() {
   if (!technician) {
     throw new Error('Seed technician account is missing after auth bootstrap.');
   }
+  const supervisor = await authRepository.findByEmail(environment.auth.seedUsers.supervisor.email);
+  if (!supervisor) {
+    throw new Error('Seed supervisor account is missing after auth bootstrap.');
+  }
   const assignedWorkPackageService = new AssignedWorkPackageService(
     new AssignedWorkPackageRepository(pool),
   );
   await assignedWorkPackageService.ensureSeedPackages(technician.id);
+  const seededWorkPackages = await assignedWorkPackageService.listAssignedPackages(technician);
   const evidenceSyncService = new EvidenceSyncService(
     new EvidenceSyncRepository(pool),
     createS3EvidenceObjectStorageClient(environment.objectStorage),
@@ -50,6 +57,13 @@ async function main() {
   const reportSubmissionService = new ReportSubmissionService(
     new ReportSubmissionRepository(pool),
     assignedWorkPackageService,
+  );
+  const supervisorReviewService = new SupervisorReviewService(
+    new SupervisorReviewRepository(pool),
+  );
+  await supervisorReviewService.ensureSeedRoutes(
+    supervisor.id,
+    seededWorkPackages.map((workPackage) => workPackage.id),
   );
 
   const runtime = createServiceRuntime({
@@ -64,6 +78,7 @@ async function main() {
       assignedWorkPackageService,
       evidenceSyncService,
       reportSubmissionService,
+      supervisorReviewService,
     }),
   });
 

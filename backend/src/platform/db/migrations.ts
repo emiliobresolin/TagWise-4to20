@@ -159,6 +159,21 @@ const postgresMigrations: PostgresMigration[] = [
       ON report_submission_records (work_package_id, lifecycle_state, accepted_at ASC);
     `,
   },
+  {
+    id: '0007_supervisor_review_routes',
+    sql: `
+      CREATE TABLE IF NOT EXISTS supervisor_review_routes (
+        supervisor_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+        work_package_id TEXT NOT NULL REFERENCES assigned_work_packages(id) ON DELETE CASCADE,
+        route_state TEXT NOT NULL CHECK (route_state IN ('active')),
+        routed_at TEXT NOT NULL,
+        PRIMARY KEY (supervisor_user_id, work_package_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_supervisor_review_routes_supervisor
+      ON supervisor_review_routes (supervisor_user_id, route_state, work_package_id);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

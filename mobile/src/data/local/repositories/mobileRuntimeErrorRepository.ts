@@ -152,7 +152,12 @@ function parseSessionConnectionMode(
 }
 
 function parseShellRoute(value: string | null): ShellRoute | null {
-  if (value === 'foundation' || value === 'storage' || value === 'packages') {
+  if (
+    value === 'foundation' ||
+    value === 'storage' ||
+    value === 'packages' ||
+    value === 'review'
+  ) {
     return value;
   }
 

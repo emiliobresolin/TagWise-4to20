@@ -12,6 +12,9 @@ import { EVIDENCE_SYNC_API_CONTRACT_VERSION } from '../modules/evidence-sync/mod
 import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
 import { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
 import { REPORT_SUBMISSION_API_CONTRACT_VERSION } from '../modules/report-submissions/model';
+import { SUPERVISOR_REVIEW_API_CONTRACT_VERSION } from '../modules/review/model';
+import { SupervisorReviewRepository } from '../modules/review/supervisorReviewRepository';
+import { SupervisorReviewService } from '../modules/review/supervisorReviewService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createServiceRuntime, type ServiceRuntimeHandle } from '../runtime/serviceRuntime';
@@ -97,6 +100,7 @@ describe('createApiRequestHandler', () => {
         assignedWorkPackageService,
         evidenceSyncService,
         reportSubmissionService,
+        supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
     });
     runtimes.push(runtime);
@@ -190,6 +194,7 @@ describe('createApiRequestHandler', () => {
         assignedWorkPackageService,
         evidenceSyncService,
         reportSubmissionService,
+        supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
     });
     runtimes.push(runtime);
@@ -294,6 +299,7 @@ describe('createApiRequestHandler', () => {
           new ReportSubmissionRepository(pool),
           assignedWorkPackageService,
         ),
+        supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
     });
     runtimes.push(runtime);
@@ -376,6 +382,7 @@ describe('createApiRequestHandler', () => {
         assignedWorkPackageService,
         evidenceSyncService,
         reportSubmissionService,
+        supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
     });
     runtimes.push(runtime);
@@ -526,6 +533,7 @@ describe('createApiRequestHandler', () => {
         assignedWorkPackageService,
         evidenceSyncService,
         reportSubmissionService,
+        supervisorReviewService: new SupervisorReviewService(new SupervisorReviewRepository(pool)),
       }),
     });
     runtimes.push(runtime);
@@ -769,6 +777,126 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('serves the supervisor review queue and report detail from server-accepted submissions only', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-review-tech-login',
+      },
+    );
+    const supervisorLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+      {
+        correlationId: 'corr-review-supervisor-login',
+      },
+    );
+
+    const emptyQueue = await fetch(`http://127.0.0.1:${port}/review/supervisor/reports`, {
+      headers: {
+        authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+      },
+    });
+    expect(emptyQueue.status).toBe(200);
+    expect(await emptyQueue.json()).toEqual({
+      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
+      items: [],
+    });
+
+    const accepted = await fetch(`http://127.0.0.1:${port}/sync/report-submissions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(buildValidReportSubmissionPayload()),
+    });
+    expect(accepted.status).toBe(200);
+
+    const technicianQueue = await fetch(`http://127.0.0.1:${port}/review/supervisor/reports`, {
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+      },
+    });
+    expect(technicianQueue.status).toBe(403);
+
+    const queue = await fetch(`http://127.0.0.1:${port}/review/supervisor/reports`, {
+      headers: {
+        authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+      },
+    });
+    const queueBody = (await queue.json()) as {
+      contractVersion: string;
+      items: Array<{
+        reportId: string;
+        lifecycleState: string;
+        executionSummary: string;
+        riskFlagCount: number;
+        pendingEvidenceCount: number;
+      }>;
+    };
+
+    expect(queue.status).toBe(200);
+    expect(queueBody.contractVersion).toBe(SUPERVISOR_REVIEW_API_CONTRACT_VERSION);
+    expect(queueBody.items).toHaveLength(1);
+    expect(queueBody.items[0]).toMatchObject({
+      reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      executionSummary: 'Structured pressure readings are captured.',
+      riskFlagCount: 1,
+      pendingEvidenceCount: 0,
+    });
+
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/review/supervisor/reports/${encodeURIComponent(
+        'tag-report:wp-seed-1001:tag-pt-101',
+      )}`,
+      {
+        headers: {
+          authorization: `Bearer ${supervisorLogin.tokens.accessToken}`,
+        },
+      },
+    );
+    const detailBody = (await detail.json()) as {
+      contractVersion: string;
+      report: {
+        reportId: string;
+        historySummary: string;
+        draftDiagnosisSummary: string;
+        evidenceReferences: unknown[];
+        riskFlags: unknown[];
+        evidenceStatus: { state: string; pendingPhotoAttachments: number };
+        approvalHistory: { items: unknown[]; placeholder: string };
+      };
+    };
+
+    expect(detail.status).toBe(200);
+    expect(detailBody.contractVersion).toBe(SUPERVISOR_REVIEW_API_CONTRACT_VERSION);
+    expect(detailBody.report).toMatchObject({
+      reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+      historySummary: 'History available.',
+      draftDiagnosisSummary: 'No local diagnosis.',
+      evidenceStatus: {
+        state: 'no-photo-evidence',
+        pendingPhotoAttachments: 0,
+      },
+      approvalHistory: {
+        items: [],
+        placeholder: 'No approval decisions have been recorded for this report yet.',
+      },
+    });
+    expect(detailBody.report.evidenceReferences).toHaveLength(2);
+    expect(detailBody.report.riskFlags).toHaveLength(1);
+
+    await pool.end();
+  });
 });
 
 function createTestEvidenceObjectStorageClient(
@@ -808,11 +936,16 @@ async function startReportSubmissionRuntime() {
   if (!technician) {
     throw new Error('Missing seeded technician for report submission test.');
   }
+  const supervisor = await authRepository.findByEmail(authConfig.seedUsers.supervisor.email);
+  if (!supervisor) {
+    throw new Error('Missing seeded supervisor for report submission test.');
+  }
 
   const assignedWorkPackageService = new AssignedWorkPackageService(
     new AssignedWorkPackageRepository(pool),
   );
   await assignedWorkPackageService.ensureSeedPackages(technician.id);
+  const seededWorkPackages = await assignedWorkPackageService.listAssignedPackages(technician);
   const evidenceSyncService = new EvidenceSyncService(
     new EvidenceSyncRepository(pool),
     createTestEvidenceObjectStorageClient(),
@@ -821,6 +954,13 @@ async function startReportSubmissionRuntime() {
     new ReportSubmissionRepository(pool),
     assignedWorkPackageService,
     () => new Date('2026-04-23T14:30:00.000Z'),
+  );
+  const supervisorReviewService = new SupervisorReviewService(
+    new SupervisorReviewRepository(pool),
+  );
+  await supervisorReviewService.ensureSeedRoutes(
+    supervisor.id,
+    seededWorkPackages.map((workPackage) => workPackage.id),
   );
 
   const runtime = createServiceRuntime({
@@ -834,6 +974,7 @@ async function startReportSubmissionRuntime() {
       assignedWorkPackageService,
       evidenceSyncService,
       reportSubmissionService,
+      supervisorReviewService,
     }),
   });
   runtimes.push(runtime);

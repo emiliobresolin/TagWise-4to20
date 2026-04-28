@@ -1,4 +1,4 @@
-export type ShellRoute = 'foundation' | 'storage' | 'packages';
+export type ShellRoute = 'foundation' | 'storage' | 'packages' | 'review';
 
 export const DEFAULT_SHELL_ROUTE: ShellRoute = 'foundation';
 export const SHELL_ROUTE_PREFERENCE_KEY = 'shell.route';
