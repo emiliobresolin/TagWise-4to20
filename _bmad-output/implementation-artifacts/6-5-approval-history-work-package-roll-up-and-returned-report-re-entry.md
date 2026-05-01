@@ -1,6 +1,6 @@
 ﻿# Story 6.5: Approval History, Work-Package Roll-Up, and Returned-Report Re-entry
 
-Status: review
+Status: done
 
 ## Metadata
 - Story key: 6-5-approval-history-work-package-roll-up-and-returned-report-re-entry
@@ -88,6 +88,11 @@ derive work-package status from child report states; preserve immutable decision
 - `git diff --check` - passed; only line-ending warnings from existing Git attributes.
 - Generated/cache check - clean; no generated or cache files remain dirty.
 - Backend response contract was not changed by the latest freshness-contract follow-up, so backend tests were not rerun after this mobile-only mirror fix.
+
+### QA Closeout (2026-05-01)
+- Final BMAD QA verdict: Pass.
+- Previous Story 6.5 blockers resolved: evidence queue integrity, connected work-package roll-up precedence, and freshness-contract handling.
+- Non-blocking follow-up: optional repeated `manager_review_routes` reactivation regression remains hardening only; not required for Story 6.5 approval.
 
 ### File List
 - `backend/src/api/createApiRequestHandler.ts`

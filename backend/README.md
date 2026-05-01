@@ -20,12 +20,20 @@ Story 2.1 adds:
 - authenticated assigned work package list and bounded snapshot download endpoints
 - seeded package snapshots shaped for offline preload of tags, templates, guidance, and history summary data
 
+Story 7.1 adds:
+- one reusable backend container image for API and worker release environments
+- staging/production environment templates with secret-manager placeholders
+- release preflight, smoke, and backup-restore verification commands
+
 ## Commands
 - `npm install`
 - `npm run dev:api`
 - `npm run dev:worker`
 - `npm run db:migrate`
 - `npm run storage:smoke`
+- `npm run deploy:preflight`
+- `npm run release:smoke`
+- `npm run backup:restore:verify`
 - `npm test`
 - `npm run typecheck`
 
@@ -52,6 +60,13 @@ Optional seed user overrides:
 - `TAGWISE_SEED_SUPERVISOR_PASSWORD`
 - `TAGWISE_SEED_MANAGER_EMAIL`
 - `TAGWISE_SEED_MANAGER_PASSWORD`
+
+Release environment templates:
+- `.env.staging.example`
+- `.env.production.example`
+
+Release runbook:
+- `../docs/ops/story-7-1-release-environments.md`
 
 ## Manual Smoke Path
 1. Start a local PostgreSQL instance and a private S3-compatible object store such as MinIO.

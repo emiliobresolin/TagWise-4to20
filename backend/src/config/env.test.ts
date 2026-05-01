@@ -19,6 +19,7 @@ describe('loadServiceEnvironment', () => {
     const environment = loadServiceEnvironment('api', baseEnv);
 
     expect(environment.serviceRole).toBe('api');
+    expect(environment.deploymentEnvironment).toBe('development');
     expect(environment.port).toBe(4100);
     expect(environment.objectStorage.forcePathStyle).toBe(true);
     expect(environment.objectStorage.autoCreateBucket).toBe(true);
@@ -42,5 +43,58 @@ describe('loadServiceEnvironment', () => {
 
     expect(workerEnvironment.auth).toBeUndefined();
     expect(workerEnvironment.port).toBe(4101);
+  });
+
+  it('requires release environments to use explicit non-development secrets', () => {
+    expect(() =>
+      loadServiceEnvironment('api', {
+        ...baseEnv,
+        TAGWISE_DEPLOYMENT_ENV: 'staging',
+        TAGWISE_DATABASE_URL:
+          'postgres://tagwise_app:staging-password@staging-db.internal:5432/tagwise',
+        TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'false',
+        TAGWISE_STORAGE_ACCESS_KEY_ID: 'staging-access-key',
+        TAGWISE_STORAGE_SECRET_ACCESS_KEY: 'staging-secret-key',
+        TAGWISE_AUTH_TOKEN_SECRET: 'development-secret',
+      }),
+    ).toThrow('TAGWISE_AUTH_TOKEN_SECRET');
+  });
+
+  it('rejects local database and auto-created storage in release environments', () => {
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_DEPLOYMENT_ENV: 'production',
+        TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'true',
+        TAGWISE_STORAGE_ACCESS_KEY_ID: 'prod-access-key',
+        TAGWISE_STORAGE_SECRET_ACCESS_KEY: 'prod-secret-key',
+      }),
+    ).toThrow('managed database URL');
+  });
+
+  it('loads production configuration when release guardrails are satisfied', () => {
+    const environment = loadServiceEnvironment('api', {
+      ...baseEnv,
+      TAGWISE_DEPLOYMENT_ENV: 'production',
+      TAGWISE_NODE_ENV: 'production',
+      TAGWISE_HOST: '0.0.0.0',
+      TAGWISE_DATABASE_URL:
+        'postgres://tagwise_app:prod-password@prod-db.internal:5432/tagwise',
+      TAGWISE_STORAGE_BUCKET: 'tagwise-evidence-prod',
+      TAGWISE_STORAGE_ENDPOINT: undefined,
+      TAGWISE_STORAGE_ACCESS_KEY_ID: 'prod-access-key',
+      TAGWISE_STORAGE_SECRET_ACCESS_KEY: 'prod-secret-key',
+      TAGWISE_STORAGE_FORCE_PATH_STYLE: 'false',
+      TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'false',
+      TAGWISE_AUTH_TOKEN_SECRET: 'prod-token-secret-with-enough-length',
+      TAGWISE_SEED_TECHNICIAN_PASSWORD: 'prod-tech-password',
+      TAGWISE_SEED_SUPERVISOR_PASSWORD: 'prod-supervisor-password',
+      TAGWISE_SEED_MANAGER_PASSWORD: 'prod-manager-password',
+    });
+
+    expect(environment.deploymentEnvironment).toBe('production');
+    expect(environment.nodeEnv).toBe('production');
+    expect(environment.host).toBe('0.0.0.0');
+    expect(environment.objectStorage.autoCreateBucket).toBe(false);
   });
 });

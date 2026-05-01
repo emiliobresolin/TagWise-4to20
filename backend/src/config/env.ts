@@ -1,4 +1,5 @@
 export type ServiceRole = 'api' | 'worker';
+export type DeploymentEnvironment = 'development' | 'staging' | 'production';
 export type UserRole = 'technician' | 'supervisor' | 'manager';
 
 export interface ObjectStorageConfig {
@@ -13,6 +14,7 @@ export interface ObjectStorageConfig {
 
 export interface ServiceEnvironment {
   serviceRole: ServiceRole;
+  deploymentEnvironment: DeploymentEnvironment;
   nodeEnv: string;
   host: string;
   port: number;
@@ -43,9 +45,15 @@ export function loadServiceEnvironment(
   serviceRole: ServiceRole,
   source: NodeJS.ProcessEnv = process.env,
 ): ServiceEnvironment {
-  return {
+  const nodeEnv = source.TAGWISE_NODE_ENV?.trim() || 'development';
+  const deploymentEnvironment = parseDeploymentEnvironment(
+    source.TAGWISE_DEPLOYMENT_ENV,
+    nodeEnv,
+  );
+  const environment: ServiceEnvironment = {
     serviceRole,
-    nodeEnv: source.TAGWISE_NODE_ENV?.trim() || 'development',
+    deploymentEnvironment,
+    nodeEnv,
     host: source.TAGWISE_HOST?.trim() || '127.0.0.1',
     port: parsePort(
       serviceRole === 'api' ? source.TAGWISE_API_PORT : source.TAGWISE_WORKER_PORT,
@@ -67,6 +75,10 @@ export function loadServiceEnvironment(
     },
     auth: serviceRole === 'api' ? loadAuthConfig(source) : undefined,
   };
+
+  assertReleaseSafeEnvironment(environment, source);
+
+  return environment;
 }
 
 function loadAuthConfig(source: NodeJS.ProcessEnv): AuthConfig {
@@ -143,12 +155,103 @@ function parsePort(raw: string | undefined, fallback: number, serviceRole: Servi
   return value;
 }
 
+function parseDeploymentEnvironment(
+  raw: string | undefined,
+  nodeEnv: string,
+): DeploymentEnvironment {
+  const normalized = raw?.trim().toLowerCase();
+  if (!normalized) {
+    return nodeEnv.trim().toLowerCase() === 'production' ? 'production' : 'development';
+  }
+
+  if (
+    normalized === 'development' ||
+    normalized === 'staging' ||
+    normalized === 'production'
+  ) {
+    return normalized;
+  }
+
+  throw new Error(`Invalid deployment environment: ${raw}`);
+}
+
 function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
   if (!raw || raw.trim().length === 0) {
     return fallback;
   }
 
   return raw.trim().toLowerCase() === 'true';
+}
+
+function assertReleaseSafeEnvironment(
+  environment: ServiceEnvironment,
+  source: NodeJS.ProcessEnv,
+): void {
+  if (environment.deploymentEnvironment === 'development') {
+    return;
+  }
+
+  if (isLocalDatabaseUrl(environment.databaseUrl)) {
+    throw new Error(
+      'Release environments must use a managed database URL, not localhost or 127.0.0.1.',
+    );
+  }
+
+  if (environment.databaseUrl.includes('tagwise:tagwise@')) {
+    throw new Error('Release environments must not use the development database credentials.');
+  }
+
+  if (environment.objectStorage.autoCreateBucket) {
+    throw new Error('Release environments must not auto-create object storage buckets.');
+  }
+
+  if (
+    environment.objectStorage.accessKeyId === 'minioadmin' ||
+    environment.objectStorage.secretAccessKey === 'minioadmin'
+  ) {
+    throw new Error('Release environments must not use local MinIO credentials.');
+  }
+
+  if (environment.serviceRole !== 'api' || !environment.auth) {
+    return;
+  }
+
+  assertReleaseSecret(
+    source.TAGWISE_AUTH_TOKEN_SECRET,
+    'TAGWISE_AUTH_TOKEN_SECRET',
+    ['replace-me-in-real-environments', 'development-secret'],
+  );
+  assertReleaseSecret(
+    source.TAGWISE_SEED_TECHNICIAN_PASSWORD,
+    'TAGWISE_SEED_TECHNICIAN_PASSWORD',
+    ['TagWise123!'],
+  );
+  assertReleaseSecret(
+    source.TAGWISE_SEED_SUPERVISOR_PASSWORD,
+    'TAGWISE_SEED_SUPERVISOR_PASSWORD',
+    ['TagWise123!'],
+  );
+  assertReleaseSecret(
+    source.TAGWISE_SEED_MANAGER_PASSWORD,
+    'TAGWISE_SEED_MANAGER_PASSWORD',
+    ['TagWise123!'],
+  );
+}
+
+function isLocalDatabaseUrl(databaseUrl: string): boolean {
+  return /(@|\b)(localhost|127\.0\.0\.1)(:|\/|$)/i.test(databaseUrl);
+}
+
+function assertReleaseSecret(
+  raw: string | undefined,
+  key: string,
+  forbiddenValues: string[],
+): void {
+  const value = requireValue(raw, key);
+
+  if (value.length < 16 || forbiddenValues.includes(value)) {
+    throw new Error(`Release environments require a non-development value for ${key}.`);
+  }
 }
 
 function parsePositiveInteger(raw: string | undefined, fallback: number, key: string): number {

@@ -11,7 +11,10 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/platform/db/runMigrationsCli.ts",
-    "storage:smoke": "tsx src/platform/storage/runObjectStorageSmokeCli.ts"
+    "storage:smoke": "tsx src/platform/storage/runObjectStorageSmokeCli.ts",
+    "deploy:preflight": "tsx src/ops/deploymentPreflightCli.ts",
+    "release:smoke": "tsx src/ops/releaseSmokeCli.ts",
+    "backup:restore:verify": "tsx src/ops/backupRestoreVerificationCli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.911.0",

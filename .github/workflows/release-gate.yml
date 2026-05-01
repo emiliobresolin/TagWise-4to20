@@ -1,0 +1,89 @@
+name: Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Environment to validate before promotion.
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  verify-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            mobile/package-lock.json
+
+      - name: Verify backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Verify mobile
+        working-directory: mobile
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Build backend release image
+        working-directory: backend
+        run: docker build -t tagwise-backend:${{ github.sha }} .
+
+  deployment-preflight:
+    runs-on: ubuntu-latest
+    needs: verify-build
+    environment: ${{ inputs.target_environment }}
+    env:
+      TAGWISE_DEPLOYMENT_ENV: ${{ inputs.target_environment }}
+      TAGWISE_NODE_ENV: production
+      TAGWISE_HOST: 0.0.0.0
+      TAGWISE_API_PORT: ${{ vars.TAGWISE_API_PORT || '4100' }}
+      TAGWISE_WORKER_PORT: ${{ vars.TAGWISE_WORKER_PORT || '4101' }}
+      TAGWISE_DATABASE_URL: ${{ secrets.TAGWISE_DATABASE_URL }}
+      TAGWISE_STORAGE_BUCKET: ${{ vars.TAGWISE_STORAGE_BUCKET }}
+      TAGWISE_STORAGE_REGION: ${{ vars.TAGWISE_STORAGE_REGION || 'us-east-1' }}
+      TAGWISE_STORAGE_ENDPOINT: ${{ vars.TAGWISE_STORAGE_ENDPOINT }}
+      TAGWISE_STORAGE_ACCESS_KEY_ID: ${{ secrets.TAGWISE_STORAGE_ACCESS_KEY_ID }}
+      TAGWISE_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.TAGWISE_STORAGE_SECRET_ACCESS_KEY }}
+      TAGWISE_STORAGE_FORCE_PATH_STYLE: ${{ vars.TAGWISE_STORAGE_FORCE_PATH_STYLE || 'false' }}
+      TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'false'
+      TAGWISE_AUTH_TOKEN_SECRET: ${{ secrets.TAGWISE_AUTH_TOKEN_SECRET }}
+      TAGWISE_SEED_TECHNICIAN_EMAIL: ${{ vars.TAGWISE_SEED_TECHNICIAN_EMAIL }}
+      TAGWISE_SEED_TECHNICIAN_PASSWORD: ${{ secrets.TAGWISE_SEED_TECHNICIAN_PASSWORD }}
+      TAGWISE_SEED_SUPERVISOR_EMAIL: ${{ vars.TAGWISE_SEED_SUPERVISOR_EMAIL }}
+      TAGWISE_SEED_SUPERVISOR_PASSWORD: ${{ secrets.TAGWISE_SEED_SUPERVISOR_PASSWORD }}
+      TAGWISE_SEED_MANAGER_EMAIL: ${{ vars.TAGWISE_SEED_MANAGER_EMAIL }}
+      TAGWISE_SEED_MANAGER_PASSWORD: ${{ secrets.TAGWISE_SEED_MANAGER_PASSWORD }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Run deployment preflight
+        working-directory: backend
+        run: |
+          npm ci
+          npm run deploy:preflight
