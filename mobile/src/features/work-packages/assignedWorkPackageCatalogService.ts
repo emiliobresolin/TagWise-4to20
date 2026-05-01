@@ -37,7 +37,7 @@ export class AssignedWorkPackageCatalogService {
     assertConnectedSession(session);
     const remoteSummaries = await this.dependencies.apiClient.listAssignedPackages();
     const workPackages = this.dependencies.userPartitions.forUser(session.userId).workPackages;
-    await workPackages.replaceCatalog(remoteSummaries);
+    await workPackages.replaceCatalog(remoteSummaries, this.now().toISOString());
     return workPackages.listSummaries();
   }
 
@@ -76,10 +76,15 @@ export class AssignedWorkPackageCatalogService {
       summaries.map(async (summary) => {
         const snapshot = await store.workPackages.getSnapshot(summary.id);
         const expectedTagCount = snapshot?.tags.length ?? summary.tagCount;
+        const packageReports = reports.filter((report) => report.workPackageId === summary.id);
+        if (hasFreshMirroredServerRollup(summary, packageReports)) {
+          return summary;
+        }
+
         const status = deriveRollupStatus(
           summary.status,
           expectedTagCount,
-          reports.filter((report) => report.workPackageId === summary.id),
+          packageReports,
         );
 
         return status === summary.status ? summary : { ...summary, status };
@@ -100,6 +105,7 @@ interface StoredReportCatalogPayload {
   tagId: string;
   lifecycleState: SharedExecutionReportLifecycleState;
   syncState: SharedExecutionSyncState;
+  updatedAt: string;
 }
 
 function parseStoredReportCatalogPayload(
@@ -116,7 +122,8 @@ function parseStoredReportCatalogPayload(
       typeof parsed.workPackageId !== 'string' ||
       typeof parsed.tagId !== 'string' ||
       !isSharedExecutionLifecycleState(parsed.lifecycleState) ||
-      !isSharedExecutionSyncState(parsed.syncState)
+      !isSharedExecutionSyncState(parsed.syncState) ||
+      typeof parsed.updatedAt !== 'string'
     ) {
       return null;
     }
@@ -127,10 +134,35 @@ function parseStoredReportCatalogPayload(
       tagId: parsed.tagId,
       lifecycleState: parsed.lifecycleState,
       syncState: parsed.syncState,
+      updatedAt: parsed.updatedAt,
     };
   } catch {
     return null;
   }
+}
+
+function hasFreshMirroredServerRollup(
+  summary: LocalAssignedWorkPackageSummary,
+  reports: StoredReportCatalogPayload[],
+): boolean {
+  if (
+    summary.status !== 'completed' &&
+    summary.status !== 'attention_needed'
+  ) {
+    return false;
+  }
+
+  const latestReportUpdatedAt = reports.reduce<string | null>(
+    (latest, report) =>
+      !latest || isAtOrAfterTimestamp(report.updatedAt, latest) ? report.updatedAt : latest,
+    null,
+  );
+
+  // Server roll-up is derived from child reports without advancing package updatedAt.
+  // The local mirror timestamp is the freshest known point for that server-authoritative roll-up.
+  return latestReportUpdatedAt
+    ? isAtOrAfterTimestamp(summary.localUpdatedAt, latestReportUpdatedAt)
+    : true;
 }
 
 function deriveRollupStatus(
@@ -199,4 +231,15 @@ function isSharedExecutionSyncState(value: unknown): value is SharedExecutionSyn
     value === 'synced' ||
     value === 'sync-issue'
   );
+}
+
+function isAtOrAfterTimestamp(candidate: string, reference: string): boolean {
+  const candidateTime = Date.parse(candidate);
+  const referenceTime = Date.parse(reference);
+
+  if (Number.isFinite(candidateTime) && Number.isFinite(referenceTime)) {
+    return candidateTime >= referenceTime;
+  }
+
+  return candidate >= reference;
 }

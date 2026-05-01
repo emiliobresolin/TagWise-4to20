@@ -509,6 +509,7 @@ function buildWorkPackage(id: string) {
     },
     updatedAt: '2026-04-24T10:00:00.000Z',
     downloadedAt: null,
+    localUpdatedAt: '2026-04-24T10:00:00.000Z',
     hasSnapshot: false,
     snapshotGeneratedAt: null,
   };

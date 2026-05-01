@@ -27,6 +27,7 @@ export interface AssignedWorkPackageSummary {
 
 export interface LocalAssignedWorkPackageSummary extends AssignedWorkPackageSummary {
   downloadedAt: string | null;
+  localUpdatedAt: string;
   hasSnapshot: boolean;
   snapshotGeneratedAt: string | null;
 }

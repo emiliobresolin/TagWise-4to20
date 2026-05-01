@@ -450,7 +450,7 @@ describe('AssignedWorkPackageCatalogService', () => {
     await runtime.database.closeAsync?.();
   });
 
-  it('preserves connected server roll-up statuses when local report drafts are stale', async () => {
+  it('preserves connected server roll-up when package updatedAt is older than stale local drafts', async () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-connected-rollup-'));
     createdDirectories.push(tempDirectory);
 
@@ -485,7 +485,6 @@ describe('AssignedWorkPackageCatalogService', () => {
           {
             ...seedSummary,
             status: 'completed',
-            updatedAt: '2026-04-20T10:00:00.000Z',
           },
         ],
         downloadAssignedPackage: async () => seedSnapshot,
@@ -495,11 +494,35 @@ describe('AssignedWorkPackageCatalogService', () => {
     });
 
     await expect(completedService.refreshConnectedCatalog(session)).resolves.toMatchObject([
-      { id: seedSummary.id, status: 'completed' },
+      {
+        id: seedSummary.id,
+        status: 'completed',
+        updatedAt: seedSummary.updatedAt,
+        localUpdatedAt: '2026-04-20T10:15:00.000Z',
+      },
     ]);
     await expect(
       runtime.repositories.userPartitions.forUser(session.userId).workPackages.listSummaries(),
-    ).resolves.toMatchObject([{ id: seedSummary.id, status: 'completed' }]);
+    ).resolves.toMatchObject([
+      {
+        id: seedSummary.id,
+        status: 'completed',
+        updatedAt: seedSummary.updatedAt,
+        localUpdatedAt: '2026-04-20T10:15:00.000Z',
+      },
+    ]);
+    await expect(completedService.loadLocalCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'completed' },
+    ]);
+    await saveReportDraft(runtime, session, {
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      state: 'submitted-pending-review',
+      syncState: 'synced',
+      updatedAt: '2026-04-20T10:20:00.000Z',
+    });
+    await expect(completedService.loadLocalCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'pending_review' },
+    ]);
 
     const attentionNeededService = new AssignedWorkPackageCatalogService({
       apiClient: {
@@ -507,7 +530,6 @@ describe('AssignedWorkPackageCatalogService', () => {
           {
             ...seedSummary,
             status: 'attention_needed',
-            updatedAt: '2026-04-20T10:30:00.000Z',
           },
         ],
         downloadAssignedPackage: async () => seedSnapshot,
@@ -517,11 +539,26 @@ describe('AssignedWorkPackageCatalogService', () => {
     });
 
     await expect(attentionNeededService.refreshConnectedCatalog(session)).resolves.toMatchObject([
-      { id: seedSummary.id, status: 'attention_needed' },
+      {
+        id: seedSummary.id,
+        status: 'attention_needed',
+        updatedAt: seedSummary.updatedAt,
+        localUpdatedAt: '2026-04-20T10:45:00.000Z',
+      },
     ]);
     await expect(
       runtime.repositories.userPartitions.forUser(session.userId).workPackages.listSummaries(),
-    ).resolves.toMatchObject([{ id: seedSummary.id, status: 'attention_needed' }]);
+    ).resolves.toMatchObject([
+      {
+        id: seedSummary.id,
+        status: 'attention_needed',
+        updatedAt: seedSummary.updatedAt,
+        localUpdatedAt: '2026-04-20T10:45:00.000Z',
+      },
+    ]);
+    await expect(attentionNeededService.loadLocalCatalog(session)).resolves.toMatchObject([
+      { id: seedSummary.id, status: 'attention_needed' },
+    ]);
 
     await runtime.database.closeAsync?.();
   });
@@ -537,6 +574,7 @@ async function saveReportDraft(
       | 'Approved';
     state: 'technician-owned-draft' | 'submitted-pending-review';
     syncState: 'synced';
+    updatedAt?: string;
   },
 ): Promise<void> {
   await runtime.repositories.userPartitions.forUser(session.userId).drafts.saveDraft({
@@ -552,7 +590,7 @@ async function saveReportDraft(
       state: input.state,
       lifecycleState: input.lifecycleState,
       syncState: input.syncState,
-      updatedAt: '2026-04-19T10:15:00.000Z',
+      updatedAt: input.updatedAt ?? '2026-04-19T10:15:00.000Z',
     }),
   });
 }

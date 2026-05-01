@@ -22,6 +22,7 @@ const baseSummary: LocalAssignedWorkPackageSummary = {
   },
   updatedAt: '2026-04-19T10:00:00.000Z',
   downloadedAt: '2026-04-19T10:15:00.000Z',
+  localUpdatedAt: '2026-04-19T10:15:00.000Z',
   hasSnapshot: true,
   snapshotGeneratedAt: '2026-04-19T10:00:00.000Z',
 };

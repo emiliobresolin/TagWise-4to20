@@ -55,6 +55,8 @@ derive work-package status from child report states; preserve immutable decision
 - Reopened returned report records for technician resubmission by updating the existing server report record back to `Submitted - Pending Supervisor Review` after validation.
 - Derived work-package roll-up status from child per-tag report states on backend list/download and mobile local catalog load.
 - Refreshed mobile local report state from server outcomes, mapping returned reports back to technician-owned editable local state while preserving report/evidence data and queue integrity.
+- QA follow-up: preserved freshly mirrored server-authoritative `completed` / `attention_needed` mobile work-package roll-ups during later local catalog loads when local draft/report state is stale, while still allowing newer local draft/report state to drive offline roll-up derivation.
+- QA follow-up: changed the freshness contract to use the mobile mirror timestamp (`local_updated_at` / `localUpdatedAt`) instead of package `updatedAt`, because backend child-report roll-up derivation changes status without advancing the assigned work-package row timestamp.
 
 ### Scope Adjustment
 - Minimal adjustment: reactivated existing `manager_review_routes` on repeated escalation for the same report route. This is required because Story 6.5 allows returned manager reports to re-enter technician rework and later resubmission, which can legitimately escalate again without creating a duplicate route or leaking a database conflict.
@@ -66,6 +68,8 @@ derive work-package status from child report states; preserve immutable decision
 - Mobile work-package catalog test for local roll-up status derived from child report outcomes.
 - QA follow-up: mobile orchestrator regression for accepted returned-report resubmission with already finalized photo evidence and no stale evidence queue items.
 - QA follow-up: mobile catalog regression ensuring connected server roll-up statuses (`completed`, `attention_needed`) are preserved over stale local report drafts.
+- QA follow-up: expanded the mobile catalog regression to call `loadLocalCatalog()` after connected refresh so stale local draft/report state cannot downgrade freshly mirrored server roll-ups.
+- QA follow-up: mobile catalog regression now matches backend response shape where server-derived `completed` / `attention_needed` is returned with the older assigned work-package `updatedAt`, and confirms local-newer report state can still drive offline derivation after the mirror point.
 
 ### Validation Results
 - `cd backend && npm run typecheck` - passed.
@@ -75,6 +79,15 @@ derive work-package status from child report states; preserve immutable decision
 - `cd mobile && npm test -- evidenceUploadOrchestrator syncState assignedWorkPackageCatalog` - passed, 5 files / 28 tests.
 - `cd mobile && npm test` - passed, 21 files / 120 tests.
 - `git diff --check` - passed; only line-ending warnings from existing Git attributes.
+
+### QA Follow-up Validation Results (2026-05-01)
+- `cd mobile && npm test -- assignedWorkPackageCatalog` - passed, 1 file / 6 tests.
+- `cd mobile && npm test -- evidenceUploadOrchestrator syncState assignedWorkPackageCatalog` - passed, 5 files / 28 tests.
+- `cd mobile && npm run typecheck` - passed.
+- `cd mobile && npm test` - passed, 21 files / 120 tests.
+- `git diff --check` - passed; only line-ending warnings from existing Git attributes.
+- Generated/cache check - clean; no generated or cache files remain dirty.
+- Backend response contract was not changed by the latest freshness-contract follow-up, so backend tests were not rerun after this mobile-only mirror fix.
 
 ### File List
 - `backend/src/api/createApiRequestHandler.ts`
@@ -92,8 +105,10 @@ derive work-package status from child report states; preserve immutable decision
 - `mobile/src/features/sync/evidenceUploadOrchestrator.test.ts`
 - `mobile/src/features/sync/syncStateService.ts`
 - `mobile/src/features/sync/syncStateService.test.ts`
+- `mobile/src/data/local/repositories/assignedWorkPackageRepository.ts`
 - `mobile/src/features/work-packages/assignedWorkPackageCatalogService.ts`
 - `mobile/src/features/work-packages/assignedWorkPackageCatalogService.test.ts`
+- `mobile/src/features/work-packages/assignedWorkPackageReadiness.test.ts`
 - `mobile/src/features/work-packages/model.ts`
 - `mobile/src/shell/TagWiseApp.tsx`
 - `_bmad-output/implementation-artifacts/6-5-approval-history-work-package-roll-up-and-returned-report-re-entry.md`

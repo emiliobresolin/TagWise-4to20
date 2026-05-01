@@ -18,6 +18,7 @@ interface AssignedWorkPackageSummaryRow {
   due_starts_at: string | null;
   due_ends_at: string | null;
   updated_at: string;
+  local_updated_at: string;
   last_downloaded_at: string | null;
   has_snapshot: number;
   snapshot_generated_at: string | null;
@@ -33,7 +34,10 @@ export class AssignedWorkPackageRepository {
     private readonly ownerUserId: string,
   ) {}
 
-  async upsertCatalog(summaries: AssignedWorkPackageSummary[]): Promise<void> {
+  async upsertCatalog(
+    summaries: AssignedWorkPackageSummary[],
+    localUpdatedAt = new Date().toISOString(),
+  ): Promise<void> {
     for (const summary of summaries) {
       await this.database.runAsync(
         `
@@ -88,13 +92,16 @@ export class AssignedWorkPackageRepository {
           summary.dueWindow.endsAt,
           summary.updatedAt,
           null,
-          new Date().toISOString(),
+          localUpdatedAt,
         ],
       );
     }
   }
 
-  async replaceCatalog(summaries: AssignedWorkPackageSummary[]): Promise<void> {
+  async replaceCatalog(
+    summaries: AssignedWorkPackageSummary[],
+    localUpdatedAt = new Date().toISOString(),
+  ): Promise<void> {
     const keptWorkPackageIds = summaries.map((summary) => summary.id);
 
     if (keptWorkPackageIds.length === 0) {
@@ -115,7 +122,7 @@ export class AssignedWorkPackageRepository {
       return;
     }
 
-    await this.upsertCatalog(summaries);
+    await this.upsertCatalog(summaries, localUpdatedAt);
 
     const placeholders = keptWorkPackageIds.map(() => '?').join(', ');
     const params = [this.ownerUserId, ...keptWorkPackageIds];
@@ -246,6 +253,7 @@ export class AssignedWorkPackageRepository {
           summary.due_starts_at,
           summary.due_ends_at,
           summary.updated_at,
+          summary.local_updated_at,
           summary.last_downloaded_at,
           CASE WHEN snapshot.work_package_id IS NULL THEN 0 ELSE 1 END as has_snapshot,
           snapshot.generated_at as snapshot_generated_at
@@ -284,6 +292,7 @@ export class AssignedWorkPackageRepository {
           summary.due_starts_at,
           summary.due_ends_at,
           summary.updated_at,
+          summary.local_updated_at,
           summary.last_downloaded_at,
           CASE WHEN snapshot.work_package_id IS NULL THEN 0 ELSE 1 END as has_snapshot,
           snapshot.generated_at as snapshot_generated_at
@@ -334,6 +343,7 @@ function mapAssignedWorkPackageSummaryRow(
     },
     updatedAt: row.updated_at,
     downloadedAt: row.last_downloaded_at,
+    localUpdatedAt: row.local_updated_at,
     hasSnapshot: row.has_snapshot === 1,
     snapshotGeneratedAt: row.snapshot_generated_at,
   };
