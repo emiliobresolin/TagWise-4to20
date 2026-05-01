@@ -30,6 +30,8 @@ import { createFetchAuthApiClient, getDefaultAuthApiBaseUrl } from '../features/
 import { SessionController } from '../features/auth/sessionController';
 import type { ActiveUserSession } from '../features/auth/model';
 import { MobileErrorCaptureService } from '../features/diagnostics/mobileErrorCapture';
+import { createFetchMobileDiagnosticsApiClient } from '../features/diagnostics/mobileDiagnosticsApiClient';
+import { MobileDiagnosticsReporter } from '../features/diagnostics/mobileDiagnosticsReporter';
 import { DeterministicCalculationInputError } from '../features/execution/deterministicCalculationEngine';
 import {
   canProceedToExecutionShell,
@@ -102,6 +104,7 @@ type BootstrapStatus =
       databaseName: string;
       sessionController: SessionController;
       errorCapture: MobileErrorCaptureService;
+      mobileDiagnosticsReporter: MobileDiagnosticsReporter;
       workPackageCatalog: AssignedWorkPackageCatalogService;
       localTagEntryService: LocalTagEntryService;
       localTagContextService: LocalTagContextService;
@@ -169,6 +172,13 @@ export function TagWiseApp() {
           localWorkState: runtime.repositories.localWorkState,
         });
         const errorCapture = new MobileErrorCaptureService(runtime.repositories.mobileRuntimeErrors);
+        const mobileDiagnosticsReporter = new MobileDiagnosticsReporter(
+          runtime.repositories.mobileRuntimeErrors,
+          createFetchMobileDiagnosticsApiClient({
+            baseUrl: getDefaultAuthApiBaseUrl(),
+            secureStorage,
+          }),
+        );
         const workPackageCatalog = new AssignedWorkPackageCatalogService({
           apiClient: createFetchAssignedWorkPackageApiClient({
             baseUrl: getDefaultAuthApiBaseUrl(),
@@ -222,6 +232,10 @@ export function TagWiseApp() {
           session?.connectionMode === 'connected'
             ? await syncStateService.retryEligibleReports(session)
             : { attempted: 0, succeeded: 0, failed: 0 };
+        const diagnosticReportSummary = await flushMobileDiagnosticsSafely(
+          mobileDiagnosticsReporter,
+          session,
+        );
         const packageSyncSummaries = session
           ? await syncStateService.listWorkPackageSyncSummaries(session, workPackages)
           : {};
@@ -242,6 +256,7 @@ export function TagWiseApp() {
           databaseName: runtime.snapshot.databaseName,
           sessionController,
           errorCapture,
+          mobileDiagnosticsReporter,
           workPackageCatalog,
           localTagEntryService,
           localTagContextService,
@@ -256,7 +271,9 @@ export function TagWiseApp() {
           syncBusy: false,
           reviewBusy: false,
           authMessage:
-            retrySummary.attempted > 0
+            diagnosticReportSummary.succeeded > 0
+              ? `Reported ${diagnosticReportSummary.succeeded} mobile diagnostic event(s).`
+              : retrySummary.attempted > 0
               ? buildRetrySummaryMessage(retrySummary)
               : restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
               ? 'Offline session restored from cached role metadata.'
@@ -408,6 +425,10 @@ export function TagWiseApp() {
         }`;
       }
       const retrySummary = await readyState.syncStateService.retryEligibleReports(session);
+      const diagnosticReportSummary = await flushMobileDiagnosticsSafely(
+        readyState.mobileDiagnosticsReporter,
+        session,
+      );
       const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
         session,
         workPackages,
@@ -415,6 +436,9 @@ export function TagWiseApp() {
 
       if (retrySummary.attempted > 0) {
         authMessage = `${authMessage} ${buildRetrySummaryMessage(retrySummary)}`;
+      }
+      if (diagnosticReportSummary.succeeded > 0) {
+        authMessage = `${authMessage} Reported ${diagnosticReportSummary.succeeded} mobile diagnostic event(s).`;
       }
 
       setStatus((current) =>
@@ -1290,6 +1314,14 @@ export function TagWiseApp() {
         },
       );
       const diagnostics = await readyState.errorCapture.getSnapshot();
+      const diagnosticReportSummary = await flushMobileDiagnosticsSafely(
+        readyState.mobileDiagnosticsReporter,
+        readyState.session,
+      );
+      const diagnosticMessage =
+        diagnosticReportSummary.succeeded > 0
+          ? `Captured and reported diagnostic event ${captured.id}.`
+          : `Captured local diagnostic event ${captured.id}.`;
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1297,7 +1329,7 @@ export function TagWiseApp() {
           : {
               ...current,
               diagnostics,
-              authMessage: `Captured local diagnostic event ${captured.id}.`,
+              authMessage: diagnosticMessage,
             },
       );
     } catch (error) {
@@ -4041,6 +4073,21 @@ function buildEmptyWorkPackageSyncSummary(workPackageId: string): WorkPackageSyn
     queueItemCount: 0,
     issueCount: 0,
   };
+}
+
+async function flushMobileDiagnosticsSafely(
+  reporter: MobileDiagnosticsReporter,
+  session: ActiveUserSession | null,
+) {
+  try {
+    return await reporter.flushUnreportedErrors(session);
+  } catch {
+    return {
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+    };
+  }
 }
 
 function buildRetrySummaryMessage(summary: {

@@ -16,6 +16,9 @@ describe('runPostgresMigrations', () => {
     const managerRouteRows = (await pool.query(
       `SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'manager_review_routes';`,
     )) as { rows: Array<{ count: string }> };
+    const mobileRuntimeErrorRows = (await pool.query(
+      `SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'mobile_runtime_error_events';`,
+    )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([
       '0001_service_foundation',
@@ -28,10 +31,12 @@ describe('runPostgresMigrations', () => {
       '0008_supervisor_standard_decision_states',
       '0009_supervisor_escalation_manager_routes',
       '0010_manager_decision_states',
+      '0011_release_observability_mobile_errors',
     ]);
-    expect(summary.currentSchemaVersion).toBe(10);
+    expect(summary.currentSchemaVersion).toBe(11);
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(managerRouteRows.rows[0]?.count ?? 0)).toBe(1);
+    expect(Number(mobileRuntimeErrorRows.rows[0]?.count ?? 0)).toBe(1);
 
     await pool.end();
   });
@@ -48,7 +53,7 @@ describe('runPostgresMigrations', () => {
     )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(Number(rows.rows[0]?.count ?? 0)).toBe(10);
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(11);
 
     await pool.end();
   });

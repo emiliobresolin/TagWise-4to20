@@ -286,6 +286,38 @@ const postgresMigrations: PostgresMigration[] = [
         ));
     `,
   },
+  {
+    id: '0011_release_observability_mobile_errors',
+    sql: `
+      CREATE TABLE IF NOT EXISTS mobile_runtime_error_events (
+        id TEXT PRIMARY KEY,
+        reporting_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+        severity TEXT NOT NULL CHECK (severity IN ('error')),
+        error_name TEXT NOT NULL,
+        message TEXT NOT NULL,
+        stack TEXT,
+        captured_at TEXT NOT NULL,
+        reported_at TEXT NOT NULL,
+        session_user_id TEXT,
+        session_role TEXT CHECK (session_role IN ('technician', 'supervisor', 'manager') OR session_role IS NULL),
+        session_connection_mode TEXT CHECK (
+          session_connection_mode IN ('connected', 'offline') OR session_connection_mode IS NULL
+        ),
+        shell_route TEXT,
+        device_platform TEXT NOT NULL,
+        device_platform_version TEXT NOT NULL,
+        app_environment TEXT NOT NULL,
+        api_base_url TEXT,
+        context_json JSONB NOT NULL DEFAULT '{}'::jsonb
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mobile_runtime_error_events_reported_at
+      ON mobile_runtime_error_events (reported_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_mobile_runtime_error_events_platform
+      ON mobile_runtime_error_events (device_platform, reported_at DESC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

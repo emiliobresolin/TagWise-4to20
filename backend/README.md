@@ -25,6 +25,11 @@ Story 7.1 adds:
 - staging/production environment templates with secret-manager placeholders
 - release preflight, smoke, and backup-restore verification commands
 
+Story 7.2 adds:
+- release observability metrics for queue depth, sync/evidence signals, approval latency, worker health, and mobile crash trends
+- an authenticated mobile diagnostics telemetry endpoint for release error monitoring
+- a provider-neutral release dashboard and alert dry-run command
+
 ## Commands
 - `npm install`
 - `npm run dev:api`
@@ -33,6 +38,7 @@ Story 7.1 adds:
 - `npm run storage:smoke`
 - `npm run deploy:preflight`
 - `npm run release:smoke`
+- `npm run release:observability`
 - `npm run backup:restore:verify`
 - `npm test`
 - `npm run typecheck`
@@ -65,8 +71,12 @@ Release environment templates:
 - `.env.staging.example`
 - `.env.production.example`
 
+These templates intentionally contain placeholders. Replace all `<...>` values with
+environment-scoped secret/config values before running `npm run deploy:preflight`.
+
 Release runbook:
 - `../docs/ops/story-7-1-release-environments.md`
+- `../docs/ops/story-7-2-release-observability.md`
 
 ## Manual Smoke Path
 1. Start a local PostgreSQL instance and a private S3-compatible object store such as MinIO.

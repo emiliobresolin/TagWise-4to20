@@ -8,6 +8,7 @@ export interface MobileRuntimeErrorEvent {
   message: string;
   stack: string | null;
   capturedAt: string;
+  reportedAt: string | null;
   sessionUserId: string | null;
   sessionRole: UserRole | null;
   sessionConnectionMode: 'connected' | 'offline' | null;

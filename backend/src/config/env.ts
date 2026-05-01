@@ -187,54 +187,86 @@ function assertReleaseSafeEnvironment(
   environment: ServiceEnvironment,
   source: NodeJS.ProcessEnv,
 ): void {
+  if (
+    environment.deploymentEnvironment === 'development' &&
+    environment.nodeEnv.trim().toLowerCase() === 'production'
+  ) {
+    throw new Error(
+      'TAGWISE_NODE_ENV=production must not run with TAGWISE_DEPLOYMENT_ENV=development.',
+    );
+  }
+
   if (environment.deploymentEnvironment === 'development') {
     return;
   }
 
-  if (isLocalDatabaseUrl(environment.databaseUrl)) {
-    throw new Error(
-      'Release environments must use a managed database URL, not localhost or 127.0.0.1.',
-    );
+  if (environment.nodeEnv.trim().toLowerCase() !== 'production') {
+    throw new Error('Release environments require TAGWISE_NODE_ENV=production.');
   }
 
-  if (environment.databaseUrl.includes('tagwise:tagwise@')) {
-    throw new Error('Release environments must not use the development database credentials.');
+  assertReleaseDatabaseUrl(environment.databaseUrl);
+  assertReleaseConfiguredValue(environment.objectStorage.bucket, 'TAGWISE_STORAGE_BUCKET');
+  assertReleaseConfiguredValue(environment.objectStorage.region, 'TAGWISE_STORAGE_REGION');
+  if (environment.objectStorage.endpoint) {
+    assertReleaseStorageEndpoint(environment.objectStorage.endpoint);
   }
+  assertReleaseConfiguredValue(
+    environment.objectStorage.accessKeyId,
+    'TAGWISE_STORAGE_ACCESS_KEY_ID',
+    ['minioadmin'],
+  );
+  assertReleaseConfiguredValue(
+    environment.objectStorage.secretAccessKey,
+    'TAGWISE_STORAGE_SECRET_ACCESS_KEY',
+    ['minioadmin'],
+  );
 
   if (environment.objectStorage.autoCreateBucket) {
     throw new Error('Release environments must not auto-create object storage buckets.');
-  }
-
-  if (
-    environment.objectStorage.accessKeyId === 'minioadmin' ||
-    environment.objectStorage.secretAccessKey === 'minioadmin'
-  ) {
-    throw new Error('Release environments must not use local MinIO credentials.');
   }
 
   if (environment.serviceRole !== 'api' || !environment.auth) {
     return;
   }
 
-  assertReleaseSecret(
+  assertReleaseConfiguredValue(
     source.TAGWISE_AUTH_TOKEN_SECRET,
     'TAGWISE_AUTH_TOKEN_SECRET',
     ['replace-me-in-real-environments', 'development-secret'],
+    16,
   );
-  assertReleaseSecret(
+  assertReleaseConfiguredValue(
+    source.TAGWISE_SEED_TECHNICIAN_EMAIL,
+    'TAGWISE_SEED_TECHNICIAN_EMAIL',
+    ['tech@tagwise.local'],
+  );
+  assertReleaseConfiguredValue(
     source.TAGWISE_SEED_TECHNICIAN_PASSWORD,
     'TAGWISE_SEED_TECHNICIAN_PASSWORD',
     ['TagWise123!'],
+    16,
   );
-  assertReleaseSecret(
+  assertReleaseConfiguredValue(
+    source.TAGWISE_SEED_SUPERVISOR_EMAIL,
+    'TAGWISE_SEED_SUPERVISOR_EMAIL',
+    ['supervisor@tagwise.local'],
+  );
+  assertReleaseConfiguredValue(
     source.TAGWISE_SEED_SUPERVISOR_PASSWORD,
     'TAGWISE_SEED_SUPERVISOR_PASSWORD',
     ['TagWise123!'],
+    16,
   );
-  assertReleaseSecret(
+  assertReleaseConfiguredValue(
+    source.TAGWISE_SEED_MANAGER_EMAIL,
+    'TAGWISE_SEED_MANAGER_EMAIL',
+    ['manager@tagwise.local'],
+  );
+  assertReleaseConfiguredValue(
     source.TAGWISE_SEED_MANAGER_PASSWORD,
     'TAGWISE_SEED_MANAGER_PASSWORD',
     ['TagWise123!'],
+    16,
   );
 }
 
@@ -242,15 +274,72 @@ function isLocalDatabaseUrl(databaseUrl: string): boolean {
   return /(@|\b)(localhost|127\.0\.0\.1)(:|\/|$)/i.test(databaseUrl);
 }
 
-function assertReleaseSecret(
+function assertReleaseDatabaseUrl(databaseUrl: string): void {
+  assertNoReleasePlaceholder(databaseUrl, 'TAGWISE_DATABASE_URL');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new Error('Release environments require a parseable PostgreSQL database URL.');
+  }
+
+  if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+    throw new Error('Release environments require a PostgreSQL database URL.');
+  }
+
+  assertReleaseConfiguredValue(parsed.hostname, 'TAGWISE_DATABASE_URL host');
+  assertReleaseConfiguredValue(parsed.username, 'TAGWISE_DATABASE_URL username');
+  assertReleaseConfiguredValue(parsed.password, 'TAGWISE_DATABASE_URL password');
+
+  if (isLocalDatabaseUrl(databaseUrl) || isLocalHost(parsed.hostname)) {
+    throw new Error(
+      'Release environments must use a managed database URL, not localhost or 127.0.0.1.',
+    );
+  }
+
+  if (parsed.username === 'tagwise' && parsed.password === 'tagwise') {
+    throw new Error('Release environments must not use the development database credentials.');
+  }
+}
+
+function assertReleaseStorageEndpoint(endpoint: string): void {
+  assertNoReleasePlaceholder(endpoint, 'TAGWISE_STORAGE_ENDPOINT');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new Error('Release environments require a parseable object storage endpoint.');
+  }
+
+  if (isLocalHost(parsed.hostname)) {
+    throw new Error('Release environments must not use a local object storage endpoint.');
+  }
+}
+
+function isLocalHost(hostname: string): boolean {
+  return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|host\.docker\.internal)$/i.test(hostname);
+}
+
+function assertReleaseConfiguredValue(
   raw: string | undefined,
   key: string,
-  forbiddenValues: string[],
+  forbiddenValues: string[] = [],
+  minimumLength = 1,
 ): void {
   const value = requireValue(raw, key);
 
-  if (value.length < 16 || forbiddenValues.includes(value)) {
+  assertNoReleasePlaceholder(value, key);
+
+  if (value.length < minimumLength || forbiddenValues.includes(value)) {
     throw new Error(`Release environments require a non-development value for ${key}.`);
+  }
+}
+
+function assertNoReleasePlaceholder(value: string, key: string): void {
+  if (/[<>]/.test(value) || /\b(set-in-secret-manager|placeholder|replace-me)\b/i.test(value)) {
+    throw new Error(`Release environments require a real non-placeholder value for ${key}.`);
   }
 }
 

@@ -51,8 +51,15 @@ describe('runMigrations', () => {
            'assigned_work_package_snapshots'
          );`,
     );
+    const reportedColumn = await database.getFirstAsync<{ count: number }>(
+      `
+        SELECT COUNT(*) AS count
+        FROM pragma_table_info('mobile_runtime_error_events')
+        WHERE name = 'reported_at';
+      `,
+    );
 
-    expect(summary.currentSchemaVersion).toBe(12);
+    expect(summary.currentSchemaVersion).toBe(13);
     expect(summary.appliedMigrationIds).toEqual([
       '1',
       '2',
@@ -66,10 +73,12 @@ describe('runMigrations', () => {
       '10',
       '11',
       '12',
+      '13',
     ]);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
     expect(partitionTables?.count).toBe(11);
+    expect(reportedColumn?.count).toBe(1);
 
     await database.closeAsync?.();
   });
@@ -104,6 +113,7 @@ describe('runMigrations', () => {
       { id: 10 },
       { id: 11 },
       { id: 12 },
+      { id: 13 },
     ]);
     expect(record?.count).toBe(1);
 
@@ -204,8 +214,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(12);
-    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11', '12']);
+    expect(summary.currentSchemaVersion).toBe(13);
+    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11', '12', '13']);
     expect(migratedRows).toEqual([
       {
         template_version: '2026-04-v1',
@@ -355,8 +365,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-loop-001', 'tag-loop-001', 'tpl-loop-integrity', '2026-04-v1'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(12);
-    expect(summary.appliedMigrationIds).toEqual(['10', '11', '12']);
+    expect(summary.currentSchemaVersion).toBe(13);
+    expect(summary.appliedMigrationIds).toEqual(['10', '11', '12', '13']);
     expect(migratedRow).toEqual({
       execution_context_json: '{}',
       raw_inputs_json: '{"expectedValue":"12","observedValue":"12.1"}',
@@ -476,8 +486,8 @@ describe('runMigrations', () => {
       ],
     );
 
-    expect(summary.currentSchemaVersion).toBe(12);
-    expect(summary.appliedMigrationIds).toEqual(['12']);
+    expect(summary.currentSchemaVersion).toBe(13);
+    expect(summary.appliedMigrationIds).toEqual(['12', '13']);
     expect(migratedRow).toEqual({
       observation_notes_text: 'Impulse path checked locally.',
       checklist_outcomes_json:

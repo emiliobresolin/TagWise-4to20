@@ -9,6 +9,8 @@ import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
+import { MobileDiagnosticsRepository } from '../modules/diagnostics/mobileDiagnosticsRepository';
+import { MobileDiagnosticsService } from '../modules/diagnostics/mobileDiagnosticsService';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
@@ -61,6 +63,9 @@ async function main() {
     new EvidenceSyncRepository(pool),
     createS3EvidenceObjectStorageClient(environment.objectStorage),
   );
+  const mobileDiagnosticsService = new MobileDiagnosticsService(
+    new MobileDiagnosticsRepository(pool),
+  );
   const reportSubmissionService = new ReportSubmissionService(
     new ReportSubmissionRepository(pool),
     assignedWorkPackageService,
@@ -89,6 +94,7 @@ async function main() {
       authService,
       assignedWorkPackageService,
       evidenceSyncService,
+      mobileDiagnosticsService,
       managerReviewService,
       reportSubmissionService,
       supervisorReviewService,

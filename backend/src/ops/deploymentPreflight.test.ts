@@ -17,8 +17,11 @@ const releaseEnv = {
   TAGWISE_STORAGE_FORCE_PATH_STYLE: 'false',
   TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'false',
   TAGWISE_AUTH_TOKEN_SECRET: 'staging-token-secret-with-enough-length',
+  TAGWISE_SEED_TECHNICIAN_EMAIL: 'tech.staging@example.com',
   TAGWISE_SEED_TECHNICIAN_PASSWORD: 'staging-tech-password',
+  TAGWISE_SEED_SUPERVISOR_EMAIL: 'supervisor.staging@example.com',
   TAGWISE_SEED_SUPERVISOR_PASSWORD: 'staging-supervisor-password',
+  TAGWISE_SEED_MANAGER_EMAIL: 'manager.staging@example.com',
   TAGWISE_SEED_MANAGER_PASSWORD: 'staging-manager-password',
 } satisfies NodeJS.ProcessEnv;
 
@@ -42,5 +45,45 @@ describe('buildDeploymentPreflightReport', () => {
         TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'true',
       }),
     ).toThrow('auto-create object storage buckets');
+  });
+
+  it.each([
+    {
+      deploymentEnvironment: 'staging',
+      databaseHost: '<staging-postgres-host>',
+      seedEmail: '<staging-technician-email>',
+    },
+    {
+      deploymentEnvironment: 'production',
+      databaseHost: '<production-postgres-host>',
+      seedEmail: '<production-technician-email>',
+    },
+  ])('fails when $deploymentEnvironment template placeholders are still present', ({
+    deploymentEnvironment,
+    databaseHost,
+    seedEmail,
+  }) => {
+    expect(() =>
+      buildDeploymentPreflightReport({
+        ...releaseEnv,
+        TAGWISE_DEPLOYMENT_ENV: deploymentEnvironment,
+        TAGWISE_DATABASE_URL:
+          `postgres://tagwise_app:<set-in-secret-manager>@${databaseHost}:5432/tagwise`,
+        TAGWISE_STORAGE_ACCESS_KEY_ID: '<set-in-secret-manager>',
+        TAGWISE_STORAGE_SECRET_ACCESS_KEY: '<set-in-secret-manager>',
+        TAGWISE_AUTH_TOKEN_SECRET: '<set-in-secret-manager>',
+        TAGWISE_SEED_TECHNICIAN_EMAIL: seedEmail,
+        TAGWISE_SEED_TECHNICIAN_PASSWORD: '<set-in-secret-manager>',
+      }),
+    ).toThrow('TAGWISE_DATABASE_URL');
+  });
+
+  it('fails when release database configuration is not parseable', () => {
+    expect(() =>
+      buildDeploymentPreflightReport({
+        ...releaseEnv,
+        TAGWISE_DATABASE_URL: 'not-a-url',
+      }),
+    ).toThrow('parseable PostgreSQL database URL');
   });
 });

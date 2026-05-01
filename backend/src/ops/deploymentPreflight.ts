@@ -82,6 +82,6 @@ function redactDatabaseUrl(databaseUrl: string): string {
 
     return parsed.toString();
   } catch {
-    return '<redacted>';
+    throw new Error('Deployment preflight requires a parseable database URL.');
   }
 }

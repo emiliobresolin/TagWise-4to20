@@ -420,6 +420,53 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 13,
+    apply: async (database, _now) => {
+      await database.execAsync(`
+        CREATE TABLE IF NOT EXISTS mobile_runtime_error_events (
+          id TEXT PRIMARY KEY NOT NULL,
+          severity TEXT NOT NULL,
+          error_name TEXT NOT NULL,
+          message TEXT NOT NULL,
+          stack TEXT,
+          captured_at TEXT NOT NULL,
+          session_user_id TEXT,
+          session_role TEXT,
+          session_connection_mode TEXT,
+          shell_route TEXT,
+          device_platform TEXT NOT NULL,
+          device_platform_version TEXT NOT NULL,
+          app_environment TEXT NOT NULL,
+          api_base_url TEXT,
+          context_json TEXT NOT NULL
+        );
+      `);
+
+      const reportedAtColumn = await database.getFirstAsync<{ count: number }>(
+        `
+          SELECT COUNT(*) AS count
+          FROM pragma_table_info('mobile_runtime_error_events')
+          WHERE name = 'reported_at';
+        `,
+      );
+
+      if ((reportedAtColumn?.count ?? 0) === 0) {
+        await database.execAsync(`
+          ALTER TABLE mobile_runtime_error_events
+          ADD COLUMN reported_at TEXT;
+        `);
+      }
+
+      await database.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_mobile_runtime_error_events_captured_at
+        ON mobile_runtime_error_events (captured_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_mobile_runtime_error_events_reported_at
+        ON mobile_runtime_error_events (reported_at, captured_at ASC);
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

@@ -6,6 +6,12 @@ import { AuditEventRepository } from '../modules/audit/auditEventRepository';
 import { AuditEventService } from '../modules/audit/auditEventService';
 import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
+import { MobileDiagnosticsRepository } from '../modules/diagnostics/mobileDiagnosticsRepository';
+import { MobileDiagnosticsService } from '../modules/diagnostics/mobileDiagnosticsService';
+import {
+  MOBILE_DIAGNOSTICS_API_CONTRACT_VERSION,
+  MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS,
+} from '../modules/diagnostics/model';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import { EVIDENCE_SYNC_API_CONTRACT_VERSION } from '../modules/evidence-sync/model';
@@ -1944,6 +1950,229 @@ describe('createApiRequestHandler', () => {
 
     await pool.end();
   });
+
+  it('accepts authenticated mobile runtime error telemetry for release crash trends', async () => {
+    const { authService, pool, port } = await startReportSubmissionRuntime();
+    const technicianLogin = await authService.loginConnected(
+      {
+        email: authConfig.seedUsers.technician.email,
+        password: authConfig.seedUsers.technician.password,
+      },
+      {
+        correlationId: 'corr-mobile-diagnostics-login',
+      },
+    );
+
+    const response = await fetch(`http://127.0.0.1:${port}/diagnostics/mobile-errors`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${technicianLogin.tokens.accessToken}`,
+        'content-type': 'application/json',
+        'x-correlation-id': 'corr-mobile-diagnostics',
+      },
+      body: JSON.stringify({
+        ...buildMobileDiagnosticsPayload(),
+        id: 'mobile-error-release-001',
+        sessionUserId: technicianLogin.user.id,
+        apiBaseUrl: 'https://api.tagwise.example/path?token=secret',
+        contextJson: JSON.stringify({
+          source: 'story-7.2-test',
+          authToken: 'should-not-persist',
+        }),
+      }),
+    });
+    const body = (await response.json()) as {
+      id: string;
+      reportingUserId: string;
+      reportedAt: string;
+      contractVersion: string;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      contractVersion: MOBILE_DIAGNOSTICS_API_CONTRACT_VERSION,
+      id: 'mobile-error-release-001',
+      reportingUserId: technicianLogin.user.id,
+      reportedAt: expect.any(String),
+    });
+
+    const rows = (await pool.query(
+      'SELECT COUNT(*) AS count FROM mobile_runtime_error_events;',
+    )) as { rows: Array<{ count: string }> };
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
+    const stored = await pool.query<{
+      api_base_url: string | null;
+      context_json: unknown;
+    }>(
+      `
+        SELECT api_base_url, context_json
+        FROM mobile_runtime_error_events
+        WHERE id = $1;
+      `,
+      ['mobile-error-release-001'],
+    );
+    const contextJson =
+      typeof stored.rows[0]?.context_json === 'string'
+        ? JSON.parse(stored.rows[0].context_json)
+        : stored.rows[0]?.context_json;
+    expect(stored.rows[0]).toMatchObject({
+      api_base_url: 'https://api.tagwise.example',
+    });
+    expect(contextJson).toMatchObject({
+      source: 'story-7.2-test',
+      authToken: '[redacted]',
+    });
+
+    await pool.end();
+  });
+
+  it('rejects unauthenticated mobile diagnostics requests', async () => {
+    const { pool, port } = await startReportSubmissionRuntime();
+
+    const response = await fetch(`http://127.0.0.1:${port}/diagnostics/mobile-errors`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(buildMobileDiagnosticsPayload({ id: 'mobile-error-unauth' })),
+    });
+    const body = (await response.json()) as { message: string };
+
+    expect(response.status).toBe(401);
+    expect(body.message).toBe('Authorization header is required.');
+
+    await pool.end();
+  });
+
+  it('rejects invalid mobile diagnostics contract versions', async () => {
+    const { accessToken, pool, port } = await startMobileDiagnosticsRuntime();
+
+    const response = await postMobileDiagnostics(port, accessToken, {
+      ...buildMobileDiagnosticsPayload({ id: 'mobile-error-invalid-contract' }),
+      contractVersion: '2026-03-v1',
+    });
+    const body = (await response.json()) as { message: string };
+
+    expect(response.status).toBe(400);
+    expect(body.message).toContain(MOBILE_DIAGNOSTICS_API_CONTRACT_VERSION);
+
+    await pool.end();
+  });
+
+  it('rejects malformed mobile diagnostics JSON cleanly', async () => {
+    const { accessToken, pool, port } = await startMobileDiagnosticsRuntime();
+
+    const response = await fetch(`http://127.0.0.1:${port}/diagnostics/mobile-errors`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: '{"contractVersion":',
+    });
+    const body = (await response.json()) as { message: string };
+
+    expect(response.status).toBe(400);
+    expect(body.message).toBe('Mobile diagnostics body must be valid JSON.');
+
+    await pool.end();
+  });
+
+  it('rejects invalid mobile diagnostics enum values', async () => {
+    const { accessToken, pool, port } = await startMobileDiagnosticsRuntime();
+
+    const response = await postMobileDiagnostics(
+      port,
+      accessToken,
+      buildMobileDiagnosticsPayload({
+        id: 'mobile-error-invalid-enum',
+        severity: 'warning',
+      }),
+    );
+    const body = (await response.json()) as { message: string };
+
+    expect(response.status).toBe(400);
+    expect(body.message).toBe('Mobile diagnostics severity must be error.');
+
+    await pool.end();
+  });
+
+  it('rejects oversized mobile diagnostics request bodies before persistence', async () => {
+    const { accessToken, pool, port } = await startMobileDiagnosticsRuntime();
+
+    const response = await fetch(`http://127.0.0.1:${port}/diagnostics/mobile-errors`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        padding: 'x'.repeat(MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.requestBodyBytes + 1),
+      }),
+    });
+    const body = (await response.json()) as { message: string };
+    const rows = (await pool.query(
+      'SELECT COUNT(*) AS count FROM mobile_runtime_error_events;',
+    )) as { rows: Array<{ count: string }> };
+
+    expect(response.status).toBe(413);
+    expect(body.message).toContain('request body must not exceed');
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(0);
+
+    await pool.end();
+  });
+
+  it.each([
+    [
+      'message',
+      {
+        message: 'x'.repeat(MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.message + 1),
+      },
+    ],
+    [
+      'stack',
+      {
+        stack: 'x'.repeat(MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.stack + 1),
+      },
+    ],
+    [
+      'contextJson',
+      {
+        contextJson: JSON.stringify({
+          note: 'x'.repeat(MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.contextJson + 1),
+        }),
+      },
+    ],
+    [
+      'apiBaseUrl',
+      {
+        apiBaseUrl: `https://${'a'.repeat(MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.apiBaseUrl)}.example`,
+      },
+    ],
+    [
+      'apiBaseUrl',
+      {
+        apiBaseUrl: 'not-a-url',
+      },
+    ],
+  ])('rejects bounded mobile diagnostics field %s when unsafe', async (_field, overrides) => {
+    const { accessToken, pool, port } = await startMobileDiagnosticsRuntime();
+
+    const response = await postMobileDiagnostics(
+      port,
+      accessToken,
+      buildMobileDiagnosticsPayload({
+        id: `mobile-error-unsafe-${String(_field).toLowerCase()}`,
+        ...overrides,
+      }),
+    );
+    const body = (await response.json()) as { message: string };
+
+    expect(response.status).toBe(400);
+    expect(body.message).toContain(`Mobile diagnostics ${_field}`);
+
+    await pool.end();
+  });
 });
 
 function createTestEvidenceObjectStorageClient(
@@ -2031,6 +2260,9 @@ async function startReportSubmissionRuntime() {
       authService,
       assignedWorkPackageService,
       evidenceSyncService,
+      mobileDiagnosticsService: new MobileDiagnosticsService(
+        new MobileDiagnosticsRepository(pool),
+      ),
       managerReviewService,
       reportSubmissionService,
       supervisorReviewService,

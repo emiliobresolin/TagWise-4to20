@@ -42,6 +42,21 @@ describe('runReleaseSmoke', () => {
       runReleaseSmoke([{ name: 'api', baseUrl: 'https://api.staging.example.com' }], fetcher),
     ).rejects.toThrow('api/health/ready:503');
   });
+
+  it('fails with an actionable timeout when a smoke endpoint hangs', async () => {
+    const fetcher: ReleaseSmokeFetch = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+
+    await expect(
+      runReleaseSmoke(
+        [{ name: 'api', baseUrl: 'https://api.staging.example.com' }],
+        fetcher,
+        { timeoutMs: 1 },
+      ),
+    ).rejects.toThrow('timed out after 1ms');
+  });
 });
 
 describe('buildReleaseSmokeTargets', () => {

@@ -8,6 +8,12 @@ import {
 } from '../modules/evidence-sync/model';
 import type { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
 import {
+  MOBILE_DIAGNOSTICS_API_CONTRACT_VERSION,
+  MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS,
+  MobileDiagnosticsError,
+} from '../modules/diagnostics/model';
+import type { MobileDiagnosticsService } from '../modules/diagnostics/mobileDiagnosticsService';
+import {
   ReportSubmissionError,
 } from '../modules/report-submissions/model';
 import {
@@ -27,6 +33,7 @@ export interface ApiRequestHandlerDependencies {
   authService: AuthService;
   assignedWorkPackageService: AssignedWorkPackageService;
   evidenceSyncService: EvidenceSyncService;
+  mobileDiagnosticsService?: MobileDiagnosticsService;
   reportSubmissionService: ReportSubmissionService;
   managerReviewService: ManagerReviewService;
   supervisorReviewService: SupervisorReviewService;
@@ -93,6 +100,55 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
             error instanceof AuthenticationError ? error.statusCode : 500,
         });
         writeAuthError(response, error);
+      }
+
+      return true;
+    }
+
+    if (method === 'POST' && url === '/diagnostics/mobile-errors') {
+      try {
+        if (!dependencies.mobileDiagnosticsService) {
+          throw new MobileDiagnosticsError('Mobile diagnostics service is not configured.', 503);
+        }
+
+        const user = await authenticateRequest(request, dependencies.authService);
+        const body = await readMobileDiagnosticsJsonBody(request);
+        const recorded = await dependencies.mobileDiagnosticsService.reportRuntimeError(user, {
+          contractVersion: body.contractVersion as typeof MOBILE_DIAGNOSTICS_API_CONTRACT_VERSION,
+          id: body.id ?? '',
+          severity: (body.severity ?? 'error') as 'error',
+          errorName: body.errorName ?? '',
+          message: body.message ?? '',
+          stack: body.stack ?? null,
+          capturedAt: body.capturedAt ?? '',
+          sessionUserId: body.sessionUserId ?? null,
+          sessionRole: (body.sessionRole ?? null) as 'technician' | 'supervisor' | 'manager' | null,
+          sessionConnectionMode: (body.sessionConnectionMode ?? null) as 'connected' | 'offline' | null,
+          shellRoute: body.shellRoute ?? null,
+          devicePlatform: body.devicePlatform ?? '',
+          devicePlatformVersion: body.devicePlatformVersion ?? '',
+          appEnvironment: body.appEnvironment ?? '',
+          apiBaseUrl: body.apiBaseUrl ?? null,
+          contextJson: body.contextJson ?? '{}',
+        });
+
+        context.logger.info('mobile-diagnostics.runtime-error.recorded', {
+          actorId: user.id,
+          actorRole: user.role,
+          mobileRuntimeErrorId: recorded.id,
+          devicePlatform: recorded.devicePlatform,
+        });
+        writeJson(response, 200, recorded);
+      } catch (error) {
+        context.logger.warn('mobile-diagnostics.runtime-error.failed', {
+          statusCode:
+            error instanceof MobileDiagnosticsError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeMobileDiagnosticsError(response, error);
       }
 
       return true;
@@ -670,6 +726,54 @@ async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   return (raw ? JSON.parse(raw) : {}) as T;
 }
 
+type MobileDiagnosticsJsonBody = {
+  contractVersion?: string;
+  id?: string;
+  severity?: string;
+  errorName?: string;
+  message?: string;
+  stack?: string | null;
+  capturedAt?: string;
+  sessionUserId?: string | null;
+  sessionRole?: string | null;
+  sessionConnectionMode?: string | null;
+  shellRoute?: string | null;
+  devicePlatform?: string;
+  devicePlatformVersion?: string;
+  appEnvironment?: string;
+  apiBaseUrl?: string | null;
+  contextJson?: string;
+};
+
+async function readMobileDiagnosticsJsonBody(
+  request: IncomingMessage,
+): Promise<MobileDiagnosticsJsonBody> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+
+    if (totalBytes > MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.requestBodyBytes) {
+      throw new MobileDiagnosticsError(
+        `Mobile diagnostics request body must not exceed ${MOBILE_DIAGNOSTICS_PAYLOAD_LIMITS.requestBodyBytes} bytes.`,
+        413,
+      );
+    }
+
+    chunks.push(buffer);
+  }
+
+  try {
+    const raw = Buffer.concat(chunks).toString('utf-8');
+    const body = raw ? JSON.parse(raw) : {};
+    return isRecord(body) ? body : {};
+  } catch {
+    throw new MobileDiagnosticsError('Mobile diagnostics body must be valid JSON.', 400);
+  }
+}
+
 async function readReportSubmissionJsonBody(
   request: IncomingMessage,
 ): Promise<Record<string, unknown>> {
@@ -718,6 +822,20 @@ function writeWorkPackageError(response: ServerResponse, error: unknown, fallbac
   }
 
   writeJson(response, 500, { message: fallbackMessage });
+}
+
+function writeMobileDiagnosticsError(response: ServerResponse, error: unknown) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  if (error instanceof MobileDiagnosticsError) {
+    writeJson(response, error.statusCode, { message: error.message });
+    return;
+  }
+
+  writeJson(response, 500, { message: 'Mobile diagnostics capture failed.' });
 }
 
 function writeEvidenceSyncError(response: ServerResponse, error: unknown, fallbackMessage: string) {

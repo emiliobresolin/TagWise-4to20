@@ -19,7 +19,8 @@ Staging must be production-like but smaller scale. Production remains single reg
 ## Environment And Secrets
 
 Use `backend/.env.staging.example` and `backend/.env.production.example` as templates only.
-Do not commit populated environment files.
+Do not commit populated environment files. Template placeholders such as `<set-in-secret-manager>`
+must be replaced by environment-scoped values before `npm run deploy:preflight` will pass.
 
 Required secret manager values:
 
@@ -31,15 +32,19 @@ Required secret manager values:
 - `TAGWISE_SEED_SUPERVISOR_PASSWORD`
 - `TAGWISE_SEED_MANAGER_PASSWORD`
 
-Release environments must set:
+Release environments must set environment-scoped configuration:
 
 - `TAGWISE_DEPLOYMENT_ENV=staging` or `production`
 - `TAGWISE_NODE_ENV=production`
 - `TAGWISE_HOST=0.0.0.0`
 - `TAGWISE_STORAGE_AUTO_CREATE_BUCKET=false`
+- `TAGWISE_SEED_TECHNICIAN_EMAIL`
+- `TAGWISE_SEED_SUPERVISOR_EMAIL`
+- `TAGWISE_SEED_MANAGER_EMAIL`
 
-The backend release guard rejects localhost database URLs, local MinIO credentials,
-default auth secrets, default seed passwords, and auto-created buckets in staging/production.
+The backend release guard rejects placeholder tokens, invalid or non-PostgreSQL database URLs,
+localhost database URLs, local object storage endpoints, local MinIO credentials, default auth
+secrets, default seed identities/passwords, and auto-created buckets in staging/production.
 
 ## Build And Promotion
 
@@ -100,8 +105,9 @@ cd backend
 npm run backup:restore:verify
 ```
 
-The verification is read-only. It checks that the restored database has the same migration version
-as the source database and current application code.
+The verification is read-only. It checks that the source and restored databases have the exact
+ordered migration IDs expected by current application code, then compares core table row counts
+between source and restored databases.
 
 ## Acceptance Checklist
 

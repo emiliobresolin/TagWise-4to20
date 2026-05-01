@@ -14,6 +14,7 @@
     "storage:smoke": "tsx src/platform/storage/runObjectStorageSmokeCli.ts",
     "deploy:preflight": "tsx src/ops/deploymentPreflightCli.ts",
     "release:smoke": "tsx src/ops/releaseSmokeCli.ts",
+    "release:observability": "tsx src/ops/releaseObservabilityCli.ts",
     "backup:restore:verify": "tsx src/ops/backupRestoreVerificationCli.ts"
   },
   "dependencies": {

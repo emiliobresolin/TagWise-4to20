@@ -13,6 +13,7 @@ interface MobileRuntimeErrorRow {
   message: string;
   stack: string | null;
   captured_at: string;
+  reported_at: string | null;
   session_user_id: string | null;
   session_role: string | null;
   session_connection_mode: string | null;
@@ -37,6 +38,7 @@ export class MobileRuntimeErrorRepository {
           message,
           stack,
           captured_at,
+          reported_at,
           session_user_id,
           session_role,
           session_connection_mode,
@@ -47,7 +49,7 @@ export class MobileRuntimeErrorRepository {
           api_base_url,
           context_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
       [
         input.id,
@@ -56,6 +58,7 @@ export class MobileRuntimeErrorRepository {
         input.message,
         input.stack,
         input.capturedAt,
+        input.reportedAt,
         input.sessionUserId,
         input.sessionRole,
         input.sessionConnectionMode,
@@ -86,6 +89,7 @@ export class MobileRuntimeErrorRepository {
           message,
           stack,
           captured_at,
+          reported_at,
           session_user_id,
           session_role,
           session_connection_mode,
@@ -102,6 +106,48 @@ export class MobileRuntimeErrorRepository {
     );
 
     return row ? mapMobileRuntimeErrorRow(row) : null;
+  }
+
+  async listUnreportedErrors(limit: number = 10): Promise<MobileRuntimeErrorEvent[]> {
+    const rows = await this.database.getAllAsync<MobileRuntimeErrorRow>(
+      `
+        SELECT
+          id,
+          severity,
+          error_name,
+          message,
+          stack,
+          captured_at,
+          reported_at,
+          session_user_id,
+          session_role,
+          session_connection_mode,
+          shell_route,
+          device_platform,
+          device_platform_version,
+          app_environment,
+          api_base_url,
+          context_json
+        FROM mobile_runtime_error_events
+        WHERE reported_at IS NULL
+        ORDER BY captured_at ASC
+        LIMIT ?;
+      `,
+      [limit],
+    );
+
+    return rows.map(mapMobileRuntimeErrorRow);
+  }
+
+  async markReported(id: string, reportedAt: string): Promise<void> {
+    await this.database.runAsync(
+      `
+        UPDATE mobile_runtime_error_events
+        SET reported_at = ?
+        WHERE id = ?;
+      `,
+      [reportedAt, id],
+    );
   }
 
   async countErrors(): Promise<number> {
@@ -121,6 +167,7 @@ function mapMobileRuntimeErrorRow(row: MobileRuntimeErrorRow): MobileRuntimeErro
     message: row.message,
     stack: row.stack,
     capturedAt: row.captured_at,
+    reportedAt: row.reported_at,
     sessionUserId: row.session_user_id,
     sessionRole: parseUserRole(row.session_role),
     sessionConnectionMode: parseSessionConnectionMode(row.session_connection_mode),

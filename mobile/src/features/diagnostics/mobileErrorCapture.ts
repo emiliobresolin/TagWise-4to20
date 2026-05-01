@@ -26,6 +26,7 @@ export class MobileErrorCaptureService {
       message: normalized.message,
       stack: normalized.stack,
       capturedAt: new Date().toISOString(),
+      reportedAt: null,
       sessionUserId: context.session?.userId ?? null,
       sessionRole: context.session?.role ?? null,
       sessionConnectionMode: context.session?.connectionMode ?? null,
