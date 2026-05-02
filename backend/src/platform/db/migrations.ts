@@ -341,6 +341,49 @@ const postgresMigrations: PostgresMigration[] = [
       ON evidence_sync_records (retention_expires_at ASC);
     `,
   },
+  {
+    id: '0013_worker_job_resilience',
+    sql: `
+      CREATE TABLE IF NOT EXISTS worker_jobs (
+        id TEXT PRIMARY KEY,
+        job_type TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (
+          status IN ('queued', 'running', 'retryable', 'succeeded', 'failed')
+        ),
+        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        available_at TEXT NOT NULL,
+        locked_by TEXT,
+        locked_at TEXT,
+        last_error TEXT,
+        last_started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (attempt_count >= 0),
+        CHECK (max_attempts > 0)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_worker_jobs_ready
+      ON worker_jobs (status, available_at ASC, created_at ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_worker_jobs_failed
+      ON worker_jobs (status, updated_at DESC)
+      WHERE status = 'failed';
+
+      CREATE TABLE IF NOT EXISTS worker_job_drill_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES worker_jobs(id) ON DELETE CASCADE,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        processed_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_worker_job_drill_events_job
+      ON worker_job_drill_events (job_id, processed_at ASC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

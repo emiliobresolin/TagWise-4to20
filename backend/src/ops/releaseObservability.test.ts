@@ -35,6 +35,10 @@ describe('release observability', () => {
             app_environment: 'production',
           },
         ],
+        workerJobRows: {
+          retryable: 1,
+          failed: 1,
+        },
       }),
       now: new Date('2026-04-24T14:00:00.000Z'),
       apiMetrics: { ready: true, errorCount: 3, errorRate: 0.08 },
@@ -48,7 +52,9 @@ describe('release observability', () => {
       supervisorReviewReports: 2,
       managerReviewReports: 1,
       pendingEvidenceFinalization: 2,
-      total: 5,
+      retryableWorkerJobs: 1,
+      failedWorkerJobs: 1,
+      total: 7,
     });
     expect(snapshot.syncHealth).toMatchObject({
       acceptedReportSubmissions: 4,
@@ -75,6 +81,7 @@ describe('release observability', () => {
         'approval-review-stale',
         'worker-not-ready',
         'worker-errors-present',
+        'worker-jobs-failed',
         'backend-error-rate-high',
         'mobile-crash-trend-present',
       ]),
@@ -87,6 +94,10 @@ describe('release observability', () => {
         }),
         expect.objectContaining({
           label: 'Worker ready',
+          status: 'critical',
+        }),
+        expect.objectContaining({
+          label: 'Failed worker jobs',
           status: 'critical',
         }),
       ]),
@@ -123,6 +134,7 @@ interface ObservabilityRows {
     device_platform: string;
     app_environment: string;
   }>;
+  workerJobRows: Partial<Record<'queued' | 'running' | 'retryable' | 'failed', number>>;
 }
 
 function buildObservabilityDatabase(
@@ -135,6 +147,7 @@ function buildObservabilityDatabase(
     approvalRows: [],
     pendingReportRows: [],
     mobileErrorRows: [],
+    workerJobRows: {},
     ...rows,
   };
 
@@ -167,6 +180,15 @@ function buildObservabilityDatabase(
 
       if (text.includes('FROM mobile_runtime_error_events')) {
         return queryResult<Result>(data.mobileErrorRows);
+      }
+
+      if (text.includes('FROM worker_jobs')) {
+        return queryResult<Result>(
+          Object.entries(data.workerJobRows).map(([status, count]) => ({
+            status,
+            count: String(count),
+          })),
+        );
       }
 
       throw new Error(`Unexpected release observability query: ${text}`);

@@ -4,6 +4,9 @@ import { generateCorrelationId } from '../platform/diagnostics/correlation';
 import { createStructuredLogger } from '../platform/diagnostics/structuredLogger';
 import { createS3ObjectStorageClient } from '../platform/storage/objectStorage';
 import { createServiceRuntime } from '../runtime/serviceRuntime';
+import { WorkerJobRepository } from '../modules/worker-jobs/workerJobRepository';
+import { WorkerJobService } from '../modules/worker-jobs/workerJobService';
+import { startWorkerJobLoop } from './workerJobLoop';
 
 async function main() {
   const environment = loadServiceEnvironment('worker');
@@ -16,6 +19,22 @@ async function main() {
 
   // Story 1.2 wires object storage into the worker boundary without starting later media flows yet.
   createS3ObjectStorageClient(environment.objectStorage);
+  const workerJobRepository = new WorkerJobRepository(pool);
+  const workerJobService = new WorkerJobService(workerJobRepository, {
+    workerId: `worker-service:${process.pid}`,
+    handlers: [
+      {
+        jobType: 'ops.restart-drill',
+        handle: async (job) => {
+          await workerJobRepository.recordDrillSideEffect({
+            jobId: job.id,
+            idempotencyKey: job.idempotencyKey,
+            processedAt: new Date().toISOString(),
+          });
+        },
+      },
+    ],
+  });
 
   const runtime = createServiceRuntime({
     serviceName: 'worker-service',
@@ -27,12 +46,17 @@ async function main() {
   });
 
   const { port } = await runtime.start();
+  const workerJobLoop = startWorkerJobLoop({
+    service: workerJobService,
+    logger,
+  });
   logger.info('worker.boot.completed', {
     port,
     readiness: runtime.snapshot(),
   });
 
   registerShutdown(async () => {
+    workerJobLoop.stop();
     await runtime.stop();
     await pool.end();
   });

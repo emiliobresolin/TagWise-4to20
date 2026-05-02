@@ -14,6 +14,8 @@ export interface ReleaseObservabilitySnapshot {
     supervisorReviewReports: number;
     managerReviewReports: number;
     pendingEvidenceFinalization: number;
+    retryableWorkerJobs: number;
+    failedWorkerJobs: number;
     total: number;
   };
   syncHealth: {
@@ -28,6 +30,12 @@ export interface ReleaseObservabilitySnapshot {
     oldestPendingMinutes: number | null;
   };
   worker: ServiceMetricsSignal;
+  workerJobs: {
+    queued: number;
+    running: number;
+    retryable: number;
+    failed: number;
+  };
   backendErrors: ServiceMetricsSignal;
   mobileCrashTrend: {
     capturedErrors: number;
@@ -51,6 +59,7 @@ export interface ReleaseAlertThresholds {
   syncFailureCritical: number;
   approvalLatencyMinutesWarning: number;
   workerErrorCritical: number;
+  failedWorkerJobCritical: number;
   backendErrorRateCritical: number;
   mobileCrashCritical: number;
 }
@@ -78,6 +87,7 @@ const defaultThresholds: ReleaseAlertThresholds = {
   syncFailureCritical: 1,
   approvalLatencyMinutesWarning: 120,
   workerErrorCritical: 1,
+  failedWorkerJobCritical: 1,
   backendErrorRateCritical: 0.05,
   mobileCrashCritical: 1,
 };
@@ -108,6 +118,7 @@ export async function buildReleaseObservabilitySnapshot(input: {
     approvalRows,
     pendingReportRows,
     mobileErrorRows,
+    workerJobRows,
   ] = await Promise.all([
     readQueueDepth(input.database),
     countAcceptedReports(input.database, windowStartedAt),
@@ -115,6 +126,7 @@ export async function buildReleaseObservabilitySnapshot(input: {
     readApprovalLatencyRows(input.database, windowStartedAt),
     readPendingReportRows(input.database),
     readMobileErrorRows(input.database),
+    readWorkerJobRows(input.database),
   ]);
   const stalePendingEvidenceFinalization = pendingEvidenceRows.filter(
     (row) => parseTimestamp(row.metadata_received_at) <= staleEvidenceCutoff.getTime(),
@@ -127,10 +139,14 @@ export async function buildReleaseObservabilitySnapshot(input: {
     queueDepth: {
       ...queueDepth,
       pendingEvidenceFinalization: pendingEvidenceRows.length,
+      retryableWorkerJobs: workerJobRows.retryable,
+      failedWorkerJobs: workerJobRows.failed,
       total:
         queueDepth.supervisorReviewReports +
         queueDepth.managerReviewReports +
-        pendingEvidenceRows.length,
+        pendingEvidenceRows.length +
+        workerJobRows.retryable +
+        workerJobRows.failed,
     },
     syncHealth: {
       acceptedReportSubmissions,
@@ -142,6 +158,7 @@ export async function buildReleaseObservabilitySnapshot(input: {
       oldestPendingMinutes: calculateOldestPendingMinutes(pendingReportRows, now),
     },
     worker: input.workerMetrics ?? emptyServiceMetricsSignal(),
+    workerJobs: workerJobRows,
     backendErrors: input.apiMetrics ?? emptyServiceMetricsSignal(),
     mobileCrashTrend,
   };
@@ -232,6 +249,16 @@ export function evaluateReleaseAlerts(
     });
   }
 
+  if (snapshot.workerJobs.failed >= thresholds.failedWorkerJobCritical) {
+    alerts.push({
+      id: 'worker-jobs-failed',
+      severity: 'critical',
+      message: 'Durable worker jobs have failed and need operations follow-up.',
+      value: snapshot.workerJobs.failed,
+      threshold: thresholds.failedWorkerJobCritical,
+    });
+  }
+
   if (
     snapshot.backendErrors.errorRate !== null &&
     snapshot.backendErrors.errorRate >= thresholds.backendErrorRateCritical
@@ -308,6 +335,12 @@ export function buildReleaseDashboard(
             value: snapshot.worker.ready === null ? 'not checked' : String(snapshot.worker.ready),
             target: 'true',
             status: hasAlert(alerts, 'worker-not-ready') ? 'critical' : 'ok',
+          },
+          {
+            label: 'Failed worker jobs',
+            value: snapshot.workerJobs.failed,
+            target: '0',
+            status: hasAlert(alerts, 'worker-jobs-failed') ? 'critical' : 'ok',
           },
           {
             label: 'Backend API error rate',
@@ -423,6 +456,27 @@ async function readMobileErrorRows(database: QueryableDatabase) {
   );
 
   return result.rows;
+}
+
+async function readWorkerJobRows(database: QueryableDatabase) {
+  const result = await database.query<{ status: string; count: string }>(
+    `
+      SELECT status, COUNT(*) AS count
+      FROM worker_jobs
+      WHERE status IN ('queued', 'running', 'retryable', 'failed')
+      GROUP BY status;
+    `,
+  );
+  const counts = Object.fromEntries(
+    result.rows.map((row) => [row.status, Number(row.count)]),
+  );
+
+  return {
+    queued: counts.queued ?? 0,
+    running: counts.running ?? 0,
+    retryable: counts.retryable ?? 0,
+    failed: counts.failed ?? 0,
+  };
 }
 
 function summarizeApprovalLatency(

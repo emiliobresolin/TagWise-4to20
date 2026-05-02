@@ -59,6 +59,8 @@ const coreRestoreVerificationTables = [
   'supervisor_review_routes',
   'manager_review_routes',
   'mobile_runtime_error_events',
+  'worker_jobs',
+  'worker_job_drill_events',
 ] as const;
 
 async function readCoreTableRowCounts(

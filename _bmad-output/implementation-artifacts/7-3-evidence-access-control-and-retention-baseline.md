@@ -1,6 +1,6 @@
 ﻿# Story 7.3: Evidence Access Control and Retention Baseline
 
-Status: review
+Status: done
 
 ## Metadata
 - Story key: 7-3-evidence-access-control-and-retention-baseline
@@ -83,6 +83,13 @@ keep object storage private by default; expose only controlled download/access; 
 - QA blocker fix: `cd mobile && npm run typecheck` - passed.
 - `git diff --check` - passed with existing CRLF line-ending warnings only.
 - Generated/cache file check - clean after restoring build/Vitest generated output.
+
+### QA Closeout (2026-05-02)
+- Final BMAD QA verdict: Pass with minor non-blocking concerns.
+- Previous blocking issue resolved: evidence finalization now validates actual stored object size and content type before writing finalized presence or retention state.
+- Follow-up: persisted audit events for evidence access authorization are not implemented yet.
+- Follow-up: supervisor/manager evidence access scope regression tests are still thin.
+- Follow-up: provider bucket public-access validation can evolve as future release-preflight hardening.
 
 ## Source References
 - [product-brief.md](../planning-artifacts/product-brief.md)
