@@ -2000,17 +2000,19 @@ describe('createApiRequestHandler', () => {
       'SELECT COUNT(*) AS count FROM mobile_runtime_error_events;',
     )) as { rows: Array<{ count: string }> };
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
-    const stored = await pool.query<{
-      api_base_url: string | null;
-      context_json: unknown;
-    }>(
+    const stored = (await pool.query(
       `
         SELECT api_base_url, context_json
         FROM mobile_runtime_error_events
         WHERE id = $1;
       `,
       ['mobile-error-release-001'],
-    );
+    )) as {
+      rows: Array<{
+        api_base_url: string | null;
+        context_json: unknown;
+      }>;
+    };
     const contextJson =
       typeof stored.rows[0]?.context_json === 'string'
         ? JSON.parse(stored.rows[0].context_json)
@@ -2078,7 +2080,23 @@ describe('createApiRequestHandler', () => {
     await pool.end();
   });
 
-  it('rejects invalid mobile diagnostics enum values', async () => {
+  it.each([
+    [
+      'severity',
+      { severity: 'warning' },
+      'Mobile diagnostics severity must be error.',
+    ],
+    [
+      'sessionRole',
+      { sessionRole: 'auditor' },
+      'Mobile diagnostics sessionRole is unsupported.',
+    ],
+    [
+      'sessionConnectionMode',
+      { sessionConnectionMode: 'background' },
+      'Mobile diagnostics sessionConnectionMode is unsupported.',
+    ],
+  ])('rejects invalid mobile diagnostics enum value %s', async (_field, overrides, message) => {
     const { accessToken, pool, port } = await startMobileDiagnosticsRuntime();
 
     const response = await postMobileDiagnostics(
@@ -2086,13 +2104,13 @@ describe('createApiRequestHandler', () => {
       accessToken,
       buildMobileDiagnosticsPayload({
         id: 'mobile-error-invalid-enum',
-        severity: 'warning',
+        ...overrides,
       }),
     );
     const body = (await response.json()) as { message: string };
 
     expect(response.status).toBe(400);
-    expect(body.message).toBe('Mobile diagnostics severity must be error.');
+    expect(body.message).toBe(message);
 
     await pool.end();
   });
@@ -2272,6 +2290,65 @@ async function startReportSubmissionRuntime() {
 
   const { port } = await runtime.start();
   return { authService, auditRepository, manager, pool, port };
+}
+
+async function startMobileDiagnosticsRuntime() {
+  const { authService, pool, port } = await startReportSubmissionRuntime();
+  const technicianLogin = await authService.loginConnected(
+    {
+      email: authConfig.seedUsers.technician.email,
+      password: authConfig.seedUsers.technician.password,
+    },
+    {
+      correlationId: 'corr-mobile-diagnostics-login',
+    },
+  );
+
+  return {
+    accessToken: technicianLogin.tokens.accessToken,
+    pool,
+    port,
+    userId: technicianLogin.user.id,
+  };
+}
+
+async function postMobileDiagnostics(
+  port: number,
+  accessToken: string,
+  payload: Record<string, unknown>,
+): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/diagnostics/mobile-errors`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+function buildMobileDiagnosticsPayload(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    contractVersion: MOBILE_DIAGNOSTICS_API_CONTRACT_VERSION,
+    id: 'mobile-error-release-001',
+    severity: 'error',
+    errorName: 'Error',
+    message: 'Forced release diagnostics capture',
+    stack: 'Error: Forced release diagnostics capture',
+    capturedAt: '2026-04-23T16:00:00.000Z',
+    sessionUserId: 'user-tech',
+    sessionRole: 'technician',
+    sessionConnectionMode: 'connected',
+    shellRoute: 'packages',
+    devicePlatform: 'android',
+    devicePlatformVersion: '34',
+    appEnvironment: 'production',
+    apiBaseUrl: 'https://api.tagwise.example',
+    contextJson: JSON.stringify({ source: 'story-7.2-test' }),
+    ...overrides,
+  };
 }
 
 function buildValidReportSubmissionPayload(

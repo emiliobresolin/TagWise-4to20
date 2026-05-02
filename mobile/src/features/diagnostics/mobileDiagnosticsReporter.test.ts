@@ -69,6 +69,28 @@ describe('MobileDiagnosticsReporter', () => {
 
     await close();
   });
+
+  it('keeps captured errors queued when backend diagnostics ingestion rejects them', async () => {
+    const { repository, close } = await createRepository();
+    await repository.saveError(buildRuntimeError('mobile-error-rejected-001'));
+    const apiClient = {
+      reportRuntimeError: vi.fn(async () => {
+        throw new Error('Mobile diagnostics message must not exceed 1024 bytes.');
+      }),
+    };
+    const reporter = new MobileDiagnosticsReporter(repository, apiClient);
+
+    const summary = await reporter.flushUnreportedErrors(buildSession('connected'));
+
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(apiClient.reportRuntimeError).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'mobile-error-rejected-001' }),
+    );
+    expect(await repository.listUnreportedErrors()).toHaveLength(1);
+    expect((await repository.getLatestError())?.reportedAt).toBeNull();
+
+    await close();
+  });
 });
 
 describe('createFetchMobileDiagnosticsApiClient', () => {

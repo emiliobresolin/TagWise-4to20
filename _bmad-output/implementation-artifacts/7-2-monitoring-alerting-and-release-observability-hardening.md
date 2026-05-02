@@ -42,6 +42,7 @@ build on `E1-S5`; add dashboards for queue depth, sync success/failure, approval
 - Added release alert evaluation for operational queue depth, stale evidence finalization, sync failure signals, approval latency/pending review age, worker readiness/errors, backend error rate, and mobile runtime error trends.
 - Added authenticated backend mobile diagnostics telemetry ingestion at `POST /diagnostics/mobile-errors`, with a durable `mobile_runtime_error_events` table included in backup/restore row-count verification.
 - Added mobile diagnostics reporting so locally captured runtime errors remain offline-safe and are flushed to the backend when a connected session is available.
+- Hardened diagnostics ingress after QA blocker review with a diagnostics-specific 24 KiB request body limit, clean malformed-JSON validation, bounded fields, URL origin normalization, and bounded/redacted context JSON persistence.
 - Documented the Story 7.2 release observability runbook, thresholds, dashboard usage, and synthetic failure validation.
 
 ### Files Changed
@@ -73,10 +74,13 @@ build on `E1-S5`; add dashboards for queue depth, sync success/failure, approval
 ### Validation Summary
 - `cd backend && npm test -- releaseObservability createApiRequestHandler migrations backupRestoreVerification` - passed, 4 files / 24 tests.
 - `cd mobile && npm test -- mobileDiagnostics mobileErrorCapture bootstrap` - passed, 4 files / 10 tests after hardening migration 13 for legacy diagnostics-table gaps.
+- `cd backend && npm test -- createApiRequestHandler releaseObservability` - passed, 2 files / 30 tests after diagnostics ingress bounds fix.
+- `cd backend && npm test -- env deploymentPreflight releaseSmoke backupRestoreVerification` - passed, 4 files / 25 tests.
+- `cd mobile && npm test -- mobileDiagnostics mobileErrorCapture bootstrap` - passed, 4 files / 11 tests after backend-rejection retry-safety regression.
 - `cd backend && npm run typecheck` - passed.
 - `cd mobile && npm run typecheck` - passed.
-- `cd backend && npm test` - passed, 13 files / 59 tests.
-- `cd mobile && npm test` - passed, 22 files / 123 tests.
+- `cd backend && npm test` - passed, 13 files / 71 tests.
+- `cd mobile && npm test` - passed, 22 files / 124 tests.
 - `cd backend && npm run build` - passed; generated `backend/dist` output was restored from the working tree after the build check.
 - `git diff --check` - passed with existing CRLF line-ending warnings only.
 - Generated/cache file check - clean after restoring build/Vitest generated output.

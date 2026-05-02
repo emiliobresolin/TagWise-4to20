@@ -64,6 +64,13 @@ The endpoint requires an authenticated mobile session and persists the runtime e
 release observability dashboard. Offline devices keep captured errors local and report them after a
 connected session is restored.
 
+Diagnostics ingestion is intentionally bounded so release telemetry cannot become an unbounded
+storage or sensitive-context sink. The current backend rejects request bodies over 24 KiB, message
+fields over 1 KiB, stack fields over 8 KiB, context JSON over 4 KiB, and URL fields over 512 bytes.
+`apiBaseUrl` must be an HTTP(S) URL and is stored as origin only. `contextJson` must be a JSON
+object; sensitive keys such as authorization, cookie, password, secret, and token are redacted before
+persistence. Rejected diagnostics stay queued locally and do not block field execution.
+
 ## Validation
 
 Minimum Story 7.2 validation:
