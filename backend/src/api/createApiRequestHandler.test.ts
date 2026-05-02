@@ -14,6 +14,7 @@ import {
 } from '../modules/diagnostics/model';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
 import { EvidenceSyncService } from '../modules/evidence-sync/evidenceSyncService';
+import { EVIDENCE_BINARY_POLICY } from '../modules/evidence-sync/evidencePolicy';
 import { EVIDENCE_SYNC_API_CONTRACT_VERSION } from '../modules/evidence-sync/model';
 import { ReportSubmissionRepository } from '../modules/report-submissions/reportSubmissionRepository';
 import { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
@@ -28,7 +29,10 @@ import { AssignedWorkPackageRepository } from '../modules/work-packages/assigned
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
 import { createServiceRuntime, type ServiceRuntimeHandle } from '../runtime/serviceRuntime';
 import { runPostgresMigrations } from '../platform/db/migrations';
-import type { EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
+import type {
+  EvidenceObjectStorageClient,
+  EvidenceStoredObjectMetadata,
+} from '../platform/storage/objectStorage';
 
 const authConfig = {
   tokenSecret: 'unit-test-secret',
@@ -372,10 +376,10 @@ describe('createApiRequestHandler', () => {
       new AssignedWorkPackageRepository(pool),
     );
     await assignedWorkPackageService.ensureSeedPackages(technician.id);
-    const uploadedKeys = new Set<string>();
+    const uploadedObjects = new Map<string, EvidenceStoredObjectMetadata>();
     const evidenceSyncService = new EvidenceSyncService(
       new EvidenceSyncRepository(pool),
-      createTestEvidenceObjectStorageClient(uploadedKeys),
+      createTestEvidenceObjectStorageClient(uploadedObjects),
       () => new Date('2026-04-23T14:30:00.000Z'),
     );
     const reportSubmissionService = new ReportSubmissionService(
@@ -427,6 +431,7 @@ describe('createApiRequestHandler', () => {
         evidenceId: 'photo:20260423143000:test',
         fileName: 'field-photo.jpg',
         mimeType: 'image/jpeg',
+        fileSizeBytes: 2048,
         executionStepId: 'guidance',
         source: 'camera',
         localCapturedAt: '2026-04-23T14:25:00.000Z',
@@ -471,7 +476,10 @@ describe('createApiRequestHandler', () => {
       'content-type': 'image/jpeg',
     });
 
-    uploadedKeys.add(authorizationBody.objectKey);
+    uploadedObjects.set(authorizationBody.objectKey, {
+      contentLengthBytes: 2048,
+      contentType: 'image/jpeg',
+    });
 
     const finalizationResponse = await fetch(
       `http://127.0.0.1:${port}/sync/evidence-binary-finalizations`,
@@ -500,6 +508,73 @@ describe('createApiRequestHandler', () => {
       presenceFinalizedAt: '2026-04-23T14:30:00.000Z',
     });
 
+    const evidenceRows = (await pool.query(
+      `
+        SELECT file_size_bytes, retention_policy, retention_expires_at
+        FROM evidence_sync_records
+        WHERE server_evidence_id = $1;
+      `,
+      [metadataBody.serverEvidenceId],
+    )) as {
+      rows: Array<{
+        file_size_bytes: number;
+        retention_policy: string;
+        retention_expires_at: string;
+      }>;
+    };
+    expect(evidenceRows.rows[0]).toEqual({
+      file_size_bytes: 2048,
+      retention_policy: EVIDENCE_BINARY_POLICY.id,
+      retention_expires_at: '2027-04-23T14:30:00.000Z',
+    });
+
+    const unauthenticatedAccessResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-access-authorizations`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+          serverEvidenceId: metadataBody.serverEvidenceId,
+        }),
+      },
+    );
+    expect(unauthenticatedAccessResponse.status).toBe(401);
+
+    const accessResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-access-authorizations`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+          serverEvidenceId: metadataBody.serverEvidenceId,
+        }),
+      },
+    );
+    const accessBody = (await accessResponse.json()) as {
+      contractVersion: string;
+      serverEvidenceId: string;
+      downloadMethod: string;
+      downloadUrl: string;
+      requiredHeaders: Record<string, string>;
+      expiresAt: string;
+    };
+    expect(accessResponse.status).toBe(200);
+    expect(accessBody).toMatchObject({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: metadataBody.serverEvidenceId,
+      downloadMethod: 'GET',
+      requiredHeaders: {},
+      expiresAt: '2026-04-23T14:35:00.000Z',
+    });
+    expect(accessBody.downloadUrl).toContain('download=1');
+
     await pool.end();
   });
 
@@ -525,9 +600,10 @@ describe('createApiRequestHandler', () => {
       new AssignedWorkPackageRepository(pool),
     );
     await assignedWorkPackageService.ensureSeedPackages(technician.id);
+    const uploadedObjects = new Map<string, EvidenceStoredObjectMetadata>();
     const evidenceSyncService = new EvidenceSyncService(
       new EvidenceSyncRepository(pool),
-      createTestEvidenceObjectStorageClient(),
+      createTestEvidenceObjectStorageClient(uploadedObjects),
       () => new Date('2026-04-23T15:00:00.000Z'),
     );
     const reportSubmissionService = new ReportSubmissionService(
@@ -578,10 +654,11 @@ describe('createApiRequestHandler', () => {
           tagId: 'tag-001',
           templateId: 'tpl-pressure-as-found',
           templateVersion: '2026-04-v1',
-          evidenceId: 'photo:20260423150000:bad-contract',
-          fileName: 'field-photo.jpg',
-          mimeType: 'image/jpeg',
-          executionStepId: 'guidance',
+        evidenceId: 'photo:20260423150000:bad-contract',
+        fileName: 'field-photo.jpg',
+        mimeType: 'image/jpeg',
+        fileSizeBytes: 2048,
+        executionStepId: 'guidance',
           source: 'camera',
           localCapturedAt: '2026-04-23T14:55:00.000Z',
           metadataIdempotencyKey:
@@ -594,6 +671,78 @@ describe('createApiRequestHandler', () => {
     expect(await unsupportedContractResponse.json()).toEqual({
       message: `Evidence sync contractVersion must be ${EVIDENCE_SYNC_API_CONTRACT_VERSION}.`,
     });
+
+    const invalidEvidencePayloads: Array<{
+      evidenceId: string;
+      overrides: Record<string, unknown>;
+      expectedMessage: string;
+    }> = [
+      {
+        evidenceId: 'photo:20260423150000:bad-type',
+        overrides: {
+          fileName: 'field-photo.pdf',
+          mimeType: 'application/pdf',
+          fileSizeBytes: 2048,
+        },
+        expectedMessage: 'Evidence file type must be one of:',
+      },
+      {
+        evidenceId: 'photo:20260423150000:too-large',
+        overrides: {
+          fileName: 'field-photo.jpg',
+          mimeType: 'image/jpeg',
+          fileSizeBytes: EVIDENCE_BINARY_POLICY.maxFileSizeBytes + 1,
+        },
+        expectedMessage: `Evidence fileSizeBytes must not exceed ${EVIDENCE_BINARY_POLICY.maxFileSizeBytes} bytes.`,
+      },
+      {
+        evidenceId: 'photo:20260423150000:mismatch',
+        overrides: {
+          fileName: 'field-photo.png',
+          mimeType: 'image/jpeg',
+          fileSizeBytes: 2048,
+        },
+        expectedMessage: 'Evidence fileName extension must match image/jpeg.',
+      },
+    ];
+
+    for (const payload of invalidEvidencePayloads) {
+      const invalidResponse = await fetch(`http://127.0.0.1:${port}/sync/evidence-metadata`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+          reportId: 'tag-report:wp-seed-1001:tag-001',
+          workPackageId: 'wp-seed-1001',
+          tagId: 'tag-001',
+          templateId: 'tpl-pressure-as-found',
+          templateVersion: '2026-04-v1',
+          evidenceId: payload.evidenceId,
+          executionStepId: 'guidance',
+          source: 'camera',
+          localCapturedAt: '2026-04-23T14:55:00.000Z',
+          metadataIdempotencyKey:
+            `upload-evidence-metadata:${payload.evidenceId}:2026-04-23T14:55:00.000Z`,
+          ...payload.overrides,
+        }),
+      });
+      const invalidBody = (await invalidResponse.json()) as { message: string };
+      expect(invalidResponse.status).toBe(400);
+      expect(invalidBody.message).toContain(payload.expectedMessage);
+    }
+
+    const invalidRows = (await pool.query(
+      `
+        SELECT COUNT(*) AS count
+        FROM evidence_sync_records
+        WHERE evidence_id IN ($1, $2, $3);
+      `,
+      invalidEvidencePayloads.map((payload) => payload.evidenceId),
+    )) as { rows: Array<{ count: string }> };
+    expect(Number(invalidRows.rows[0]?.count ?? 0)).toBe(0);
 
     const metadataResponse = await fetch(`http://127.0.0.1:${port}/sync/evidence-metadata`, {
       method: 'POST',
@@ -611,6 +760,7 @@ describe('createApiRequestHandler', () => {
         evidenceId: 'photo:20260423150000:missing-binary',
         fileName: 'field-photo.jpg',
         mimeType: 'image/jpeg',
+        fileSizeBytes: 2048,
         executionStepId: 'guidance',
         source: 'camera',
         localCapturedAt: '2026-04-23T14:55:00.000Z',
@@ -620,6 +770,25 @@ describe('createApiRequestHandler', () => {
     });
     const metadataBody = (await metadataResponse.json()) as { serverEvidenceId: string };
     expect(metadataResponse.status).toBe(200);
+
+    const unfinalizedAccessResponse = await fetch(
+      `http://127.0.0.1:${port}/sync/evidence-access-authorizations`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${login.tokens.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+          serverEvidenceId: metadataBody.serverEvidenceId,
+        }),
+      },
+    );
+    expect(unfinalizedAccessResponse.status).toBe(409);
+    expect(await unfinalizedAccessResponse.json()).toEqual({
+      message: 'Evidence binary is not finalized for access yet.',
+    });
 
     const authorizationResponse = await fetch(
       `http://127.0.0.1:${port}/sync/evidence-upload-authorizations`,
@@ -636,26 +805,101 @@ describe('createApiRequestHandler', () => {
         }),
       },
     );
+    const authorizationBody = (await authorizationResponse.json()) as { objectKey: string };
     expect(authorizationResponse.status).toBe(200);
 
-    const finalizationResponse = await fetch(
-      `http://127.0.0.1:${port}/sync/evidence-binary-finalizations`,
-      {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${login.tokens.accessToken}`,
-          'content-type': 'application/json',
+    const finalizeEvidence = () =>
+      fetch(
+        `http://127.0.0.1:${port}/sync/evidence-binary-finalizations`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${login.tokens.accessToken}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+            serverEvidenceId: metadataBody.serverEvidenceId,
+          }),
         },
-        body: JSON.stringify({
-          contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
-          serverEvidenceId: metadataBody.serverEvidenceId,
-        }),
-      },
-    );
+      );
 
+    const finalizationResponse = await finalizeEvidence();
     expect(finalizationResponse.status).toBe(409);
     expect(await finalizationResponse.json()).toEqual({
       message: 'Evidence binary is not present in object storage yet.',
+    });
+
+    uploadedObjects.set(authorizationBody.objectKey, {
+      contentLengthBytes: EVIDENCE_BINARY_POLICY.maxFileSizeBytes + 1,
+      contentType: 'image/jpeg',
+    });
+    const oversizedFinalization = await finalizeEvidence();
+    expect(oversizedFinalization.status).toBe(400);
+    expect(await oversizedFinalization.json()).toEqual({
+      message: `Evidence binary object must not exceed ${EVIDENCE_BINARY_POLICY.maxFileSizeBytes} bytes.`,
+    });
+
+    uploadedObjects.set(authorizationBody.objectKey, {
+      contentLengthBytes: 2048,
+      contentType: 'image/png',
+    });
+    const wrongTypeFinalization = await finalizeEvidence();
+    expect(wrongTypeFinalization.status).toBe(400);
+    expect(await wrongTypeFinalization.json()).toEqual({
+      message: 'Evidence binary content type must match declared metadata image/jpeg.',
+    });
+
+    uploadedObjects.set(authorizationBody.objectKey, {
+      contentLengthBytes: null,
+      contentType: 'image/jpeg',
+    });
+    const missingSizeFinalization = await finalizeEvidence();
+    expect(missingSizeFinalization.status).toBe(409);
+    expect(await missingSizeFinalization.json()).toEqual({
+      message: 'Evidence binary size metadata is unavailable from object storage.',
+    });
+
+    uploadedObjects.set(authorizationBody.objectKey, {
+      contentLengthBytes: 2048,
+      contentType: null,
+    });
+    const missingContentTypeFinalization = await finalizeEvidence();
+    expect(missingContentTypeFinalization.status).toBe(409);
+    expect(await missingContentTypeFinalization.json()).toEqual({
+      message: 'Evidence binary content type metadata is unavailable from object storage.',
+    });
+
+    const unfinalizedRows = (await pool.query(
+      `
+        SELECT presence_status, presence_finalized_at, retention_expires_at
+        FROM evidence_sync_records
+        WHERE server_evidence_id = $1;
+      `,
+      [metadataBody.serverEvidenceId],
+    )) as {
+      rows: Array<{
+        presence_status: string;
+        presence_finalized_at: string | null;
+        retention_expires_at: string | null;
+      }>;
+    };
+    expect(unfinalizedRows.rows[0]).toEqual({
+      presence_status: 'metadata-recorded',
+      presence_finalized_at: null,
+      retention_expires_at: null,
+    });
+
+    uploadedObjects.set(authorizationBody.objectKey, {
+      contentLengthBytes: 2048,
+      contentType: 'IMAGE/JPEG; charset=binary',
+    });
+    const validFinalization = await finalizeEvidence();
+    expect(validFinalization.status).toBe(200);
+    expect(await validFinalization.json()).toMatchObject({
+      serverEvidenceId: metadataBody.serverEvidenceId,
+      presenceStatus: 'binary-finalized',
+      presenceFinalizedAt: '2026-04-23T15:00:00.000Z',
     });
 
     await pool.end();
@@ -2194,7 +2438,7 @@ describe('createApiRequestHandler', () => {
 });
 
 function createTestEvidenceObjectStorageClient(
-  uploadedKeys: Set<string> = new Set<string>(),
+  uploadedObjects: Map<string, EvidenceStoredObjectMetadata> = new Map<string, EvidenceStoredObjectMetadata>(),
 ): EvidenceObjectStorageClient {
   return {
     async createBinaryUploadAuthorization(input) {
@@ -2207,8 +2451,16 @@ function createTestEvidenceObjectStorageClient(
         expiresAt: '2026-04-23T14:45:00.000Z',
       };
     },
-    async hasObject(objectKey) {
-      return uploadedKeys.has(objectKey);
+    async createBinaryAccessAuthorization(input) {
+      return {
+        downloadUrl: `https://storage.tagwise.test/${encodeURIComponent(input.objectKey)}?download=1`,
+        downloadMethod: 'GET',
+        requiredHeaders: {},
+        expiresAt: '2026-04-23T14:35:00.000Z',
+      };
+    },
+    async getObjectMetadata(objectKey) {
+      return uploadedObjects.get(objectKey) ?? null;
     },
   };
 }

@@ -204,6 +204,7 @@ export class EvidenceUploadOrchestrator {
           evidenceId: attachment.evidenceId,
           fileName: attachment.fileName,
           mimeType: attachment.mimeType,
+          fileSizeBytes: attachment.fileSize ?? 0,
           executionStepId: attachment.executionStepId,
           source: attachment.source,
           localCapturedAt: attachment.createdAt,
@@ -230,6 +231,9 @@ export class EvidenceUploadOrchestrator {
           syncState: 'sync-issue',
           syncIssue: error instanceof Error ? error.message : 'Evidence metadata sync failed.',
         }));
+        if (isPermanentEvidenceMetadataRejection(error)) {
+          await store.queueItems.deleteQueueItem(binaryQueueItemId);
+        }
         throw error;
       }
     }
@@ -488,6 +492,7 @@ async function ensureMetadataQueueItem(
     evidenceId: attachment.evidenceId,
     fileName: attachment.fileName,
     mimeType: attachment.mimeType,
+    fileSizeBytes: attachment.fileSize ?? 0,
     executionStepId: attachment.executionStepId,
     source: attachment.source,
     localObjectReference: {
@@ -751,6 +756,15 @@ function parseSubmitReportQueuePayload(payloadJson: string): SubmitReportQueuePa
   } catch {
     return null;
   }
+}
+
+function isPermanentEvidenceMetadataRejection(error: unknown): boolean {
+  return (
+    error instanceof EvidenceUploadApiError &&
+    error.kind === 'server' &&
+    error.statusCode === 400 &&
+    error.message.startsWith('Evidence ')
+  );
 }
 
 function parseReportSubmissionDraftPayload(

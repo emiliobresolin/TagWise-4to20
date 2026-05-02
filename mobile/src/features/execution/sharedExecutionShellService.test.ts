@@ -2971,6 +2971,7 @@ describe('SharedExecutionShellService', () => {
       evidenceId: submittedShell.evidence.photoAttachments[0]?.evidenceId,
       fileName: submittedShell.evidence.photoAttachments[0]?.fileName,
       mimeType: 'image/jpeg',
+      fileSizeBytes: 8192,
       executionStepId: 'guidance',
       source: 'camera',
       localObjectReference: {

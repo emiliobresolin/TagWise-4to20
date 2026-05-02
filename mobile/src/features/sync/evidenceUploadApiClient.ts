@@ -17,6 +17,7 @@ export interface EvidenceUploadMetadataRequest {
   evidenceId: string;
   fileName: string;
   mimeType: string | null;
+  fileSizeBytes: number;
   executionStepId: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
   source: 'camera' | 'library';
   localCapturedAt: string;

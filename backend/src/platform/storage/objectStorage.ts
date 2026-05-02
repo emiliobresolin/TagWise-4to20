@@ -2,6 +2,7 @@ import {
   type BucketLocationConstraint,
   CreateBucketCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -24,13 +25,29 @@ export interface EvidenceBinaryUploadAuthorization {
   expiresAt: string;
 }
 
+export interface EvidenceBinaryAccessAuthorization {
+  downloadUrl: string;
+  downloadMethod: 'GET';
+  requiredHeaders: Record<string, string>;
+  expiresAt: string;
+}
+
+export interface EvidenceStoredObjectMetadata {
+  contentLengthBytes: number | null;
+  contentType: string | null;
+}
+
 export interface EvidenceObjectStorageClient {
   createBinaryUploadAuthorization(input: {
     objectKey: string;
     contentType: string;
     expiresInSeconds: number;
   }): Promise<EvidenceBinaryUploadAuthorization>;
-  hasObject(objectKey: string): Promise<boolean>;
+  createBinaryAccessAuthorization(input: {
+    objectKey: string;
+    expiresInSeconds: number;
+  }): Promise<EvidenceBinaryAccessAuthorization>;
+  getObjectMetadata(objectKey: string): Promise<EvidenceStoredObjectMetadata | null>;
 }
 
 export interface ObjectStorageSmokeSummary {
@@ -122,18 +139,45 @@ export class S3EvidenceObjectStorageClient implements EvidenceObjectStorageClien
     };
   }
 
-  async hasObject(objectKey: string): Promise<boolean> {
+  async getObjectMetadata(objectKey: string): Promise<EvidenceStoredObjectMetadata | null> {
     try {
-      await this.client.send(
+      const metadata = await this.client.send(
         new HeadObjectCommand({
           Bucket: this.config.bucket,
           Key: objectKey,
         }),
       );
-      return true;
+
+      return {
+        contentLengthBytes:
+          typeof metadata.ContentLength === 'number' ? metadata.ContentLength : null,
+        contentType: metadata.ContentType ?? null,
+      };
     } catch {
-      return false;
+      return null;
     }
+  }
+
+  async createBinaryAccessAuthorization(input: {
+    objectKey: string;
+    expiresInSeconds: number;
+  }): Promise<EvidenceBinaryAccessAuthorization> {
+    const command = new GetObjectCommand({
+      Bucket: this.config.bucket,
+      Key: input.objectKey,
+    });
+
+    const downloadUrl = await getSignedUrl(this.client, command, {
+      expiresIn: input.expiresInSeconds,
+    });
+    const expiresAt = new Date(Date.now() + input.expiresInSeconds * 1000).toISOString();
+
+    return {
+      downloadUrl,
+      downloadMethod: 'GET',
+      requiredHeaders: {},
+      expiresAt,
+    };
   }
 }
 

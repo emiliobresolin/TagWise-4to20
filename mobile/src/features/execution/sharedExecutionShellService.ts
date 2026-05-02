@@ -2821,6 +2821,7 @@ function buildUploadEvidenceMetadataQueuePayload(
     evidenceId: attachment.evidenceId,
     fileName: attachment.fileName,
     mimeType: attachment.mimeType,
+    fileSizeBytes: attachment.fileSize ?? 0,
     executionStepId: attachment.executionStepId,
     source: attachment.source,
     localObjectReference: {

@@ -38,6 +38,7 @@ export interface UploadEvidenceMetadataQueuePayload {
   evidenceId: string;
   fileName: string;
   mimeType: string | null;
+  fileSizeBytes: number;
   executionStepId: SharedExecutionStepKind;
   source: SharedExecutionPhotoAttachmentSource;
   localObjectReference: {

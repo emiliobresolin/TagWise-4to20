@@ -32,8 +32,9 @@ describe('runPostgresMigrations', () => {
       '0009_supervisor_escalation_manager_routes',
       '0010_manager_decision_states',
       '0011_release_observability_mobile_errors',
+      '0012_evidence_access_retention_guardrails',
     ]);
-    expect(summary.currentSchemaVersion).toBe(11);
+    expect(summary.currentSchemaVersion).toBe(12);
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(managerRouteRows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(mobileRuntimeErrorRows.rows[0]?.count ?? 0)).toBe(1);
@@ -53,7 +54,7 @@ describe('runPostgresMigrations', () => {
     )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(Number(rows.rows[0]?.count ?? 0)).toBe(11);
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(12);
 
     await pool.end();
   });

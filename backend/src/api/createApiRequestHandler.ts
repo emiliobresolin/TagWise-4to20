@@ -227,6 +227,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           evidenceId?: string;
           fileName?: string;
           mimeType?: string | null;
+          fileSizeBytes?: number;
           executionStepId?: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
           source?: 'camera' | 'library';
           localCapturedAt?: string;
@@ -243,6 +244,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           !body.templateVersion ||
           !body.evidenceId ||
           !body.fileName ||
+          typeof body.fileSizeBytes !== 'number' ||
           !body.executionStepId ||
           !body.source ||
           !body.localCapturedAt ||
@@ -262,6 +264,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           evidenceId: body.evidenceId,
           fileName: body.fileName,
           mimeType: body.mimeType ?? null,
+          fileSizeBytes: body.fileSizeBytes,
           executionStepId: body.executionStepId,
           source: body.source,
           localCapturedAt: body.localCapturedAt,
@@ -335,6 +338,51 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           response,
           error,
           'Evidence upload authorization failed. The local attachment will remain queued.',
+        );
+      }
+
+      return true;
+    }
+
+    if (method === 'POST' && url === '/sync/evidence-access-authorizations') {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const body = await readJsonBody<{
+          contractVersion?: string;
+          serverEvidenceId?: string;
+        }>(request);
+
+        assertEvidenceSyncContractVersion(body.contractVersion);
+
+        if (!body.serverEvidenceId) {
+          writeJson(response, 400, { message: 'Evidence access authorization requires serverEvidenceId.' });
+          return true;
+        }
+
+        const authorization = await dependencies.evidenceSyncService.authorizeBinaryAccess(user, {
+          serverEvidenceId: body.serverEvidenceId,
+        });
+
+        context.logger.info('evidence.binary-access-authorized', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId: authorization.reportId,
+          evidenceId: authorization.evidenceId,
+        });
+        writeJson(response, 200, withEvidenceSyncContractVersion(authorization));
+      } catch (error) {
+        context.logger.warn('evidence.binary-access-authorize.failed', {
+          statusCode:
+            error instanceof EvidenceSyncError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeEvidenceSyncError(
+          response,
+          error,
+          'Evidence access authorization failed. Please retry while connected.',
         );
       }
 

@@ -318,6 +318,29 @@ const postgresMigrations: PostgresMigration[] = [
       ON mobile_runtime_error_events (device_platform, reported_at DESC);
     `,
   },
+  {
+    id: '0012_evidence_access_retention_guardrails',
+    sql: `
+      ALTER TABLE evidence_sync_records
+        ADD COLUMN IF NOT EXISTS file_size_bytes INTEGER NOT NULL DEFAULT 0;
+
+      ALTER TABLE evidence_sync_records
+        ADD COLUMN IF NOT EXISTS retention_policy TEXT NOT NULL DEFAULT 'v1-evidence-finalized-365-days';
+
+      ALTER TABLE evidence_sync_records
+        ADD COLUMN IF NOT EXISTS retention_expires_at TEXT;
+
+      ALTER TABLE evidence_sync_records
+        DROP CONSTRAINT IF EXISTS evidence_sync_records_file_size_bytes_check;
+
+      ALTER TABLE evidence_sync_records
+        ADD CONSTRAINT evidence_sync_records_file_size_bytes_check
+        CHECK (file_size_bytes >= 0);
+
+      CREATE INDEX IF NOT EXISTS idx_evidence_sync_retention
+      ON evidence_sync_records (retention_expires_at ASC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

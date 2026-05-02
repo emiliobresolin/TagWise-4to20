@@ -12,6 +12,7 @@ export interface EvidenceMetadataSyncRequest {
   evidenceId: string;
   fileName: string;
   mimeType: string | null;
+  fileSizeBytes: number;
   executionStepId: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
   source: 'camera' | 'library';
   localCapturedAt: string;
@@ -29,6 +30,7 @@ export interface EvidenceMetadataSyncRecord {
   evidenceId: string;
   fileName: string;
   mimeType: string | null;
+  fileSizeBytes: number;
   executionStepId: EvidenceMetadataSyncRequest['executionStepId'];
   source: EvidenceMetadataSyncRequest['source'];
   localCapturedAt: string;
@@ -38,6 +40,8 @@ export interface EvidenceMetadataSyncRecord {
   binaryUploadedAt: string | null;
   presenceFinalizedAt: string | null;
   presenceStatus: 'metadata-recorded' | 'binary-finalized';
+  retentionPolicy: string;
+  retentionExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -59,6 +63,16 @@ export interface EvidenceBinaryFinalizationResult {
   evidenceId: string;
   presenceStatus: 'binary-finalized';
   presenceFinalizedAt: string;
+}
+
+export interface EvidenceBinaryAccessAuthorization {
+  serverEvidenceId: string;
+  reportId: string;
+  evidenceId: string;
+  downloadUrl: string;
+  downloadMethod: 'GET';
+  requiredHeaders: Record<string, string>;
+  expiresAt: string;
 }
 
 export class EvidenceSyncError extends Error {

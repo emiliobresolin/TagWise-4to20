@@ -128,6 +128,7 @@ describe('EvidenceUploadOrchestrator', () => {
       expect.objectContaining({
         contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
         evidenceId: attachment.evidenceId,
+        fileSizeBytes: 16,
       }),
     );
     expect(authorizeEvidenceBinaryUpload).toHaveBeenCalledWith({
@@ -201,6 +202,49 @@ describe('EvidenceUploadOrchestrator', () => {
       itemType: 'upload-evidence-binary',
       dependencyStatus: 'waiting-on-evidence-metadata',
       retryCount: 0,
+    });
+  });
+
+  it('keeps rejected evidence recoverable while dropping the dependent binary upload queue item', async () => {
+    const { store, shell, attachment, localFile } = await createFixture();
+    await seedEvidenceQueueItems(store, shell, attachment);
+    const syncEvidenceMetadata = vi.fn(async () => {
+      throw new EvidenceUploadApiError(
+        'Evidence file type must be one of: image/jpeg, image/png, image/heic, image/heif, image/webp.',
+        400,
+        'server',
+      );
+    });
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata,
+        authorizeEvidenceBinaryUpload: vi.fn(),
+        finalizeEvidenceBinaryUpload: vi.fn(),
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+    });
+
+    await expect(orchestrator.syncSubmittedReportEvidence(connectedSession, shell)).rejects.toThrow(
+      'Evidence file type must be one of:',
+    );
+
+    const payload = await loadPhotoPayload(store, attachment.evidenceId);
+    expect(payload).toMatchObject({
+      syncState: 'sync-issue',
+      metadataSyncedAt: null,
+      serverEvidenceId: null,
+      syncIssue:
+        'Evidence file type must be one of: image/jpeg, image/png, image/heic, image/heif, image/webp.',
+    });
+    expect(existsSync(localFile)).toBe(true);
+
+    const queuePayloads = await listEvidenceQueuePayloads(store, shell.report.reportId);
+    expect(queuePayloads).toHaveLength(1);
+    expect(queuePayloads[0]).toMatchObject({
+      itemType: 'upload-evidence-metadata',
+      dependencyStatus: 'ready',
+      retryCount: 1,
     });
   });
 
@@ -836,6 +880,7 @@ async function seedEvidenceQueueItems(
       evidenceId: attachment.evidenceId,
       fileName: attachment.fileName,
       mimeType: attachment.mimeType,
+      fileSizeBytes: attachment.fileSize ?? 0,
       executionStepId: attachment.executionStepId,
       source: attachment.source,
       localObjectReference: {

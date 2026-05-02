@@ -1,6 +1,6 @@
 ﻿# Story 7.2: Monitoring, Alerting, and Release Observability Hardening
 
-Status: review
+Status: done
 
 ## Metadata
 - Story key: 7-2-monitoring-alerting-and-release-observability-hardening
@@ -84,6 +84,12 @@ build on `E1-S5`; add dashboards for queue depth, sync success/failure, approval
 - `cd backend && npm run build` - passed; generated `backend/dist` output was restored from the working tree after the build check.
 - `git diff --check` - passed with existing CRLF line-ending warnings only.
 - Generated/cache file check - clean after restoring build/Vitest generated output.
+
+### QA Closeout (2026-05-02)
+- Final BMAD QA verdict: Pass with minor non-blocking concerns.
+- Follow-up: `releaseObservabilityCli` service-signal fetch behavior could use small unit coverage.
+- Follow-up: device-side offline sync queue depth is not centrally observable yet.
+- Follow-up: diagnostics retention/redaction policy can evolve later, especially broader PII value redaction and retention windows.
 
 ## Source References
 - [product-brief.md](../planning-artifacts/product-brief.md)
