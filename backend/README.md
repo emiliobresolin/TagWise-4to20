@@ -42,6 +42,7 @@ Story 7.2 adds:
 - `npm run backup:restore:verify`
 - `npm test`
 - `npm run typecheck`
+- `npm run ai:smoke`
 
 ## Environment
 Copy `.env.example` values into your environment before running local commands.
@@ -66,6 +67,19 @@ Optional seed user overrides:
 - `TAGWISE_SEED_SUPERVISOR_PASSWORD`
 - `TAGWISE_SEED_MANAGER_EMAIL`
 - `TAGWISE_SEED_MANAGER_PASSWORD`
+
+Optional AI diagnosis readiness:
+- `TAGWISE_AI_ENABLED`
+- `TAGWISE_AI_PROVIDER`
+- `TAGWISE_AI_REQUEST_TIMEOUT_MS`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+
+AI is disabled by default and remains backend-only. To validate a real OpenAI key
+without changing mobile or report workflows, set `TAGWISE_AI_ENABLED=true`,
+`TAGWISE_AI_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL`, then run
+`npm run ai:smoke`. The smoke command uses synthetic instrument context only and
+must not print the API key.
 
 Release environment templates:
 - `.env.staging.example`

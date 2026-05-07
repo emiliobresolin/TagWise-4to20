@@ -24,6 +24,11 @@ describe('loadServiceEnvironment', () => {
     expect(environment.objectStorage.forcePathStyle).toBe(true);
     expect(environment.objectStorage.autoCreateBucket).toBe(true);
     expect(environment.auth?.seedUsers.technician.role).toBe('technician');
+    expect(environment.ai).toEqual({
+      enabled: false,
+      provider: 'mock',
+      requestTimeoutMs: 30000,
+    });
   });
 
   it('rejects missing required values', () => {
@@ -43,6 +48,132 @@ describe('loadServiceEnvironment', () => {
 
     expect(workerEnvironment.auth).toBeUndefined();
     expect(workerEnvironment.port).toBe(4101);
+  });
+
+  it('loads enabled mock AI configuration without OpenAI credentials', () => {
+    const environment = loadServiceEnvironment('worker', {
+      ...baseEnv,
+      TAGWISE_AI_ENABLED: 'true',
+      TAGWISE_AI_PROVIDER: 'mock',
+      TAGWISE_AI_REQUEST_TIMEOUT_MS: '15000',
+      OPENAI_API_KEY: undefined,
+      OPENAI_MODEL: undefined,
+    });
+
+    expect(environment.ai).toEqual({
+      enabled: true,
+      provider: 'mock',
+      requestTimeoutMs: 15000,
+    });
+  });
+
+  it('does not require OpenAI credentials when AI is disabled', () => {
+    const environment = loadServiceEnvironment('worker', {
+      ...baseEnv,
+      TAGWISE_AI_ENABLED: 'false',
+      TAGWISE_AI_PROVIDER: 'openai',
+      OPENAI_API_KEY: undefined,
+      OPENAI_MODEL: undefined,
+    });
+
+    expect(environment.ai).toEqual({
+      enabled: false,
+      provider: 'openai',
+      requestTimeoutMs: 30000,
+    });
+  });
+
+  it('loads OpenAI AI configuration only when key and model are present', () => {
+    const environment = loadServiceEnvironment('worker', {
+      ...baseEnv,
+      TAGWISE_AI_ENABLED: 'true',
+      TAGWISE_AI_PROVIDER: 'openai',
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_MODEL: 'gpt-5-mini',
+    });
+
+    expect(environment.ai).toEqual({
+      enabled: true,
+      provider: 'openai',
+      requestTimeoutMs: 30000,
+      openAi: {
+        apiKey: 'sk-test-key',
+        model: 'gpt-5-mini',
+      },
+    });
+  });
+
+  it('requires OpenAI credentials and model only for enabled OpenAI AI configuration', () => {
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_AI_ENABLED: 'true',
+        TAGWISE_AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: undefined,
+        OPENAI_MODEL: 'gpt-5-mini',
+      }),
+    ).toThrow('OPENAI_API_KEY');
+
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_AI_ENABLED: 'true',
+        TAGWISE_AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_MODEL: '',
+      }),
+    ).toThrow('OPENAI_MODEL');
+  });
+
+  it('rejects unsafe AI provider configuration values', () => {
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_AI_PROVIDER: 'unsupported',
+      }),
+    ).toThrow('TAGWISE_AI_PROVIDER');
+
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_AI_REQUEST_TIMEOUT_MS: '0',
+      }),
+    ).toThrow('TAGWISE_AI_REQUEST_TIMEOUT_MS');
+
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_AI_ENABLED: 'true',
+        TAGWISE_AI_PROVIDER: 'openai',
+        OPENAI_API_KEY: '<set-in-secret-manager>',
+        OPENAI_MODEL: 'gpt-5-mini',
+      }),
+    ).toThrow('OPENAI_API_KEY');
+  });
+
+  it('allows release placeholder OpenAI values while AI is disabled', () => {
+    const environment = loadServiceEnvironment('worker', {
+      ...baseEnv,
+      TAGWISE_DEPLOYMENT_ENV: 'production',
+      TAGWISE_NODE_ENV: 'production',
+      TAGWISE_DATABASE_URL:
+        'postgres://tagwise_app:prod-password@prod-db.internal:5432/tagwise',
+      TAGWISE_STORAGE_BUCKET: 'tagwise-evidence-prod',
+      TAGWISE_STORAGE_ENDPOINT: undefined,
+      TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'false',
+      TAGWISE_STORAGE_ACCESS_KEY_ID: 'prod-access-key',
+      TAGWISE_STORAGE_SECRET_ACCESS_KEY: 'prod-secret-key',
+      TAGWISE_AI_ENABLED: 'false',
+      TAGWISE_AI_PROVIDER: 'openai',
+      OPENAI_API_KEY: '<set-in-secret-manager>',
+      OPENAI_MODEL: '<production-openai-model>',
+    });
+
+    expect(environment.ai).toEqual({
+      enabled: false,
+      provider: 'openai',
+      requestTimeoutMs: 30000,
+    });
   });
 
   it('requires release environments to use explicit non-development secrets', () => {

@@ -1,6 +1,7 @@
 export type ServiceRole = 'api' | 'worker';
 export type DeploymentEnvironment = 'development' | 'staging' | 'production';
 export type UserRole = 'technician' | 'supervisor' | 'manager';
+export type AiProviderName = 'mock' | 'openai';
 
 export interface ObjectStorageConfig {
   bucket: string;
@@ -20,7 +21,20 @@ export interface ServiceEnvironment {
   port: number;
   databaseUrl: string;
   objectStorage: ObjectStorageConfig;
+  ai: AiConfig;
   auth?: AuthConfig;
+}
+
+export interface AiConfig {
+  enabled: boolean;
+  provider: AiProviderName;
+  requestTimeoutMs: number;
+  openAi?: OpenAiConfig;
+}
+
+export interface OpenAiConfig {
+  apiKey: string;
+  model: string;
 }
 
 export interface SeedUserConfig {
@@ -73,12 +87,46 @@ export function loadServiceEnvironment(
       forcePathStyle: parseBoolean(source.TAGWISE_STORAGE_FORCE_PATH_STYLE, false),
       autoCreateBucket: parseBoolean(source.TAGWISE_STORAGE_AUTO_CREATE_BUCKET, false),
     },
+    ai: loadAiConfig(source),
     auth: serviceRole === 'api' ? loadAuthConfig(source) : undefined,
   };
 
   assertReleaseSafeEnvironment(environment, source);
 
   return environment;
+}
+
+export function loadAiConfig(source: NodeJS.ProcessEnv = process.env): AiConfig {
+  const enabled = parseBoolean(source.TAGWISE_AI_ENABLED, false);
+  const provider = parseAiProvider(source.TAGWISE_AI_PROVIDER);
+  const requestTimeoutMs = parsePositiveInteger(
+    source.TAGWISE_AI_REQUEST_TIMEOUT_MS,
+    30000,
+    'TAGWISE_AI_REQUEST_TIMEOUT_MS',
+  );
+
+  if (!enabled || provider !== 'openai') {
+    return {
+      enabled,
+      provider,
+      requestTimeoutMs,
+    };
+  }
+
+  const apiKey = requireValue(source.OPENAI_API_KEY, 'OPENAI_API_KEY');
+  const model = requireValue(source.OPENAI_MODEL, 'OPENAI_MODEL');
+  assertNoReleasePlaceholder(apiKey, 'OPENAI_API_KEY');
+  assertNoReleasePlaceholder(model, 'OPENAI_MODEL');
+
+  return {
+    enabled,
+    provider,
+    requestTimeoutMs,
+    openAi: {
+      apiKey,
+      model,
+    },
+  };
 }
 
 function loadAuthConfig(source: NodeJS.ProcessEnv): AuthConfig {
@@ -181,6 +229,15 @@ function parseBoolean(raw: string | undefined, fallback: boolean): boolean {
   }
 
   return raw.trim().toLowerCase() === 'true';
+}
+
+function parseAiProvider(raw: string | undefined): AiProviderName {
+  const normalized = raw?.trim().toLowerCase() || 'mock';
+  if (normalized === 'mock' || normalized === 'openai') {
+    return normalized;
+  }
+
+  throw new Error(`Invalid AI provider for TAGWISE_AI_PROVIDER: ${raw}`);
 }
 
 function assertReleaseSafeEnvironment(

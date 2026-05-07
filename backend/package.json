@@ -16,7 +16,8 @@
     "release:smoke": "tsx src/ops/releaseSmokeCli.ts",
     "release:observability": "tsx src/ops/releaseObservabilityCli.ts",
     "backup:restore:verify": "tsx src/ops/backupRestoreVerificationCli.ts",
-    "worker:resilience:drill": "tsx src/ops/workerResilienceDrillCli.ts"
+    "worker:resilience:drill": "tsx src/ops/workerResilienceDrillCli.ts",
+    "ai:smoke": "tsx src/ops/aiDiagnosisSmokeCli.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.911.0",
