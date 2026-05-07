@@ -131,6 +131,43 @@ It best fits the actual product: a narrow, production-minded offline field app w
 
 The point is not the brand names. The point is the shape: boring, widely understood, and maintainable.
 
+### Mobile Visual Experience Architecture
+The visual reference set under `docs/MVP/Visualization/` is now an explicit mobile experience architecture input, not optional moodboard material. The current mobile shell proves local-first behavior, backend connectivity, sync, review, and offline persistence, but it should be treated as an engineering scaffold until it is refactored into the intended field-first interface.
+
+The target mobile app should use a dark, high-contrast, industrial field UI with:
+- dark textured/background surface and deep navy panels
+- bright TagWise blue as the primary action/accent color
+- red/yellow/green status colors for failure, due/recurrent risk, and accepted/healthy states
+- compact rounded cards for tags, work-package groups, history records, report summaries, and review actions
+- large tag identifiers such as `PT-204`, with instrument-family badges such as `PT`, `TT`, `FT`, `LT`, and `IT`
+- search and QR scan as first-class entry points on the home/triage surface
+- bottom or horizontal action surfaces for field steps such as calculate, compare, diagnose, and register/report
+- visual status chips for `Falha`, priority, recurrence count, due windows, sync state, and approval state
+
+The app should be refactored from one broad diagnostic/demo shell into presentation screens backed by the existing local-first services:
+- `Home/Triage`: search, QR scan, recent tags, pending/recurrent/due groupings, and work-package summaries.
+- `Tag Detail`: selected tag context, current value/state, due/recurrence markers, and entry into execution actions.
+- `Calculation`: deterministic calculation form and result visualization for the active template.
+- `History/Comparison`: recurrence and trend view for previous readings/results.
+- `Guided Diagnosis`: symptom selection, likely hypothesis, next step, why-it-matters explanation, and checklist.
+- `Report Draft`: generated report summary, attachments, pending items, justification, and submit action.
+- `Approval`: supervisor/manager review summary, technician rationale, checklist/evidence review, approve/return actions.
+
+Visual alignment must not weaken the architecture principles:
+- field screens still read from SQLite/local services first
+- deterministic calculations remain local and non-AI
+- official approval actions remain connected and server-authoritative
+- AI remains optional, asynchronous, and clearly separated from deterministic output
+- instrument support remains template-driven rather than hard-coded per family
+
+Implementation should introduce a reusable mobile design system layer before large screen rewrites:
+- tokens for color, spacing, typography, radius, elevation, and status semantics
+- shared components for app header/logo, icon button, status chip, tag badge, tag card, section header, grouped list, action tile, metric row, and primary/secondary action buttons
+- screen-level view models/adapters that translate existing local domain objects into visualization-friendly props without changing backend contracts
+- snapshot or component tests for mapping/status behavior, plus manual APK smoke checks against the Android preview build
+
+The intended screen language is Portuguese-first in the MVP visual set. Product text can be localized later, but visual parity work should preserve the field-operational labels and hierarchy shown in the references unless a product decision says otherwise.
+
 ## System Context / Major Components
 ```mermaid
 flowchart LR

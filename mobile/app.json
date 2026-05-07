@@ -16,14 +16,21 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.tagwise.mobile",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
+      "./plugins/withAndroidCleartextTraffic",
       "expo-sqlite",
       "expo-secure-store",
       [
@@ -32,6 +39,11 @@
           "cameraPermission": "Allow TagWise to scan tag QR codes at the asset."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "84b8d9b2-ebd0-4f4c-b09a-61127d4a5272"
+      }
+    }
   }
 }

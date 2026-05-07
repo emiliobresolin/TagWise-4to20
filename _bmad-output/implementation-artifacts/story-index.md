@@ -38,3 +38,6 @@ This index is the ordered implementation handoff for TagWise.
 | 32 | `7-2-monitoring-alerting-and-release-observability-hardening` | [7-2-monitoring-alerting-and-release-observability-hardening.md](7-2-monitoring-alerting-and-release-observability-hardening.md) |
 | 33 | `7-3-evidence-access-control-and-retention-baseline` | [7-3-evidence-access-control-and-retention-baseline.md](7-3-evidence-access-control-and-retention-baseline.md) |
 | 34 | `7-4-worker-resilience-and-operational-recovery-runbook` | [7-4-worker-resilience-and-operational-recovery-runbook.md](7-4-worker-resilience-and-operational-recovery-runbook.md) |
+| 35 | `7-5-ai-provider-readiness-boundary` | [7-5-ai-provider-readiness-boundary.md](7-5-ai-provider-readiness-boundary.md) |
+| 36 | `7-6-android-preview-apk-build-and-device-smoke` | [7-6-android-preview-apk-build-and-device-smoke.md](7-6-android-preview-apk-build-and-device-smoke.md) |
+| 37 | `8-1-mobile-visual-product-shell-and-technician-demo-flow` | [8-1-mobile-visual-product-shell-and-technician-demo-flow.md](8-1-mobile-visual-product-shell-and-technician-demo-flow.md) |
