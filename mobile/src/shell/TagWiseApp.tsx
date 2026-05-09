@@ -85,7 +85,9 @@ import {
 import { createEvidenceBinaryUploadBoundary } from '../platform/files/evidenceBinaryUploadBoundary';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { createPhotoAcquisitionBoundary } from '../platform/media/photoAcquisitionBoundary';
+import { preserveVisualCatalogAfterQrFailure } from '../features/visual-shell/serviceBackedNavigation';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
+import { VisualProductShell } from './VisualProductShell';
 
 const photoAcquisitionBoundary = createPhotoAcquisitionBoundary();
 const evidenceBinaryUploadBoundary = createEvidenceBinaryUploadBoundary();
@@ -228,6 +230,9 @@ export function TagWiseApp() {
           : null;
         const diagnostics = await errorCapture.getSnapshot();
         const workPackages = session ? await workPackageCatalog.loadLocalCatalog(session) : [];
+        const visibleTags = session
+          ? await loadVisualShellTags(localTagEntryService, session, workPackages)
+          : [];
         const retrySummary =
           session?.connectionMode === 'connected'
             ? await syncStateService.retryEligibleReports(session)
@@ -282,7 +287,7 @@ export function TagWiseApp() {
           activeTagPackageId: null,
           selectedExecutionTemplateId: null,
           tagSearchQuery: '',
-          visibleTags: [],
+          visibleTags,
           selectedTag: null,
           selectedTagContext: null,
           executionShell: null,
@@ -433,6 +438,11 @@ export function TagWiseApp() {
         session,
         workPackages,
       );
+      const visibleTags = await loadVisualShellTags(
+        readyState.localTagEntryService,
+        session,
+        workPackages,
+      );
 
       if (retrySummary.attempted > 0) {
         authMessage = `${authMessage} ${buildRetrySummaryMessage(retrySummary)}`;
@@ -455,7 +465,7 @@ export function TagWiseApp() {
               activeTagPackageId: null,
               selectedExecutionTemplateId: null,
               tagSearchQuery: '',
-              visibleTags: [],
+              visibleTags,
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
@@ -506,6 +516,11 @@ export function TagWiseApp() {
         readyState.session,
         workPackages,
       );
+      const visibleTags = await loadVisualShellTags(
+        readyState.localTagEntryService,
+        readyState.session,
+        workPackages,
+      );
       setStatus((current) =>
         current.type !== 'ready'
           ? current
@@ -518,7 +533,7 @@ export function TagWiseApp() {
               activeTagPackageId: null,
               selectedExecutionTemplateId: null,
               tagSearchQuery: '',
-              visibleTags: [],
+              visibleTags,
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
@@ -683,9 +698,9 @@ export function TagWiseApp() {
     );
   }
 
-  async function openTagContext(entry: LocalAssignedTagEntry) {
+  async function openTagContext(entry: LocalAssignedTagEntry): Promise<boolean> {
     if (status.type !== 'ready' || !readyState.session) {
-      return;
+      return false;
     }
 
     const selectedTagContext = await readyState.localTagContextService.getTagContext(
@@ -707,13 +722,15 @@ export function TagWiseApp() {
             authMessage: selectedTagContext
               ? `Tag context loaded locally for ${entry.tagCode}.`
               : 'Selected tag context is not available in local storage.',
-          },
+            },
     );
+
+    return true;
   }
 
-  async function handleOpenTag(tagId: string) {
+  async function handleOpenTag(tagId: string): Promise<boolean> {
     if (status.type !== 'ready' || !readyState.session || !readyState.activeTagPackageId) {
-      return;
+      return false;
     }
 
     const selectedTag = await readyState.localTagEntryService.selectPackageTag(
@@ -735,10 +752,44 @@ export function TagWiseApp() {
               authMessage: 'Selected tag is no longer available in local package scope.',
             },
       );
-      return;
+      return false;
     }
 
-    await openTagContext(selectedTag);
+    return openTagContext(selectedTag);
+  }
+
+  async function handleOpenVisualTag(identity: {
+    workPackageId: string;
+    tagId: string;
+  }): Promise<boolean> {
+    if (status.type !== 'ready' || !readyState.session) {
+      return false;
+    }
+
+    const selectedTag = await readyState.localTagEntryService.selectPackageTag(
+      readyState.session,
+      identity.workPackageId,
+      identity.tagId,
+    );
+
+    if (!selectedTag) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              activeTagPackageId: identity.workPackageId,
+              selectedTag: null,
+              selectedTagContext: null,
+              selectedExecutionTemplateId: null,
+              executionShell: null,
+              authMessage: 'Selected visual tag is no longer available in local package scope.',
+            },
+      );
+      return false;
+    }
+
+    return openTagContext(selectedTag);
   }
 
   async function handleProceedToExecutionShell() {
@@ -1164,9 +1215,9 @@ export function TagWiseApp() {
     );
   }
 
-  async function handleResolveQrPayload(rawPayload: string) {
+  async function handleResolveQrPayload(rawPayload: string): Promise<LocalQrScanResult | null> {
     if (status.type !== 'ready' || !readyState.session) {
-      return;
+      return null;
     }
 
     const qrScanResult = await readyState.qrScanService.resolveScan(readyState.session, rawPayload);
@@ -1202,7 +1253,7 @@ export function TagWiseApp() {
                 : 'Selected tag context is not available in local storage.',
             },
       );
-      return;
+      return qrScanResult;
     }
 
     setStatus((current) =>
@@ -1212,16 +1263,13 @@ export function TagWiseApp() {
             ...current,
             qrScannerVisible: false,
             qrScanResult,
-            activeTagPackageId: null,
-            selectedExecutionTemplateId: null,
             tagSearchQuery: '',
-            visibleTags: [],
-            selectedTag: null,
-            selectedTagContext: null,
-            executionShell: null,
+            ...preserveVisualCatalogAfterQrFailure(current),
             authMessage: null,
           },
     );
+
+    return qrScanResult;
   }
 
   async function handleBarcodeScanned(event: BarcodeScanningResult) {
@@ -1252,12 +1300,12 @@ export function TagWiseApp() {
     );
   }
 
-  async function handleResolveManualQrPayload() {
+  async function handleResolveManualQrPayload(): Promise<LocalQrScanResult | null> {
     if (status.type !== 'ready') {
-      return;
+      return null;
     }
 
-    await handleResolveQrPayload(readyState.qrManualPayload);
+    return handleResolveQrPayload(readyState.qrManualPayload);
   }
 
   function handleCancelQrScanner() {
@@ -1936,6 +1984,41 @@ export function TagWiseApp() {
     }
   }
 
+  return (
+    <VisualProductShell
+      apiBaseUrl={getDefaultAuthApiBaseUrl()}
+      authBusy={readyState.authBusy}
+      authMessage={readyState.authMessage}
+      email={email}
+      packageBusy={readyState.packageBusy}
+      password={password}
+      qrManualPayload={readyState.qrManualPayload}
+      qrScanResult={readyState.qrScanResult}
+      qrScannerVisible={readyState.qrScannerVisible}
+      selectedExecutionTemplateId={readyState.selectedExecutionTemplateId}
+      selectedTag={readyState.selectedTag}
+      selectedTagContext={readyState.selectedTagContext}
+      session={readyState.session}
+      visibleTags={readyState.visibleTags}
+      workPackages={readyState.workPackages}
+      onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
+      onCancelQrScanner={handleCancelQrScanner}
+      onEmailChange={setEmail}
+      onOpenTag={(identity) => handleOpenVisualTag(identity)}
+      onPasswordChange={setPassword}
+      onProceedToExecutionShell={() => handleProceedToExecutionShell()}
+      onQrManualPayloadChange={handleQrPayloadChange}
+      onRefreshPackages={() => void handleRefreshAssignedPackages()}
+      onResolveQrManualPayload={() => handleResolveManualQrPayload()}
+      onSelectExecutionTemplate={handleSelectExecutionTemplate}
+      onSignIn={() => void handleSignIn()}
+      onStartQrScanner={() => void handleStartQrScanner()}
+      onSwitchUser={() => void handleSwitchUser()}
+    />
+  );
+}
+
+/*
   const selectedExecutionStep =
     readyState.executionShell?.steps.find(
       (step) => step.id === readyState.executionShell?.progress.currentStepId,
@@ -2925,6 +3008,7 @@ export function TagWiseApp() {
     </SafeAreaView>
   );
 }
+*/
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
@@ -4073,6 +4157,25 @@ function buildEmptyWorkPackageSyncSummary(workPackageId: string): WorkPackageSyn
     queueItemCount: 0,
     issueCount: 0,
   };
+}
+
+async function loadVisualShellTags(
+  localTagEntryService: LocalTagEntryService,
+  session: ActiveUserSession,
+  workPackages: LocalAssignedWorkPackageSummary[],
+): Promise<LocalAssignedTagEntry[]> {
+  const downloadedPackages = workPackages.filter((workPackage) => workPackage.hasSnapshot);
+  const tagGroups = await Promise.all(
+    downloadedPackages.map(async (workPackage) => {
+      try {
+        return await localTagEntryService.listPackageTags(session, workPackage.id);
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  return tagGroups.flat();
 }
 
 async function flushMobileDiagnosticsSafely(

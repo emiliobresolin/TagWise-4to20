@@ -10,6 +10,8 @@ Story 1.5 adds baseline mobile diagnostics capture backed by SQLite so forced ru
 
 Story 2.1 adds a connected package refresh/download flow plus local SQLite persistence for bounded assigned work package snapshots.
 
+Story 8.1 changes the primary APK experience to the dark TagWise technician product shell. The local-first services still bootstrap underneath the UI, but the first visible workflow is now dashboard -> PT-204 detail -> calculation -> comparison/history -> diagnosis -> report -> approval.
+
 ## Commands
 - `npm start`
 - `npm run android`
@@ -92,13 +94,25 @@ adb install -r path\to\tagwise-preview.apk
 ### Physical Device Smoke
 
 1. Launch TagWise after installing the preview APK.
-2. Confirm the app opens without crashing and completes local SQLite bootstrap.
-3. Confirm the sign-in screen appears when no cached session exists.
-4. With no reachable backend, attempt sign-in and confirm the app shows a controlled network/auth error instead of crashing.
-5. With a reachable backend URL configured through `EXPO_PUBLIC_TAGWISE_API_BASE_URL`, sign in as `tech@tagwise.local` / `TagWise123!`.
-6. Refresh assigned packages and download one package.
-7. Fully close the app, stop the backend, reopen the app, and confirm offline session restore plus cached package visibility.
-8. Confirm there is no mobile AI diagnostic UI or OpenAI behavior in this preview APK.
+2. Confirm the app opens into the dark TagWise dashboard with search, QR action, filter chips, recent tags, and Pendentes/Reincidentes/Vencendo sections.
+3. With no reachable backend, confirm the PT-204 demo workflow still opens offline from local seeded data.
+4. Open PT-204 and navigate through Calcular, Comparar, Diagnosticar, Relatorio, and Aprovacao.
+5. With a reachable backend URL configured through `EXPO_PUBLIC_TAGWISE_API_BASE_URL`, sign in as `tech@tagwise.local` / `TagWise123!` from the compact connection panel.
+6. Refresh assigned packages if the session is connected, then fully close the app, stop the backend, reopen the app, and confirm the dark shell still opens with offline session state when cached.
+7. Confirm there is no mobile AI diagnostic execution and no backend AI credential, model, or feature-flag configuration in this preview APK.
+
+### Visual Shell Smoke
+
+The Story 8.1 shell is intentionally usable without backend connectivity for first APK review. Use this path on the phone:
+
+1. Dashboard: verify TagWise logo/header, search, QR button, chips, recently opened cards, and grouped tag sections.
+2. Tap PT-204 from Pendentes.
+3. Detail: verify Falha status, variable range, latest value, occurrence/due cards, and action tiles.
+4. Calcular: verify expected value, observed value, tolerance, error, and FALHA result.
+5. Comparar: verify history trend rows and open Diagnosticar.
+6. Diagnosticar: select a symptom, review hypothesis, next step, explanation, and checklist.
+7. Relatorio: review summary, attachments placeholders, pending items, and justification.
+8. Aprovacao: verify summary, technician rationale, checklist, Aprovar, and Devolver.
 
 ### Known Limitations
 
@@ -110,36 +124,19 @@ adb install -r path\to\tagwise-preview.apk
 ## Manual Smoke Test
 1. Run `npm start`.
 2. Open the app on an Android emulator, iOS simulator, or Expo Go.
-3. Wait for the loading view to finish. Expected result: the app opens into the connected sign-in screen when no cached session exists.
-4. Sign in with a seeded backend user such as `tech@tagwise.local` / `TagWise123!`.
-5. Expected result after sign-in:
-- the signed-in shell appears
-- the role and session mode render in the shell
-- the local proof record still updates on the `Foundation` route
-6. Open the `Storage` route and tap `Write owned local sample`.
-7. Expected result after the owned local sample write:
-- the shell shows `Owned drafts = 1`, `Owned evidence = 1`, and `Owned queue = 1`
-- the latest owned media path includes the signed-in user partition
-8. Tap `Switch user`, sign in as a different seeded account such as `supervisor@tagwise.local` / `TagWise123!`, and return to the `Storage` route.
-9. Expected result after the user switch:
-- the second user starts with `Owned drafts = 0`, `Owned evidence = 0`, and `Owned queue = 0`
-- the first user's local partition is not shown or reassigned
-10. Fully close the app, stop the backend API, and reopen the app.
-11. Expected result after offline reopen:
-- the app restores the same cached user session
-- session mode shows `offline`
-- review actions remain unavailable from the cached offline session
-12. Return to the `Foundation` route and tap `Capture diagnostic error`.
-13. Expected result after diagnostics capture:
-- `Captured errors` increments
-- `Latest mobile diagnostic` shows `Forced mobile diagnostics capture`
-- the stored diagnostic remains available after fully closing and reopening the app
-14. Return to the `Packages` route and tap `Refresh assigned packages`.
-15. Expected result after package refresh:
-- at least one assigned package card appears
-- each card shows package id, priority, tag count, and due window
-16. Tap `Download snapshot` on one assigned package.
-17. Expected result after package download:
-- the package card shows a non-empty `Downloaded` timestamp
-- fully closing and reopening the app keeps the downloaded package visible on the `Packages` route
-- if the backend API is stopped, the app still shows the cached downloaded package while refresh/download controls stay unavailable offline
+3. Wait for the loading view to finish. Expected result: the app opens into the dark TagWise dashboard, even without a cached session.
+4. Open PT-204 and complete the local visual shell path through Calcular, Comparar, Diagnosticar, Relatorio, and Aprovacao.
+5. Sign in with a seeded backend user such as `tech@tagwise.local` / `TagWise123!` from the connection card.
+6. Expected result after sign-in:
+- the dark shell remains the primary UI
+- the role/session state appears in the connection card
+- package refresh is available only when the session is connected
+7. Tap `Atualizar pacotes` when the backend is reachable.
+8. Expected result after package refresh:
+- the connection card updates package counts
+- the PT-204 seeded visual workflow remains available
+9. Fully close the app, stop the backend API, and reopen the app.
+10. Expected result after offline reopen:
+- the app restores the cached user session when available
+- the visual shell remains usable from seeded/local data
+- review/approval in this visual shell remains a demo/offline product flow, not a server-authoritative supervisor decision

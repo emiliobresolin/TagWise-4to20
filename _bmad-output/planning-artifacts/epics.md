@@ -6,6 +6,7 @@ Source of truth:
 - `_bmad-output/planning-artifacts/product-brief.md`
 - `_bmad-output/planning-artifacts/prd.md`
 - `_bmad-output/planning-artifacts/architecture.md`
+- `_bmad-output/planning-artifacts/visual-shell-service-backed-adapter-decision.md`
 - `docs/MVP/TagWise_Project_Instructions.txt`
 - `docs/MVP/TagWise.pdf`
 
@@ -349,6 +350,8 @@ This cut preserves the complete field value loop:
 ## Risks And Sequencing Cautions
 ### Architecture-Sensitive Dependencies That Must Be Respected
 - Do not start family-specific UI variants before the shared template/execution shell contract exists
+- Do not create visual-shell work that bypasses local-first/domain/application services; authenticated visual UI must use service-backed adapters or view models
+- Do not allow visual demo seed data, hardcoded tag fallback, or lost tag identity to become the source of truth for execution
 - Do not implement reviewer actions before server-authoritative report acceptance and sync states are stable
 - Do not ship evidence upload flows without durable local metadata, local file retention, and retry-safe upload identity
 - Do not allow silent merge or multi-writer edits on submitted reports

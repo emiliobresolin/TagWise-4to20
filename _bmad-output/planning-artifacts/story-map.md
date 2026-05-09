@@ -7,6 +7,8 @@ Source of truth:
 - `_bmad-output/planning-artifacts/prd.md`
 - `_bmad-output/planning-artifacts/architecture.md`
 - `_bmad-output/planning-artifacts/epics.md`
+- `_bmad-output/planning-artifacts/visual-shell-functional-regression-analysis.md`
+- `_bmad-output/planning-artifacts/visual-shell-service-backed-adapter-decision.md`
 - `docs/MVP/TagWise_Project_Instructions.txt`
 - `docs/MVP/TagWise.pdf`
 
@@ -30,7 +32,93 @@ The first release does not include:
 - business-user template builder/admin studio
 - AI-dependent workflow behavior
 
+## Visual Shell Regression Repair Addendum
+
+Status: Required planning addendum before the next implementation story.
+
+The latest dark visual shell remains the intended visual direction, but it must be reconnected to the existing local-first/domain/application services before any further visual-only work. The visual shell must follow the service-backed adapter rule in `architecture.md`: visual components are presentation components only and must consume authenticated production state through thin adapters or view models.
+
+The expected production flow remains:
+
+`tag / QR / list -> instrument context -> calculation -> history comparison -> deterministic guided diagnosis / checklist / normative reference -> report / evidence -> submit / sync -> supervisor approval`
+
+Production ownership rules:
+- QR/list/tag opening must resolve through local package/tag services.
+- Instrument context must come from downloaded/local package snapshots.
+- Calculation must call the deterministic calculation/execution service and work offline.
+- Checklist, guidance, best-practice, and normative references must come from selected tag/template/local cached reference data.
+- Report and evidence must use existing local draft/evidence/queue/sync services.
+- Supervisor approval must be role-gated and backend-connected.
+- Technician flow must not route directly into approval.
+- AI diagnosis must remain assistive, backend/provider-bound when needed, and represented at report level as available, pending, unavailable, or failed nonblocking. It must not block technician execution and must not replace deterministic offline guidance.
+
+The visual shell must not silently fall back to `PT-204`, `seededTags[0]`, screenshot-only visual mock data, or no-argument navigation that loses selected tag identity. Screenshot/demo seed data may exist only as explicit demo or empty-state data, not as the source of truth for authenticated execution.
+
+### Repair Story A - Reconnect Visual Shell to Real Instrument Catalog, QR, and Selection State
+
+Goal: Restore identity correctness and local catalog ownership.
+
+Scope:
+- Replace visual-shell selected-tag fallback in authenticated flows.
+- Use local/downloaded package tags as catalog source.
+- Pass selected tag id, work package id, and template context through visual navigation.
+- Call the existing local QR resolver for scan payloads.
+- Open the matching tag context and execution shell for the selected/scanned tag.
+- Keep screenshot seed data only as explicit demo or empty-state data.
+- Add tests that fail on PT-204 hardcoding, `seededTags[0]` fallback, or no-argument detail navigation.
+
+### Repair Story B - Reconnect Calculator, History, Checklist, and Guidance
+
+Goal: Restore offline execution behavior.
+
+Scope:
+- Wire visual calculation inputs to deterministic calculation service.
+- Add template-driven conversion helpers, especially PV <-> mA <-> percent where metadata exists.
+- Render history from selected tag context/report state.
+- Render checklist, best practices, next step, and normative references from local template/guidance data.
+- Keep all missing-data conditions nonblocking with explicit risk/justification capture.
+
+### Repair Story C - Reconnect Report, Evidence, Photos, and AI Diagnosis Report Projection
+
+Goal: Restore local-first report/evidence lifecycle.
+
+Scope:
+- Render report summary from execution shell report projection.
+- Preserve intended editability for technician observations/final notes.
+- Wire photo/attachment actions to local evidence capture and queue.
+- Submit through local report/evidence queue.
+- Add or prepare report-level "AI Diagnosis" section with available, pending, unavailable, and failed-nonblocking states.
+
+### Repair Story D - Reconnect Role-Aware Supervisor Approval Queue and Decisions
+
+Goal: Restore connected review lifecycle and RBAC.
+
+Scope:
+- Hide approval queue/actions from technician users.
+- Add supervisor queue tabs/lists by report status.
+- Load queue/detail from `SupervisorReviewService`.
+- Require confirmation before approve/return/escalate.
+- Capture comments, return reasons, and escalation rationale.
+- Show auditable decision trail and connected/offline constraints.
+
+### Repair Validation Expectations
+
+- Unit tests for visual adapters/view models.
+- QR resolver and selected-tag identity tests.
+- Regression tests that authenticated visual shell cannot hardcode PT-204 or use `seededTags[0]`.
+- Tests proving selected tag id flows from dashboard/list/QR into detail/execution.
+- Offline smoke test after package download.
+- Connected backend smoke test for login, package download, report submission, evidence sync, approval, and AI-related report behavior.
+- APK manual smoke must consider whether the backend is currently running/reachable. APK testing must not be treated as isolated when login/sync/approval/evidence/AI are involved.
+
 ## Recommended Implementation Order
+### Immediate visual shell regression repair
+Before any further visual-only work or new feature expansion, implement the repair sequence in this order:
+1. Repair Story A - Reconnect visual shell to real instrument catalog, QR, and selection state.
+2. Repair Story B - Reconnect calculator, history, checklist, and guidance.
+3. Repair Story C - Reconnect report, evidence, photos, and AI diagnosis report projection.
+4. Repair Story D - Reconnect role-aware supervisor approval queue and decisions.
+
 ### Phase 1 - Platform and local-first baseline
 1. `E1-S1` Mobile app shell and SQLite bootstrap
 2. `E1-S2` Backend, worker, PostgreSQL, and object storage bootstrap
@@ -631,6 +719,9 @@ AI note:
 - The AI boundary stays defined by the architecture, but no live AI provider integration story is required for the first release cut.
 
 ## Story Sequencing Cautions
+- Do not create another visual-only story until the visual shell service-backed adapter rule is enforced for authenticated production flows.
+- Do not allow visual components to own tag/work-package/template identity, calculation truth, report/evidence/sync lifecycle state, approval state, or AI diagnosis state.
+- Do not allow `PT-204`, `seededTags[0]`, screenshot-only seed data, or no-argument detail navigation to act as authenticated execution fallbacks.
 - Do not build family-specific execution screens before `E3-S1`; the shared shell and template contract must exist first.
 - Do not treat `E5-S1` as sufficient for review; reviewable state begins only after `E5-S4` server acceptance.
 - Do not allow reviewer actions to start before `E6-S1`; official review remains connected/server-validated in v1.

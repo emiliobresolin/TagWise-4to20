@@ -160,6 +160,43 @@ Visual alignment must not weaken the architecture principles:
 - AI remains optional, asynchronous, and clearly separated from deterministic output
 - instrument support remains template-driven rather than hard-coded per family
 
+#### Visual Shell Service-Backed Adapter Rule
+
+Decision source: [`visual-shell-functional-regression-analysis.md`](visual-shell-functional-regression-analysis.md) and [`visual-shell-service-backed-adapter-decision.md`](visual-shell-service-backed-adapter-decision.md).
+
+The dark visual shell may remain the primary visual direction, but visual components are presentation components only. They must not own:
+- instrument/tag identity
+- selected work package identity
+- execution template identity
+- calculation truth
+- report lifecycle state
+- evidence lifecycle state
+- sync lifecycle state
+- approval state
+- AI diagnosis state
+
+In authenticated/production flows, visual screens must consume state from existing local-first/domain/application services through thin adapters or view models. The visual shell must not silently fall back to:
+- `PT-204`
+- `seededTags[0]`
+- screenshot-only visual mock data
+- no-argument navigation that loses selected tag identity
+
+Screenshot/demo seed data may exist only as explicit demo or empty-state data. It is not a source of truth for authenticated execution.
+
+Required production flow ownership remains:
+
+`tag / QR / list -> instrument context -> calculation -> history comparison -> deterministic guided diagnosis / checklist / normative reference -> report / evidence -> submit / sync -> supervisor approval`
+
+Ownership rules:
+- QR/list/tag opening must resolve through local package/tag services.
+- Instrument context must come from downloaded/local package snapshots.
+- Calculation must call the deterministic calculation/execution service and work offline.
+- Checklist, guidance, best-practice, and normative references must come from selected tag/template/local cached reference data.
+- Report and evidence must use existing local draft/evidence/queue/sync services.
+- Supervisor approval must be role-gated and backend-connected.
+- Technician flow must not route directly into approval.
+- AI diagnosis must remain assistive, backend/provider-bound when needed, and represented at report level as available, pending, unavailable, or failed nonblocking. It must not block technician execution and must not replace deterministic offline guidance.
+
 Implementation should introduce a reusable mobile design system layer before large screen rewrites:
 - tokens for color, spacing, typography, radius, elevation, and status semantics
 - shared components for app header/logo, icon button, status chip, tag badge, tag card, section header, grouped list, action tile, metric row, and primary/secondary action buttons
