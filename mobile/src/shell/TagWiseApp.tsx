@@ -792,7 +792,7 @@ export function TagWiseApp() {
     return openTagContext(selectedTag);
   }
 
-  async function handleProceedToExecutionShell() {
+  async function handleProceedToExecutionShell(): Promise<boolean> {
     const selectedTemplateId = readyState.selectedExecutionTemplateId;
 
     if (
@@ -806,7 +806,7 @@ export function TagWiseApp() {
         selectedTemplateId,
       )
     ) {
-      return;
+      return false;
     }
 
     const executionShell = await readyState.executionShellService.loadShell(
@@ -831,6 +831,8 @@ export function TagWiseApp() {
                 : 'No local template contract is available for this tag.',
           },
     );
+
+    return Boolean(executionShell);
   }
 
   function handleSelectExecutionTemplate(templateId: string) {
@@ -1088,6 +1090,13 @@ export function TagWiseApp() {
         readyState.executionShell,
         photo,
       );
+      const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+        readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+        readyState.syncStateService.listWorkPackageSyncSummaries(
+          readyState.session,
+          readyState.workPackages,
+        ),
+      ]);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1095,6 +1104,8 @@ export function TagWiseApp() {
           : {
               ...current,
               executionShell,
+              reportSyncDetail,
+              packageSyncSummaries,
               authMessage: `Photo attachment saved locally for ${executionShell.tagCode}.`,
             },
       );
@@ -1128,6 +1139,13 @@ export function TagWiseApp() {
       readyState.executionShell,
       evidenceId,
     );
+    const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+      readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+      readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        readyState.workPackages,
+      ),
+    ]);
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -1135,6 +1153,8 @@ export function TagWiseApp() {
         : {
             ...current,
             executionShell,
+            reportSyncDetail,
+            packageSyncSummaries,
             authMessage: `Photo attachment removed locally for ${executionShell.tagCode}.`,
           },
     );
@@ -1154,6 +1174,13 @@ export function TagWiseApp() {
       readyState.session,
       readyState.executionShell,
     );
+    const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+      readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+      readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        readyState.workPackages,
+      ),
+    ]);
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -1161,6 +1188,8 @@ export function TagWiseApp() {
         : {
             ...current,
             executionShell,
+            reportSyncDetail,
+            packageSyncSummaries,
             authMessage: `Per-tag report draft saved locally for ${executionShell.tagCode}.`,
           },
     );
@@ -1995,24 +2024,40 @@ export function TagWiseApp() {
       qrManualPayload={readyState.qrManualPayload}
       qrScanResult={readyState.qrScanResult}
       qrScannerVisible={readyState.qrScannerVisible}
+      reportSyncDetail={readyState.reportSyncDetail}
       selectedExecutionTemplateId={readyState.selectedExecutionTemplateId}
+      executionShell={readyState.executionShell}
       selectedTag={readyState.selectedTag}
       selectedTagContext={readyState.selectedTagContext}
       session={readyState.session}
+      syncBusy={readyState.syncBusy}
       visibleTags={readyState.visibleTags}
       workPackages={readyState.workPackages}
+      onAttachReportPhoto={(source) => handleAttachExecutionPhoto(source)}
       onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
       onCancelQrScanner={handleCancelQrScanner}
+      onCalculationInputChange={handleExecutionCalculationInputChange}
+      onChecklistOutcomeChange={handleChecklistOutcomeChange}
       onEmailChange={setEmail}
       onOpenTag={(identity) => handleOpenVisualTag(identity)}
       onPasswordChange={setPassword}
       onProceedToExecutionShell={() => handleProceedToExecutionShell()}
       onQrManualPayloadChange={handleQrPayloadChange}
       onRefreshPackages={() => void handleRefreshAssignedPackages()}
+      onRefreshReportServerStatus={() => handleRefreshExecutionReportServerStatus()}
+      onRemoveReportPhoto={(evidenceId) => handleRemoveExecutionPhoto(evidenceId)}
+      onReportReviewNotesChange={handleReportReviewNotesChange}
       onResolveQrManualPayload={() => handleResolveManualQrPayload()}
+      onObservationNotesChange={handleObservationNotesChange}
+      onRiskJustificationChange={handleRiskJustificationChange}
+      onSaveCalculation={() => handleSaveExecutionCalculation()}
+      onSaveGuidanceEvidence={() => handleSaveExecutionEvidence()}
+      onSaveReportDraft={() => handleSaveReportDraft()}
       onSelectExecutionTemplate={handleSelectExecutionTemplate}
       onSignIn={() => void handleSignIn()}
       onStartQrScanner={() => void handleStartQrScanner()}
+      onSubmitReport={() => handleSubmitExecutionReport()}
+      onRetryReportSync={() => handleRetryExecutionReportSync()}
       onSwitchUser={() => void handleSwitchUser()}
     />
   );

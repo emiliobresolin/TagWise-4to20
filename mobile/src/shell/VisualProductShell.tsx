@@ -2,6 +2,7 @@ import { CameraView, type BarcodeScanningResult } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Image,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -12,6 +13,10 @@ import {
 } from 'react-native';
 
 import type { ActiveUserSession } from '../features/auth/model';
+import type {
+  SharedExecutionChecklistOutcome,
+  SharedExecutionShell,
+} from '../features/execution/model';
 import {
   buildTechnicianVisualWorkflow,
   type VisualHistoryPoint,
@@ -30,6 +35,23 @@ import {
   resolveServiceBackedVisualTagIdentity,
   shouldOpenVisualDetailForQrResult,
 } from '../features/visual-shell/serviceBackedNavigation';
+import {
+  buildVisualExecutionCalculation,
+  buildVisualExecutionGuidance,
+  buildVisualExecutionHistory,
+  convertLoopValue,
+  type VisualExecutionCalculationViewModel,
+  type VisualExecutionGuidanceViewModel,
+  type VisualExecutionHistoryViewModel,
+  type VisualLoopConversionMode,
+  type VisualLoopConversionResult,
+} from '../features/visual-shell/serviceBackedExecution';
+import {
+  buildVisualReportProjection,
+  createVisualReportActions,
+  type VisualReportProjection,
+} from '../features/visual-shell/serviceBackedReport';
+import type { ReportSyncDetail } from '../features/sync/syncStateService';
 import type {
   LocalAssignedTagEntry,
   LocalAssignedWorkPackageSummary,
@@ -52,6 +74,9 @@ export interface VisualProductShellProps {
   selectedTag: LocalAssignedTagEntry | null;
   selectedTagContext: LocalTagContext | null;
   selectedExecutionTemplateId: string | null;
+  executionShell: SharedExecutionShell | null;
+  reportSyncDetail: ReportSyncDetail | null;
+  syncBusy: boolean;
   qrScannerVisible: boolean;
   qrManualPayload: string;
   qrScanResult: LocalQrScanResult | null;
@@ -67,7 +92,26 @@ export interface VisualProductShellProps {
   onResolveQrManualPayload: () => Promise<LocalQrScanResult | null>;
   onCancelQrScanner: () => void;
   onSelectExecutionTemplate: (templateId: string) => void;
-  onProceedToExecutionShell: () => Promise<void>;
+  onProceedToExecutionShell: () => Promise<boolean>;
+  onCalculationInputChange: (
+    key: 'expectedValue' | 'observedValue',
+    value: string,
+  ) => void;
+  onSaveCalculation: () => Promise<void>;
+  onChecklistOutcomeChange: (
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ) => void;
+  onObservationNotesChange: (value: string) => void;
+  onRiskJustificationChange: (riskItemId: string, justificationText: string) => void;
+  onSaveGuidanceEvidence: () => Promise<void>;
+  onReportReviewNotesChange: (value: string) => void;
+  onSaveReportDraft: () => Promise<void>;
+  onAttachReportPhoto: (source: 'camera' | 'library') => Promise<void>;
+  onRemoveReportPhoto: (evidenceId: string) => Promise<void>;
+  onSubmitReport: () => Promise<void>;
+  onRetryReportSync: () => Promise<void>;
+  onRefreshReportServerStatus: () => Promise<void>;
 }
 
 export function VisualProductShell({
@@ -83,6 +127,9 @@ export function VisualProductShell({
   selectedTag: selectedLocalTag,
   selectedTagContext,
   selectedExecutionTemplateId,
+  executionShell,
+  reportSyncDetail,
+  syncBusy,
   qrScannerVisible,
   qrManualPayload,
   qrScanResult,
@@ -99,6 +146,19 @@ export function VisualProductShell({
   onCancelQrScanner,
   onSelectExecutionTemplate,
   onProceedToExecutionShell,
+  onCalculationInputChange,
+  onSaveCalculation,
+  onChecklistOutcomeChange,
+  onObservationNotesChange,
+  onRiskJustificationChange,
+  onSaveGuidanceEvidence,
+  onReportReviewNotesChange,
+  onSaveReportDraft,
+  onAttachReportPhoto,
+  onRemoveReportPhoto,
+  onSubmitReport,
+  onRetryReportSync,
+  onRefreshReportServerStatus,
 }: VisualProductShellProps) {
   const [route, setRoute] = useState<VisualRoute>('dashboard');
   const [activeFilter, setActiveFilter] = useState<VisualTagCategory | 'all'>('all');
@@ -117,6 +177,39 @@ export function VisualProductShell({
         selectedTagContext,
       }),
     [selectedLocalTag, selectedTagContext, session, visibleTags, workPackages],
+  );
+  const serviceCalculation = useMemo(
+    () => buildVisualExecutionCalculation(executionShell),
+    [executionShell],
+  );
+  const serviceHistory = useMemo(() => buildVisualExecutionHistory(executionShell), [
+    executionShell,
+  ]);
+  const serviceGuidance = useMemo(() => buildVisualExecutionGuidance(executionShell), [
+    executionShell,
+  ]);
+  const serviceReport = useMemo(
+    () => buildVisualReportProjection(executionShell, reportSyncDetail),
+    [executionShell, reportSyncDetail],
+  );
+  const reportActions = useMemo(
+    () =>
+      createVisualReportActions({
+        onAttachPhoto: onAttachReportPhoto,
+        onRemovePhoto: onRemoveReportPhoto,
+        onRefreshServerStatus: onRefreshReportServerStatus,
+        onRetrySync: onRetryReportSync,
+        onSaveDraft: onSaveReportDraft,
+        onSubmitReport,
+      }),
+    [
+      onAttachReportPhoto,
+      onRefreshReportServerStatus,
+      onRemoveReportPhoto,
+      onRetryReportSync,
+      onSaveReportDraft,
+      onSubmitReport,
+    ],
   );
   const selectedTag = session ? model.selectedTag : selectedDemoTag ?? model.selectedTag;
   const visibleDashboardTags = filterTags(
@@ -172,10 +265,18 @@ export function VisualProductShell({
   }
 
   async function handleOpenExecutionRoute(nextRoute: VisualRoute) {
-    if (selectedExecutionTemplateId) {
-      await onProceedToExecutionShell();
+    setShellMessage(null);
+
+    if (session && !selectedExecutionTemplateId) {
+      setShellMessage('Select a cached execution template before opening the technical screen.');
+    } else if (session && selectedExecutionTemplateId) {
+      const didLoad = await onProceedToExecutionShell();
+      if (!didLoad) {
+        setShellMessage('The local execution shell is unavailable for this selected tag/template.');
+      }
     }
-    openRoute(nextRoute);
+
+    setRoute(nextRoute);
   }
 
   return (
@@ -232,36 +333,88 @@ export function VisualProductShell({
         ) : !selectedTag ? (
           <NoSelectedTagScreen onBack={() => openRoute('dashboard')} />
         ) : route === 'calculation' ? (
-          <CalculationScreen
-            calculation={model.calculation}
-            selectedTag={selectedTag}
-            onBack={() => openRoute('detail')}
-          />
+          session ? (
+            <ServiceCalculationScreen
+              calculation={serviceCalculation}
+              selectedTag={selectedTag}
+              shellMessage={shellMessage ?? authMessage}
+              onBack={() => openRoute('detail')}
+              onInputChange={onCalculationInputChange}
+              onSaveCalculation={() => void onSaveCalculation()}
+            />
+          ) : (
+            <DemoCalculationScreen
+              calculation={model.calculation}
+              selectedTag={selectedTag}
+              onBack={() => openRoute('detail')}
+            />
+          )
         ) : route === 'history' ? (
-          <HistoryScreen
-            history={model.history}
-            selectedTag={selectedTag}
-            onBack={() => openRoute('detail')}
-            onOpenDiagnosis={() => openRoute('diagnosis')}
-          />
+          session ? (
+            <ServiceHistoryScreen
+              history={serviceHistory}
+              selectedTag={selectedTag}
+              shellMessage={shellMessage ?? authMessage}
+              onBack={() => openRoute('detail')}
+              onOpenDiagnosis={() => openRoute('diagnosis')}
+            />
+          ) : (
+            <DemoHistoryScreen
+              history={model.history}
+              selectedTag={selectedTag}
+              onBack={() => openRoute('detail')}
+              onOpenDiagnosis={() => openRoute('diagnosis')}
+            />
+          )
         ) : route === 'diagnosis' ? (
-          <DiagnosisScreen
-            diagnosis={{
-              ...model.diagnosis,
-              selectedSymptom,
-            }}
-            onBack={() => openRoute('detail')}
-            onOpenReport={() => openRoute('report')}
-            onSelectSymptom={setSelectedSymptom}
-          />
+          session ? (
+            <ServiceGuidanceScreen
+              guidance={serviceGuidance}
+              selectedTag={selectedTag}
+              shellMessage={shellMessage ?? authMessage}
+              onBack={() => openRoute('detail')}
+              onChecklistOutcomeChange={onChecklistOutcomeChange}
+              onObservationNotesChange={onObservationNotesChange}
+              onOpenReport={() => openRoute('report')}
+              onRiskJustificationChange={onRiskJustificationChange}
+              onSaveGuidanceEvidence={() => void onSaveGuidanceEvidence()}
+            />
+          ) : (
+            <DemoDiagnosisScreen
+              diagnosis={{
+                ...model.diagnosis,
+                selectedSymptom,
+              }}
+              onBack={() => openRoute('detail')}
+              onOpenReport={() => openRoute('report')}
+              onSelectSymptom={setSelectedSymptom}
+            />
+          )
         ) : route === 'report' ? (
-          <ReportScreen
-            justification={justification}
-            report={model.report}
-            onBack={() => openRoute('diagnosis')}
-            onJustificationChange={setJustification}
-            onOpenApproval={() => openRoute('approval')}
-          />
+          session ? (
+            <ServiceReportScreen
+              report={serviceReport}
+              shellMessage={shellMessage ?? authMessage}
+              syncBusy={syncBusy}
+              onAttachCamera={() => void reportActions.attachPhotoFromCamera()}
+              onAttachLibrary={() => void reportActions.attachPhotoFromLibrary()}
+              onBack={() => openRoute('diagnosis')}
+              onRefreshServerStatus={() => void reportActions.refreshServerStatus()}
+              onRemovePhoto={(evidenceId) => void reportActions.removePhoto(evidenceId)}
+              onRetrySync={() => void reportActions.retrySync()}
+              onReviewNotesChange={onReportReviewNotesChange}
+              onSaveDraft={() => void reportActions.saveDraft()}
+              onSubmitReport={() => void reportActions.submitReport()}
+            />
+          ) : (
+            <DemoReportScreen
+              justification={justification}
+              report={model.report}
+              onBack={() => openRoute('diagnosis')}
+              onJustificationChange={setJustification}
+              onOpenApproval={() => openRoute('approval')}
+            />
+          )
         ) : (
           <ApprovalScreen
             justification={justification}
@@ -819,7 +972,154 @@ function TagDetailScreen({
   );
 }
 
-function CalculationScreen({
+function ServiceCalculationScreen({
+  calculation,
+  selectedTag,
+  shellMessage,
+  onBack,
+  onInputChange,
+  onSaveCalculation,
+}: {
+  calculation: VisualExecutionCalculationViewModel;
+  selectedTag: VisualTagSummary;
+  shellMessage: string | null;
+  onBack: () => void;
+  onInputChange: (key: 'expectedValue' | 'observedValue', value: string) => void;
+  onSaveCalculation: () => void;
+}) {
+  const [conversionValue, setConversionValue] = useState(
+    calculation.expectedValue || calculation.observedValue || '50',
+  );
+  const [conversionResult, setConversionResult] = useState<VisualLoopConversionResult | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setConversionValue(calculation.expectedValue || calculation.observedValue || '50');
+    setConversionResult(null);
+  }, [calculation.expectedValue, calculation.observedValue, calculation.tagCode]);
+
+  if (calculation.state !== 'available') {
+    return (
+      <ExecutionUnavailableScreen
+        message={shellMessage}
+        onBack={onBack}
+        title="Calculo local indisponivel"
+        unavailableReason={calculation.unavailableReason}
+      />
+    );
+  }
+
+  function handleConvert(mode: VisualLoopConversionMode) {
+    setConversionResult(convertLoopValue(calculation.conversion, mode, conversionValue));
+  }
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <Text style={styles.tagHeroTitle}>{calculation.tagCode || selectedTag.code}</Text>
+      <Text style={styles.tagHeroSubtitle}>{calculation.templateTitle}</Text>
+
+      <View style={styles.selectBox}>
+        <Text style={styles.selectText}>{calculation.modeLabel}</Text>
+        <StatusPill
+          label={calculation.result?.acceptanceLabel ?? 'PENDING'}
+          severity={calculation.result?.acceptanceSeverity ?? 'medium'}
+        />
+      </View>
+
+      <Text style={styles.formLabel}>{calculation.expectedLabel}</Text>
+      <TextInput
+        editable={calculation.editable}
+        keyboardType="numeric"
+        onChangeText={(value) => onInputChange('expectedValue', value)}
+        placeholder={calculation.expectedLabel}
+        placeholderTextColor={colors.textSubtle}
+        style={[styles.darkInput, !calculation.editable ? styles.disabledAction : null]}
+        value={calculation.expectedValue}
+      />
+
+      <Text style={styles.formLabel}>{calculation.observedLabel}</Text>
+      <TextInput
+        editable={calculation.editable}
+        keyboardType="numeric"
+        onChangeText={(value) => onInputChange('observedValue', value)}
+        placeholder={calculation.observedLabel}
+        placeholderTextColor={colors.textSubtle}
+        style={[styles.darkInput, !calculation.editable ? styles.disabledAction : null]}
+        value={calculation.observedValue}
+      />
+
+      <View style={styles.executionMetricGrid}>
+        <ExecutionMetric label="Unit" value={calculation.unitLabel} />
+        <ExecutionMetric label="Range" value={calculation.rangeLabel} />
+        <ExecutionMetric label="Tolerance" value={calculation.toleranceLabel} />
+        <ExecutionMetric label="Acceptance" value={calculation.acceptanceLabel} />
+        <ExecutionMetric label="Conversion basis" value={calculation.conversionBasisLabel} />
+        <ExecutionMetric label="Expected range" value={calculation.expectedRangeLabel} />
+      </View>
+
+      <View style={styles.failureBar}>
+        <Text style={styles.failureBarText}>
+          {calculation.result
+            ? `Error: ${calculation.result.absoluteDeviationLabel}`
+            : 'Enter values and save to calculate locally'}
+        </Text>
+        <StatusPill
+          label={calculation.result?.acceptanceLabel ?? 'LOCAL'}
+          severity={calculation.result?.acceptanceSeverity ?? 'medium'}
+        />
+      </View>
+      {calculation.result ? (
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingTitle}>{calculation.result.acceptanceReason}</Text>
+          <Text style={styles.pendingText}>
+            Signed deviation: {calculation.result.signedDeviationLabel}
+          </Text>
+          <Text style={styles.pendingText}>
+            Percent of span: {calculation.result.percentOfSpanLabel}
+          </Text>
+          <Text style={styles.pendingText}>Saved: {calculation.updatedAtLabel}</Text>
+        </View>
+      ) : null}
+
+      <Pressable
+        accessibilityRole="button"
+        disabled={!calculation.editable}
+        onPress={onSaveCalculation}
+        style={[styles.fullWidthPrimary, !calculation.editable ? styles.disabledAction : null]}
+      >
+        <Text style={styles.fullWidthPrimaryLabel}>Save deterministic calculation</Text>
+      </Pressable>
+
+      <Text style={styles.sectionTitle}>Offline conversion</Text>
+      <Text style={styles.pendingText}>{calculation.conversion.reason}</Text>
+      <TextInput
+        keyboardType="numeric"
+        onChangeText={setConversionValue}
+        placeholder="Value to convert"
+        placeholderTextColor={colors.textSubtle}
+        style={styles.darkInput}
+        value={conversionValue}
+      />
+      <View style={styles.conversionGrid}>
+        <ConversionButton label="PV to mA" onPress={() => handleConvert('process-to-milliamp')} />
+        <ConversionButton label="mA to PV" onPress={() => handleConvert('milliamp-to-process')} />
+        <ConversionButton label="mA to %" onPress={() => handleConvert('milliamp-to-percent')} />
+        <ConversionButton label="% to mA" onPress={() => handleConvert('percent-to-milliamp')} />
+      </View>
+      {conversionResult ? (
+        <View style={styles.conversionResultCard}>
+          <Text style={styles.historyTitle}>{conversionResult.label}</Text>
+          <Text style={styles.pendingText}>{conversionResult.detail}</Text>
+        </View>
+      ) : null}
+    </>
+  );
+}
+
+function DemoCalculationScreen({
   calculation,
   selectedTag,
   onBack,
@@ -871,7 +1171,86 @@ function CalculationScreen({
   );
 }
 
-function HistoryScreen({
+function ServiceHistoryScreen({
+  history,
+  selectedTag,
+  shellMessage,
+  onBack,
+  onOpenDiagnosis,
+}: {
+  history: VisualExecutionHistoryViewModel;
+  selectedTag: VisualTagSummary;
+  shellMessage: string | null;
+  onBack: () => void;
+  onOpenDiagnosis: () => void;
+}) {
+  if (history.state === 'unavailable' && history.rows.length === 0) {
+    return (
+      <ExecutionUnavailableScreen
+        message={shellMessage}
+        onBack={onBack}
+        title="Historico local indisponivel"
+        unavailableReason={history.unavailableReason}
+      />
+    );
+  }
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <View style={styles.titleRow}>
+        <View>
+          <Text style={styles.tagHeroTitle}>{history.tagCode || selectedTag.code}</Text>
+          <Text style={styles.tagHeroSubtitle}>{history.title}</Text>
+        </View>
+        <StatusPill
+          label={history.historyStateLabel}
+          severity={history.state === 'missing' ? 'due' : history.state === 'unavailable' ? 'medium' : 'ok'}
+          large
+        />
+      </View>
+
+      <View style={styles.chartCard}>
+        <View style={styles.chartHeader}>
+          <View>
+            <Text style={styles.chartTitle}>Current comparison</Text>
+            <Text style={styles.currentComparisonValue}>{history.currentResultLabel}</Text>
+          </View>
+          <StatusPill
+            label={history.currentResultSeverity === 'high' ? 'FAIL' : 'LOCAL'}
+            severity={history.currentResultSeverity}
+          />
+        </View>
+        <Text style={styles.pendingText}>{history.summary}</Text>
+        <Text style={styles.pendingText}>{history.detail}</Text>
+      </View>
+
+      <SectionHeader icon="H" title="Cached history fields" />
+      {history.rows.length > 0 ? (
+        history.rows.map((row) => (
+          <View key={`${row.label}:${row.value}`} style={styles.historyRow}>
+            <View style={styles.flexOne}>
+              <Text style={styles.historyTitle}>{row.label}</Text>
+              <Text style={styles.historySubtitle}>{row.stateLabel}</Text>
+            </View>
+            <Text style={styles.historyValue}>{row.value}</Text>
+            <StatusPill label={row.stateLabel} severity={row.severity} />
+          </View>
+        ))
+      ) : (
+        <InlineMessage text="No local history rows were cached for this selected tag." />
+      )}
+
+      <Pressable accessibilityRole="button" onPress={onOpenDiagnosis} style={styles.fullWidthPrimary}>
+        <Text style={styles.fullWidthPrimaryIcon}>G</Text>
+        <Text style={styles.fullWidthPrimaryLabel}>Open local guidance</Text>
+      </Pressable>
+    </>
+  );
+}
+
+function DemoHistoryScreen({
   history,
   selectedTag,
   onBack,
@@ -938,7 +1317,149 @@ function HistoryScreen({
   );
 }
 
-function DiagnosisScreen({
+function ServiceGuidanceScreen({
+  guidance,
+  selectedTag,
+  shellMessage,
+  onBack,
+  onChecklistOutcomeChange,
+  onObservationNotesChange,
+  onOpenReport,
+  onRiskJustificationChange,
+  onSaveGuidanceEvidence,
+}: {
+  guidance: VisualExecutionGuidanceViewModel;
+  selectedTag: VisualTagSummary;
+  shellMessage: string | null;
+  onBack: () => void;
+  onChecklistOutcomeChange: (
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ) => void;
+  onObservationNotesChange: (value: string) => void;
+  onOpenReport: () => void;
+  onRiskJustificationChange: (riskItemId: string, justificationText: string) => void;
+  onSaveGuidanceEvidence: () => void;
+}) {
+  const nextStep =
+    guidance.guidedDiagnosisPrompts[0]?.prompt ??
+    guidance.checklistItems[0]?.prompt ??
+    'No local next-step guidance was cached for this selected template.';
+
+  if (guidance.state === 'unavailable') {
+    return (
+      <ExecutionUnavailableScreen
+        message={shellMessage}
+        onBack={onBack}
+        title="Checklist local indisponivel"
+        unavailableReason={guidance.unavailableReason}
+      />
+    );
+  }
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <Text style={styles.tagHeroTitle}>{guidance.tagCode || selectedTag.code}</Text>
+      <Text style={styles.tagHeroSubtitle}>{guidance.title}</Text>
+
+      <View style={styles.executionMetricGrid}>
+        <ExecutionMetric label="Risk state" value={guidance.riskStateLabel} />
+        <ExecutionMetric label="Submit readiness" value={guidance.submitReadinessLabel} />
+        <ExecutionMetric label="Last guidance save" value={guidance.guidanceEvidenceSavedAtLabel} />
+      </View>
+
+      <Text style={styles.kicker}>NEXT STEP</Text>
+      <View style={styles.nextStepCard}>
+        <Text style={styles.nextStepIcon}>N</Text>
+        <Text style={styles.nextStepText}>{nextStep}</Text>
+      </View>
+
+      <View style={styles.whyBlock}>
+        <Text style={styles.whyTitle}>Local guidance summary</Text>
+        <Text style={styles.whyBody}>{guidance.summary}</Text>
+        <Text style={styles.whyBody}>{guidance.detail}</Text>
+      </View>
+
+      <View style={styles.checklistBlock}>
+        <Text style={styles.sectionTitle}>Technical checklist</Text>
+        {guidance.checklistItems.length > 0 ? (
+          guidance.checklistItems.map((item) => (
+            <GuidanceChecklistCard
+              key={item.id}
+              editable={guidance.editable}
+              item={item}
+              onChecklistOutcomeChange={onChecklistOutcomeChange}
+            />
+          ))
+        ) : (
+          <InlineMessage text="No checklist steps were cached for this selected template. Continue with observation notes if needed." />
+        )}
+      </View>
+
+      <Text style={styles.sectionTitle}>Observation notes</Text>
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        editable={guidance.editable}
+        multiline
+        onChangeText={onObservationNotesChange}
+        placeholder="Capture field observations for this local execution."
+        placeholderTextColor={colors.textSubtle}
+        style={[styles.justificationInput, !guidance.editable ? styles.disabledAction : null]}
+        value={guidance.observationNotes}
+      />
+
+      <Text style={styles.sectionTitle}>Visible risks</Text>
+      {guidance.riskItems.length > 0 ? (
+        guidance.riskItems.map((item) => (
+          <GuidanceRiskCard
+            key={item.id}
+            editable={guidance.editable}
+            item={item}
+            onJustificationChange={(value) => onRiskJustificationChange(item.id, value)}
+          />
+        ))
+      ) : (
+        <InlineMessage text="No visible risk is currently flagged by local history, context, checklist, or evidence state." />
+      )}
+
+      <Text style={styles.sectionTitle}>Guided prompts</Text>
+      {guidance.guidedDiagnosisPrompts.length > 0 ? (
+        guidance.guidedDiagnosisPrompts.map((item) => (
+          <GuidancePromptView key={item.id} item={item} title="Deterministic prompt" />
+        ))
+      ) : (
+        <InlineMessage text="No guided diagnosis prompts were cached for this selected template." />
+      )}
+
+      <Text style={styles.sectionTitle}>Best practices and references</Text>
+      {guidance.linkedGuidance.length > 0 ? (
+        guidance.linkedGuidance.map((item) => (
+          <LinkedGuidanceView key={item.id} item={item} />
+        ))
+      ) : (
+        <InlineMessage text="No best-practice or normative reference snippets were cached for this selected tag." />
+      )}
+
+      <Pressable
+        accessibilityRole="button"
+        disabled={!guidance.editable}
+        onPress={onSaveGuidanceEvidence}
+        style={[styles.fullWidthPrimary, !guidance.editable ? styles.disabledAction : null]}
+      >
+        <Text style={styles.fullWidthPrimaryLabel}>Save checklist and notes</Text>
+      </Pressable>
+
+      <Pressable accessibilityRole="button" onPress={onOpenReport} style={styles.secondaryFullWidth}>
+        <Text style={styles.returnLabel}>Continue to report draft</Text>
+      </Pressable>
+    </>
+  );
+}
+
+function DemoDiagnosisScreen({
   diagnosis,
   onBack,
   onOpenReport,
@@ -1009,7 +1530,272 @@ function DiagnosisScreen({
   );
 }
 
-function ReportScreen({
+function ServiceReportScreen({
+  report,
+  shellMessage,
+  syncBusy,
+  onAttachCamera,
+  onAttachLibrary,
+  onBack,
+  onRefreshServerStatus,
+  onRemovePhoto,
+  onRetrySync,
+  onReviewNotesChange,
+  onSaveDraft,
+  onSubmitReport,
+}: {
+  report: VisualReportProjection;
+  shellMessage: string | null;
+  syncBusy: boolean;
+  onAttachCamera: () => void;
+  onAttachLibrary: () => void;
+  onBack: () => void;
+  onRefreshServerStatus: () => void;
+  onRemovePhoto: (evidenceId: string) => void;
+  onRetrySync: () => void;
+  onReviewNotesChange: (value: string) => void;
+  onSaveDraft: () => void;
+  onSubmitReport: () => void;
+}) {
+  if (report.state !== 'available') {
+    return (
+      <ExecutionUnavailableScreen
+        message={shellMessage}
+        title="Report draft unavailable"
+        unavailableReason={report.unavailableReason}
+        onBack={onBack}
+      />
+    );
+  }
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <Text style={styles.screenTitle}>Report</Text>
+
+      <View style={styles.summaryCard}>
+        <SummaryLine label="Tag" value={report.tagCode} />
+        <SummaryLine label="Template" value={report.templateTitle} />
+        <SummaryLine label="Lifecycle" value={report.lifecycleStateLabel} pill />
+        <SummaryLine label="Owner" value={report.reportStateLabel} />
+        <SummaryLine label="Sync" value={`${report.syncBadge.label}: ${report.syncBadge.detail}`} />
+      </View>
+
+      <Text style={styles.sectionTitle}>Automatic Summary</Text>
+      <View style={styles.summaryCard}>
+        {report.summaryRows.map((row) => (
+          <SummaryLine key={row.label} label={row.label} value={row.value} />
+        ))}
+      </View>
+
+      <Text style={styles.sectionTitle}>Checklist Outcomes</Text>
+      {report.checklistOutcomes.length > 0 ? (
+        report.checklistOutcomes.map((item) => (
+          <View key={item.id} style={styles.historyRow}>
+            <Text style={styles.checklistBox}>{checklistOutcomeSymbol(item.outcome)}</Text>
+            <View style={styles.flexOne}>
+              <Text style={styles.historyTitle}>{item.prompt}</Text>
+              <Text style={styles.historySubtitle}>
+                {toChecklistOutcomeLabel(item.outcome)} - {item.sourceReference}
+              </Text>
+            </View>
+          </View>
+        ))
+      ) : (
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingText}>
+            No checklist outcomes have been captured for this local report draft yet.
+          </Text>
+        </View>
+      )}
+
+      <SectionHeader
+        actionLabel={`${report.photoAttachments.length} local photos`}
+        title="Evidence"
+      />
+      <View style={styles.reportActionGrid}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!report.editable}
+          onPress={onAttachCamera}
+          style={[styles.smallActionButton, !report.editable ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallActionLabel}>Camera</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!report.editable}
+          onPress={onAttachLibrary}
+          style={[styles.smallGhostButton, !report.editable ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallGhostLabel}>Library</Text>
+        </Pressable>
+      </View>
+
+      {report.evidenceReferences.map((reference) => (
+        <View
+          key={`${reference.evidenceKind}:${reference.label}`}
+          style={[
+            styles.guidanceCard,
+            !reference.satisfied && reference.requirementLevel === 'minimum'
+              ? styles.guidanceCardWarning
+              : null,
+          ]}
+        >
+          <Text style={styles.historyTitle}>{reference.label}</Text>
+          <Text style={styles.pendingText}>
+            {reference.requirementLevel.toUpperCase()} - {reference.stateLabel}
+          </Text>
+          <Text style={styles.pendingText}>{reference.detail}</Text>
+        </View>
+      ))}
+
+      {report.photoAttachments.length > 0 ? (
+        <View style={styles.reportPhotoGrid}>
+          {report.photoAttachments.map((attachment) => (
+            <View key={attachment.evidenceId} style={styles.reportPhotoCard}>
+              <Image source={{ uri: attachment.previewUri }} style={styles.reportPhotoPreview} />
+              <Text style={styles.historyTitle}>{attachment.fileName}</Text>
+              <Text style={styles.historySubtitle}>
+                {attachment.source} - {attachment.syncState}
+              </Text>
+              {attachment.syncIssue ? (
+                <Text style={styles.pendingText}>{attachment.syncIssue}</Text>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                disabled={!report.editable}
+                onPress={() => onRemovePhoto(attachment.evidenceId)}
+                style={[
+                  styles.smallGhostButton,
+                  styles.reportInlineButton,
+                  !report.editable ? styles.disabledAction : null,
+                ]}
+              >
+                <Text style={styles.smallGhostLabel}>Remove</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingText}>
+            No photo evidence has been attached locally for this report yet.
+          </Text>
+        </View>
+      )}
+
+      <Text style={styles.sectionTitle}>Risk and Justification</Text>
+      {report.riskFlags.length > 0 ? (
+        report.riskFlags.map((riskFlag) => (
+          <View
+            key={riskFlag.id}
+            style={[
+              styles.guidanceCard,
+              riskFlag.severity === 'submit-block' ? styles.guidanceCardWarning : null,
+            ]}
+          >
+            <Text style={styles.historyTitle}>{riskFlag.title}</Text>
+            <Text style={styles.pendingText}>{riskFlag.stateLabel}</Text>
+            <Text style={styles.pendingText}>{riskFlag.detail}</Text>
+            <Text style={styles.pendingText}>
+              Justification: {riskFlag.justificationText.trim() || 'Not captured'}
+            </Text>
+          </View>
+        ))
+      ) : (
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingText}>No local risk flags are active for this report.</Text>
+        </View>
+      )}
+
+      <Text style={styles.sectionTitle}>Technician Review Notes</Text>
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        editable={report.editable}
+        multiline
+        onChangeText={onReviewNotesChange}
+        placeholder="Add final notes, corrections, or observations for report review..."
+        placeholderTextColor={colors.textSubtle}
+        style={[styles.justificationInput, !report.editable ? styles.disabledAction : null]}
+        value={report.reviewNotes}
+      />
+
+      <View style={styles.guidanceCard}>
+        <Text style={styles.historySubtitle}>Report intelligence</Text>
+        <Text style={styles.historyTitle}>AI Diagnosis</Text>
+        <Text style={styles.pendingText}>{report.aiDiagnosis.label}</Text>
+        <Text style={styles.pendingText}>{report.aiDiagnosis.detail}</Text>
+        {report.aiDiagnosis.summary ? (
+          <Text style={styles.pendingText}>{report.aiDiagnosis.summary}</Text>
+        ) : null}
+        {report.aiDiagnosis.generatedAtLabel ? (
+          <Text style={styles.historySubtitle}>
+            Generated: {report.aiDiagnosis.generatedAtLabel}
+          </Text>
+        ) : null}
+      </View>
+
+      <Text style={styles.sectionTitle}>Sync</Text>
+      <View style={styles.pendingCard}>
+        <Text style={styles.pendingTitle}>{report.syncBadge.label}</Text>
+        {report.syncDetailRows.map((row) => (
+          <Text key={row.label} style={styles.pendingText}>
+            {row.label}: {row.value}
+          </Text>
+        ))}
+      </View>
+      <View style={styles.reportActionGrid}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!report.canRetrySync || syncBusy}
+          onPress={onRetrySync}
+          style={[
+            styles.smallActionButton,
+            !report.canRetrySync || syncBusy ? styles.disabledAction : null,
+          ]}
+        >
+          <Text style={styles.smallActionLabel}>Retry Sync</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!report.canRefreshServerStatus || syncBusy}
+          onPress={onRefreshServerStatus}
+          style={[
+            styles.smallGhostButton,
+            !report.canRefreshServerStatus || syncBusy ? styles.disabledAction : null,
+          ]}
+        >
+          <Text style={styles.smallGhostLabel}>Refresh Status</Text>
+        </Pressable>
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        disabled={!report.canSaveDraft}
+        onPress={onSaveDraft}
+        style={[styles.secondaryFullWidth, !report.canSaveDraft ? styles.disabledAction : null]}
+      >
+        <Text style={styles.returnLabel}>Save Report Draft</Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        disabled={!report.canSubmit}
+        onPress={onSubmitReport}
+        style={[styles.fullWidthPrimary, !report.canSubmit ? styles.disabledAction : null]}
+      >
+        <Text style={styles.fullWidthPrimaryLabel}>Submit to Local Queue</Text>
+      </Pressable>
+      {!report.canSubmit ? (
+        <Text style={styles.qrGuidanceText}>{report.submitReadinessLabel}</Text>
+      ) : null}
+    </>
+  );
+}
+
+function DemoReportScreen({
   justification,
   report,
   onBack,
@@ -1168,6 +1954,218 @@ function ScreenHeader({ onBack }: { onBack: () => void }) {
         <Text style={styles.backButtonLabel}>‹</Text>
       </Pressable>
       <TagWiseLogo />
+    </View>
+  );
+}
+
+function ExecutionUnavailableScreen({
+  message,
+  onBack,
+  title,
+  unavailableReason,
+}: {
+  message: string | null;
+  onBack: () => void;
+  title: string;
+  unavailableReason: string | null;
+}) {
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {message ? <InlineMessage text={message} /> : null}
+      <View style={styles.connectionCard}>
+        <Text style={styles.connectionTitle}>{title}</Text>
+        <Text style={styles.connectionBody}>
+          {unavailableReason ??
+            'Local execution data is unavailable. The technician can return to the tag detail and continue from cached context.'}
+        </Text>
+      </View>
+    </>
+  );
+}
+
+function ExecutionMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.executionMetric}>
+      <Text style={styles.historySubtitle}>{label}</Text>
+      <Text style={styles.executionMetricValue}>{value}</Text>
+    </View>
+  );
+}
+
+function ConversionButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={styles.conversionButton}>
+      <Text style={styles.ghostTileLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function GuidanceChecklistCard({
+  editable,
+  item,
+  onChecklistOutcomeChange,
+}: {
+  editable: boolean;
+  item: VisualExecutionGuidanceViewModel['checklistItems'][number];
+  onChecklistOutcomeChange: (
+    checklistItemId: string,
+    outcome: SharedExecutionChecklistOutcome,
+  ) => void;
+}) {
+  const flagged = item.outcome === 'incomplete' || item.outcome === 'skipped';
+
+  return (
+    <View style={[styles.guidanceCard, flagged ? styles.guidanceCardWarning : null]}>
+      <View style={styles.checklistRow}>
+        <Text style={[styles.checklistBox, flagged ? styles.checklistBoxWarning : null]}>
+          {checklistOutcomeSymbol(item.outcome)}
+        </Text>
+        <View style={styles.flexOne}>
+          <Text style={styles.historyTitle}>{item.prompt}</Text>
+          <Text style={styles.checklistText}>Status: {toChecklistOutcomeLabel(item.outcome)}</Text>
+        </View>
+      </View>
+      <Text style={styles.pendingText}>Why it matters: {item.whyItMatters}</Text>
+      <Text style={styles.pendingText}>Helps rule out: {item.helpsRuleOut}</Text>
+      <Text style={styles.pendingText}>Source: {item.sourceReference}</Text>
+
+      <View style={styles.outcomeGrid}>
+        <GuidanceOutcomeButton
+          active={item.outcome === 'completed'}
+          disabled={!editable}
+          label="Complete"
+          onPress={() => onChecklistOutcomeChange(item.id, 'completed')}
+        />
+        <GuidanceOutcomeButton
+          active={item.outcome === 'incomplete'}
+          disabled={!editable}
+          label="Incomplete"
+          onPress={() => onChecklistOutcomeChange(item.id, 'incomplete')}
+        />
+        <GuidanceOutcomeButton
+          active={item.outcome === 'skipped'}
+          disabled={!editable}
+          label="Skip"
+          onPress={() => onChecklistOutcomeChange(item.id, 'skipped')}
+        />
+        <GuidanceOutcomeButton
+          active={item.outcome === 'pending'}
+          disabled={!editable}
+          label="Reset"
+          onPress={() => onChecklistOutcomeChange(item.id, 'pending')}
+        />
+      </View>
+    </View>
+  );
+}
+
+function GuidanceOutcomeButton({
+  active,
+  disabled,
+  label,
+  onPress,
+}: {
+  active: boolean;
+  disabled: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={[
+        styles.outcomeButton,
+        active ? styles.outcomeButtonActive : null,
+        disabled ? styles.disabledAction : null,
+      ]}
+    >
+      <Text style={styles.smallGhostLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function GuidanceRiskCard({
+  editable,
+  item,
+  onJustificationChange,
+}: {
+  editable: boolean;
+  item: VisualExecutionGuidanceViewModel['riskItems'][number];
+  onJustificationChange: (value: string) => void;
+}) {
+  const missingJustification =
+    item.justificationRequired && item.justificationText.trim().length === 0;
+
+  return (
+    <View
+      style={[
+        styles.guidanceCard,
+        item.severity === 'submit-block' || missingJustification
+          ? styles.guidanceCardWarning
+          : null,
+      ]}
+    >
+      <Text style={styles.historyTitle}>{item.title}</Text>
+      <Text style={styles.pendingText}>{item.detail}</Text>
+      {item.justificationRequired ? (
+        <>
+          <Text style={styles.pendingText}>
+            {item.justificationPrompt ?? 'Capture a field justification for this visible risk.'}
+          </Text>
+          <TextInput
+            autoCapitalize="sentences"
+            autoCorrect
+            editable={editable}
+            multiline
+            onChangeText={onJustificationChange}
+            placeholder="Risk justification"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.justificationInput, !editable ? styles.disabledAction : null]}
+            value={item.justificationText}
+          />
+        </>
+      ) : (
+        <Text style={styles.pendingText}>
+          This risk should be resolved before submission, but it does not block field execution here.
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function GuidancePromptView({
+  item,
+  title,
+}: {
+  item: VisualExecutionGuidanceViewModel['guidedDiagnosisPrompts'][number];
+  title: string;
+}) {
+  return (
+    <View style={styles.guidanceCard}>
+      <Text style={styles.historySubtitle}>{title}</Text>
+      <Text style={styles.historyTitle}>{item.prompt}</Text>
+      <Text style={styles.pendingText}>Why it matters: {item.whyItMatters}</Text>
+      <Text style={styles.pendingText}>Helps rule out: {item.helpsRuleOut}</Text>
+      <Text style={styles.pendingText}>Source: {item.sourceReference}</Text>
+    </View>
+  );
+}
+
+function LinkedGuidanceView({
+  item,
+}: {
+  item: VisualExecutionGuidanceViewModel['linkedGuidance'][number];
+}) {
+  return (
+    <View style={styles.guidanceCard}>
+      <Text style={styles.historySubtitle}>Local reference</Text>
+      <Text style={styles.historyTitle}>{item.title}</Text>
+      <Text style={styles.pendingText}>{item.summary}</Text>
+      <Text style={styles.pendingText}>Why it matters: {item.whyItMatters}</Text>
+      <Text style={styles.pendingText}>Source: {item.sourceReference}</Text>
     </View>
   );
 }
@@ -1433,6 +2431,32 @@ function filterTags(
 
 function formatNumber(value: number) {
   return value.toFixed(value % 1 === 0 ? 1 : 2).replace('.', ',');
+}
+
+function toChecklistOutcomeLabel(value: SharedExecutionChecklistOutcome) {
+  switch (value) {
+    case 'completed':
+      return 'Completed';
+    case 'incomplete':
+      return 'Incomplete';
+    case 'skipped':
+      return 'Skipped';
+    default:
+      return 'Pending';
+  }
+}
+
+function checklistOutcomeSymbol(value: SharedExecutionChecklistOutcome) {
+  switch (value) {
+    case 'completed':
+      return 'OK';
+    case 'incomplete':
+      return '!';
+    case 'skipped':
+      return '-';
+    default:
+      return '..';
+  }
 }
 
 function pillStyle(severity: VisualSeverity) {
@@ -1813,6 +2837,82 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     paddingHorizontal: spacing.md,
     fontSize: type.body,
+  },
+  executionMetricGrid: {
+    gap: spacing.md,
+    marginTop: spacing.lg,
+    marginBottom: spacing.xl,
+  },
+  executionMetric: {
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  executionMetricValue: {
+    color: colors.text,
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: spacing.xs,
+  },
+  conversionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    marginTop: spacing.md,
+  },
+  conversionButton: {
+    minWidth: 132,
+    minHeight: 58,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  conversionResultCard: {
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  guidanceCard: {
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  guidanceCardWarning: {
+    borderColor: colors.amber,
+    backgroundColor: colors.redSoft,
+  },
+  outcomeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  outcomeButton: {
+    minHeight: 42,
+    minWidth: 120,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  outcomeButtonActive: {
+    borderColor: colors.blue,
+    backgroundColor: colors.blueSoft,
   },
   sectionShell: {
     flexDirection: 'row',
@@ -2242,6 +3342,14 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginTop: spacing.sm,
   },
+  currentComparisonValue: {
+    color: colors.text,
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: '800',
+    marginTop: spacing.sm,
+    maxWidth: 320,
+  },
   chartRail: {
     height: 160,
     flexDirection: 'row',
@@ -2300,6 +3408,8 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '900',
     marginLeft: 'auto',
+    flexShrink: 1,
+    textAlign: 'right',
   },
   fullWidthPrimary: {
     minHeight: 70,
@@ -2455,6 +3565,10 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     overflow: 'hidden',
   },
+  checklistBoxWarning: {
+    backgroundColor: colors.amber,
+    color: colors.background,
+  },
   checklistText: {
     color: colors.textMuted,
     fontSize: 19,
@@ -2513,6 +3627,35 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: type.caption,
     marginTop: spacing.xs,
+  },
+  reportActionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+    marginTop: spacing.md,
+  },
+  reportPhotoGrid: {
+    gap: spacing.md,
+    marginBottom: spacing.xl,
+  },
+  reportPhotoCard: {
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  reportPhotoPreview: {
+    width: '100%',
+    height: 180,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    marginBottom: spacing.md,
+  },
+  reportInlineButton: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.sm,
   },
   pendingCard: {
     borderRadius: radius.md,
@@ -2580,6 +3723,16 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  secondaryFullWidth: {
+    minHeight: 64,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.md,
   },
   returnLabel: {
     color: colors.textMuted,
