@@ -7,6 +7,7 @@ import type {
   AssignedWorkPackageStatus,
   LocalAssignedWorkPackageSummary,
 } from './model';
+import { isManualInstrumentWorkPackageSummary } from './manualInstrumentModel';
 import type {
   SharedExecutionReportLifecycleState,
   SharedExecutionSyncState,
@@ -35,9 +36,16 @@ export class AssignedWorkPackageCatalogService {
     session: ActiveUserSession,
   ): Promise<LocalAssignedWorkPackageSummary[]> {
     assertConnectedSession(session);
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const localManualSnapshots = await this.loadLocalManualSnapshots(store);
     const remoteSummaries = await this.dependencies.apiClient.listAssignedPackages();
-    const workPackages = this.dependencies.userPartitions.forUser(session.userId).workPackages;
+    const workPackages = store.workPackages;
     await workPackages.replaceCatalog(remoteSummaries, this.now().toISOString());
+    await Promise.all(
+      localManualSnapshots.map((snapshot) =>
+        workPackages.saveDownloadedSnapshot(snapshot, snapshot.generatedAt),
+      ),
+    );
     return workPackages.listSummaries();
   }
 
@@ -90,6 +98,18 @@ export class AssignedWorkPackageCatalogService {
         return status === summary.status ? summary : { ...summary, status };
       }),
     );
+  }
+
+  private async loadLocalManualSnapshots(
+    store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+  ): Promise<AssignedWorkPackageSnapshot[]> {
+    const summaries = await store.workPackages.listSummaries();
+    const manualSummaries = summaries.filter(isManualInstrumentWorkPackageSummary);
+    const snapshots = await Promise.all(
+      manualSummaries.map((summary) => store.workPackages.getSnapshot(summary.id)),
+    );
+
+    return snapshots.filter((snapshot): snapshot is AssignedWorkPackageSnapshot => Boolean(snapshot));
   }
 }
 

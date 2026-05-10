@@ -23,15 +23,18 @@ describe('service-backed visual report adapter', () => {
     );
     expect(report.evidenceReferences[0]).toMatchObject({
       label: 'Structured readings',
-      stateLabel: 'Satisfied',
+      stateLabel: 'Atendida',
     });
     expect(report.photoAttachments[0]?.fileName).toBe('real-photo-ft-888.jpg');
-    expect(report.riskFlags[0]?.title).toBe('Expected photo is missing');
+    expect(report.riskFlags[0]?.title).toBe('Foto esperada ausente');
+    expect(report.pendingActions.map((action) => action.label).join(' ')).toContain(
+      'Justificar evidencia esperada',
+    );
     expect(JSON.stringify(report)).not.toContain('PT-204');
     expect(JSON.stringify(report)).not.toContain('Alimentacao eletrica');
   });
 
-  it('keeps technician-owned draft editable and submitted reports read-only', () => {
+  it('keeps technician-owned draft and unsynced submissions editable', () => {
     const draft = buildVisualReportProjection(buildShell(), null);
     const submitted = buildVisualReportProjection(
       buildShell({
@@ -45,9 +48,23 @@ describe('service-backed visual report adapter', () => {
     expect(draft.editable).toBe(true);
     expect(draft.canSaveDraft).toBe(true);
     expect(draft.canSubmit).toBe(true);
-    expect(submitted.editable).toBe(false);
-    expect(submitted.canSaveDraft).toBe(false);
-    expect(submitted.canSubmit).toBe(false);
+    expect(submitted.editable).toBe(true);
+    expect(submitted.canSaveDraft).toBe(true);
+    expect(submitted.canSubmit).toBe(true);
+  });
+
+  it('keeps manual instrument reports local-only until reconciliation support exists', () => {
+    const report = buildVisualReportProjection(
+      buildShell({
+        workPackageId: 'manual-intake:20260510120000',
+      }),
+      null,
+    );
+
+    expect(report.editable).toBe(true);
+    expect(report.canSaveDraft).toBe(true);
+    expect(report.canSubmit).toBe(false);
+    expect(report.submitReadinessLabel).toContain('local');
   });
 
   it('uses service-backed sync detail for badges and retry controls', () => {
@@ -70,8 +87,8 @@ describe('service-backed visual report adapter', () => {
 
     expect(report.syncBadge).toMatchObject({
       state: 'sync-issue',
-      label: 'Sync Issue',
-      detail: 'Evidence binary upload needs retry.',
+      label: 'Falha de sync',
+      detail: 'Upload de evidencia precisa de nova tentativa.',
     });
     expect(report.canRetrySync).toBe(true);
     expect(report.syncDetailRows.map((row) => row.value)).toContain('3');
@@ -152,6 +169,8 @@ describe('service-backed visual report adapter', () => {
   it('projects AI Diagnosis as report-level nonblocking states without invented content', () => {
     expect(buildVisualAiDiagnosisProjection()).toMatchObject({
       state: 'unavailable',
+      label: 'Diagnostico de IA indisponivel',
+      detail: expect.stringContaining('O relatorio pode ser enviado normalmente'),
       summary: null,
       blocking: false,
     });
@@ -194,7 +213,7 @@ describe('service-backed visual report adapter', () => {
 
     expect(report.state).toBe('unavailable');
     expect(report.canSubmit).toBe(false);
-    expect(report.unavailableReason).toContain('Load a local execution template');
+    expect(report.unavailableReason).toContain('Carregue um teste local');
     expect(report.routeAfterSubmit).toBe('report');
   });
 });
@@ -205,13 +224,14 @@ function buildShell(
     lifecycleState: SharedExecutionShell['report']['lifecycleState'];
     syncState: SharedExecutionShell['report']['syncState'];
     submitReadiness: SharedExecutionShell['guidance']['submitReadiness'];
+    workPackageId: string;
   }> = {},
 ): SharedExecutionShell {
   const reportState = overrides.reportState ?? 'technician-owned-draft';
   const syncState = overrides.syncState ?? 'local-only';
 
   return {
-    workPackageId: 'wp-real',
+    workPackageId: overrides.workPackageId ?? 'wp-real',
     workPackageTitle: 'Real local package',
     tagId: 'tag-ft-888',
     tagCode: 'FT-888',

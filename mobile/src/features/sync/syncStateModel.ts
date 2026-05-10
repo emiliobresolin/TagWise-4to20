@@ -19,21 +19,21 @@ export interface SyncStateBadgeModel {
 }
 
 const SYNC_STATE_LABELS: Record<SharedExecutionSyncState, string> = {
-  'local-only': 'Local Only',
-  queued: 'Queued',
-  syncing: 'Syncing',
-  'pending-validation': 'Pending Validation',
-  synced: 'Synced',
-  'sync-issue': 'Sync Issue',
+  'local-only': 'Somente local',
+  queued: 'Na fila',
+  syncing: 'Sincronizando',
+  'pending-validation': 'Validacao pendente',
+  synced: 'Sincronizado',
+  'sync-issue': 'Falha de sync',
 };
 
 const SYNC_STATE_DETAILS: Record<SharedExecutionSyncState, string> = {
-  'local-only': 'Local record is still on this device.',
-  queued: 'Local queue contains sync work for this record.',
-  syncing: 'Sync transport is actively processing this record.',
-  'pending-validation': 'Server received the payload and validation is pending.',
-  synced: 'Server sync is complete for this record.',
-  'sync-issue': 'Sync needs attention before this record can continue.',
+  'local-only': 'Registro ainda esta somente neste aparelho.',
+  queued: 'Fila local contem trabalho de sincronizacao para este registro.',
+  syncing: 'Transporte de sync esta processando este registro.',
+  'pending-validation': 'Servidor recebeu o payload e a validacao esta pendente.',
+  synced: 'Sincronizacao com servidor concluida para este registro.',
+  'sync-issue': 'Sync precisa de atencao antes deste registro continuar.',
 };
 
 const SYNC_STATE_TONES: Record<SharedExecutionSyncState, SyncStateTone> = {

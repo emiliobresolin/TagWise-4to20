@@ -5,6 +5,7 @@ import {
   buildVisualExecutionCalculation,
   buildVisualExecutionGuidance,
   buildVisualExecutionHistory,
+  buildVisualHistoryPointOptions,
   convertLoopValue,
   resolveLoopConversionMetadata,
 } from './serviceBackedExecution';
@@ -29,7 +30,7 @@ describe('service-backed visual execution adapter', () => {
     expect(calculation.expectedValue).toBe('40');
     expect(calculation.observedValue).toBe('44');
     expect(calculation.result?.absoluteDeviationLabel).toBe('4 %');
-    expect(calculation.result?.acceptanceLabel).toBe('FAIL');
+    expect(calculation.result?.acceptanceLabel).toBe('FALHA');
     expect(calculation.expectedValue).not.toBe('8');
     expect(calculation.observedValue).not.toBe('9.45');
   });
@@ -52,6 +53,11 @@ describe('service-backed visual execution adapter', () => {
       state: 'available',
       value: 50,
     });
+    expect(convertLoopValue(metadata, 'process-to-percent', '50')).toMatchObject({
+      state: 'available',
+      value: 50,
+      label: 'PV para percentual',
+    });
     expect(convertLoopValue(metadata, 'percent-to-milliamp', '25')).toMatchObject({
       state: 'available',
       value: 8,
@@ -72,6 +78,7 @@ describe('service-backed visual execution adapter', () => {
     const metadata = resolveLoopConversionMetadata(shell.calculation!.definition);
 
     expect(metadata.state).toBe('unavailable');
+    expect(metadata.reason).toContain('base analogica');
     expect(convertLoopValue(metadata, 'process-to-milliamp', '5')).toMatchObject({
       state: 'unavailable',
       value: null,
@@ -92,8 +99,27 @@ describe('service-backed visual execution adapter', () => {
 
     expect(history.tagCode).toBe('TT-909');
     expect(history.state).toBe('missing');
-    expect(history.rows.map((row) => row.value)).toContain('Missing');
+    expect(history.rows.map((row) => row.value)).toContain('Ausente');
     expect(history.rows.map((row) => row.value)).not.toContain('1,45 bar');
+  });
+
+  it('builds selectable compare points for loop-style history screens', () => {
+    const shell = buildShell({
+      historyFields: [
+        { label: '2026-05-01 point 50%', value: '50% expected 12 mA measured 12.1 mA', state: 'available' },
+        { label: '2026-05-02 point 100%', value: '100% expected 20 mA measured 19.9 mA', state: 'available' },
+      ],
+    });
+    const history = buildVisualExecutionHistory(shell);
+    const metadata = resolveLoopConversionMetadata(shell.calculation!.definition);
+
+    const options = buildVisualHistoryPointOptions(history, metadata);
+
+    expect(options.map((option) => option.label)).toEqual(['0%', '25%', '50%', '75%', '100%']);
+    expect(options.find((option) => option.label === '50%')?.rows).toHaveLength(1);
+    expect(options.find((option) => option.label === '25%')?.emptyLabel).toContain(
+      'Sem dados suficientes',
+    );
   });
 
   it('keeps missing history nonblocking when no shell is loaded', () => {
@@ -101,7 +127,7 @@ describe('service-backed visual execution adapter', () => {
 
     expect(history.state).toBe('unavailable');
     expect(history.rows).toEqual([]);
-    expect(history.unavailableReason).toContain('Load a local execution template');
+    expect(history.unavailableReason).toContain('Carregue um teste local');
   });
 
   it('projects checklist, guidance, references, and risk state without AI hypothesis fields', () => {
@@ -122,7 +148,7 @@ describe('service-backed visual execution adapter', () => {
     );
     expect(guidance.linkedGuidance[0]?.title).toBe('Pressure transmitter field baseline');
     expect(guidance.observationNotes).toBe('Impulse line warmed and stable.');
-    expect(guidance.riskStateLabel).toBe('Visible risk flagged');
+    expect(guidance.riskStateLabel).toBe('Risco visivel ativo');
     expect(JSON.stringify(guidance)).not.toContain('Probable hypothesis');
     expect(JSON.stringify(guidance)).not.toContain('Why this?');
   });

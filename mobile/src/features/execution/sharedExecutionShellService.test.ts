@@ -758,12 +758,12 @@ describe('SharedExecutionShellService', () => {
         riskItems: expect.arrayContaining([
           expect.objectContaining({
             id: 'expected-evidence:supporting-photo',
-            title: 'Expected evidence missing: supporting photo',
+            title: 'Evidencia esperada ausente: supporting photo',
             severity: 'warning',
           }),
           expect.objectContaining({
             id: 'minimum-evidence:readings',
-            title: 'Minimum evidence missing: readings',
+            title: 'Evidencia minima ausente: readings',
             severity: 'submit-block',
           }),
         ]),
@@ -1507,10 +1507,10 @@ describe('SharedExecutionShellService', () => {
           }),
         ]),
         submitBlockingHooks: expect.arrayContaining([
-          'Minimum evidence missing: readings.',
-          'Minimum evidence missing: observations.',
-          'Justification required: Missing context.',
-          'Justification required: History is unavailable.',
+          'Evidencia minima ausente: readings.',
+          'Evidencia minima ausente: observations.',
+          'Justificativa obrigatoria: Contexto ausente.',
+          'Justificativa obrigatoria: Historico indisponivel.',
         ]),
       },
     });
@@ -1565,7 +1565,7 @@ describe('SharedExecutionShellService', () => {
       'minimum-evidence:readings',
     );
     expect(calculatedShell.guidance.submitBlockingHooks).toEqual(
-      expect.arrayContaining(['Minimum evidence missing: observations.']),
+      expect.arrayContaining(['Evidencia minima ausente: observations.']),
     );
 
     await runtime.database.closeAsync?.();
@@ -1616,7 +1616,7 @@ describe('SharedExecutionShellService', () => {
       'minimum-evidence:readings',
     );
     expect(shellWithNotes.guidance.submitBlockingHooks).toEqual([
-      'Justification required: Expected evidence missing: supporting photo.',
+      'Justificativa obrigatoria: Evidencia esperada ausente: supporting photo.',
     ]);
 
     await runtime.database.closeAsync?.();
@@ -1669,12 +1669,12 @@ describe('SharedExecutionShellService', () => {
       riskItems: expect.arrayContaining([
         expect.objectContaining({
           id: 'expected-evidence:supporting-photo',
-          title: 'Expected evidence missing: supporting photo',
+          title: 'Evidencia esperada ausente: supporting photo',
           severity: 'warning',
         }),
       ]),
       submitBlockingHooks: [
-        'Justification required: Expected evidence missing: supporting photo.',
+        'Justificativa obrigatoria: Evidencia esperada ausente: supporting photo.',
       ],
     });
 
@@ -1804,7 +1804,7 @@ describe('SharedExecutionShellService', () => {
       ]),
     );
     expect(calculatedShell.guidance.submitBlockingHooks).toEqual(
-      expect.arrayContaining(['Minimum evidence missing: field sketch.']),
+      expect.arrayContaining(['Evidencia minima ausente: field sketch.']),
     );
 
     await runtime.database.closeAsync?.();
@@ -2205,8 +2205,8 @@ describe('SharedExecutionShellService', () => {
         }),
       ],
       riskHooks: expect.arrayContaining([
-        expect.stringContaining('Checklist skipped: Confirm impulse path'),
-        expect.stringContaining('Checklist incomplete: Confirm the applied reference'),
+        expect.stringContaining('Checklist ignorado: Confirm impulse path'),
+        expect.stringContaining('Checklist incompleto: Confirm the applied reference'),
       ]),
     });
     expect(riskFlaggedShell.steps.find((step) => step.id === 'guidance')?.fields).toEqual(
@@ -2218,7 +2218,7 @@ describe('SharedExecutionShellService', () => {
         }),
         expect.objectContaining({
           label: 'Risk hooks',
-          value: expect.stringContaining('Checklist skipped: Confirm impulse path'),
+          value: expect.stringContaining('Checklist ignorado: Confirm impulse path'),
           state: 'missing',
         }),
         expect.objectContaining({
@@ -2854,7 +2854,7 @@ describe('SharedExecutionShellService', () => {
     await runtime.database.closeAsync?.();
   });
 
-  it('submits a ready per-tag report locally, queues the report and pending photo evidence, and locks further draft edits', async () => {
+  it('submits a ready per-tag report locally, queues the report and pending photo evidence, and keeps unsynced work editable', async () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-submit-report-ready-'));
     createdDirectories.push(tempDirectory);
 
@@ -2916,7 +2916,7 @@ describe('SharedExecutionShellService', () => {
         }),
         expect.objectContaining({
           label: 'Sync state',
-          value: 'Queued',
+          value: 'Na fila',
           state: 'missing',
         }),
         expect.objectContaining({
@@ -3000,20 +3000,23 @@ describe('SharedExecutionShellService', () => {
     expect(await runtime.repositories.localWorkState.getUnsyncedWorkCount()).toBe(1);
 
     expect(
-      service.updateObservationNotes(submittedShell, 'Observation edits should stay locked.'),
-    ).toBe(submittedShell);
+      service.updateObservationNotes(submittedShell, 'Observation edits remain allowed before sync.').evidence.observationNotes,
+    ).toBe('Observation edits remain allowed before sync.');
     expect(
-      service.updateChecklistOutcome(submittedShell, 'pressure-path-check', 'skipped'),
-    ).toBe(submittedShell);
+      service.updateChecklistOutcome(submittedShell, 'pressure-path-check', 'skipped')
+        .guidance.checklistItems.find((item) => item.id === 'pressure-path-check')?.outcome,
+    ).toBe('skipped');
     expect(
-      service.updateReportReviewNotes(submittedShell, 'Final notes should stay locked after submit.'),
-    ).toBe(submittedShell);
-    await expect(
-      service.saveCalculation(session, submittedShell, {
-        expectedValue: '6',
-        observedValue: '6.20',
-      }),
-    ).resolves.toBe(submittedShell);
+      service.updateReportReviewNotes(submittedShell, 'Final notes can be edited before sync.').report.reviewNotes,
+    ).toBe('Final notes can be edited before sync.');
+    const recalculatedShell = await service.saveCalculation(session, submittedShell, {
+      expectedValue: '6',
+      observedValue: '6.20',
+    });
+    expect(recalculatedShell.calculation?.rawInputs).toMatchObject({
+      expectedValue: '6',
+      observedValue: '6.20',
+    });
 
     await runtime.database.closeAsync?.();
   });
@@ -3101,7 +3104,7 @@ describe('SharedExecutionShellService', () => {
         }),
         expect.objectContaining({
           label: 'Sync state',
-          value: 'Queued',
+          value: 'Na fila',
         }),
       ]),
     );

@@ -12,6 +12,7 @@ import { AssignedWorkPackageApiError } from './workPackageApiClient';
 import { AssignedWorkPackageCatalogService } from './assignedWorkPackageCatalogService';
 import type { AssignedWorkPackageSnapshot, AssignedWorkPackageSummary } from './model';
 import { LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE } from '../sync/queueContracts';
+import { ManualInstrumentService } from './manualInstrumentService';
 
 const createdDirectories: string[] = [];
 
@@ -305,6 +306,67 @@ describe('AssignedWorkPackageCatalogService', () => {
     });
     expect(await runtime.repositories.userPartitions.forUser(session.userId).workPackages.getSnapshot(seedSummary.id))
       .toBeNull();
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('preserves local manual instrument intake snapshots across connected assignment refresh', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-work-package-manual-preserve-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+    const session: ActiveUserSession = {
+      userId: 'user-technician',
+      email: 'tech@tagwise.local',
+      displayName: 'Field Technician',
+      role: 'technician',
+      lastAuthenticatedAt: '2026-04-19T09:00:00.000Z',
+      accessTokenExpiresAt: '2026-04-19T10:00:00.000Z',
+      refreshTokenExpiresAt: '2026-04-20T10:00:00.000Z',
+      connectionMode: 'connected',
+      reviewActionsAvailable: false,
+    };
+    const manualService = new ManualInstrumentService({
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-05-10T12:00:00.000Z'),
+      idFactory: () => '20260510120000',
+    });
+    await manualService.createManualInstrument(session, {
+      tagCode: 'FIELD-NEW-01',
+      description: 'Unregistered pressure transmitter',
+      area: 'Boiler deck',
+      instrumentFamily: 'pressure transmitter',
+      reason: 'Found in field but missing from the official package',
+    });
+
+    const service = new AssignedWorkPackageCatalogService({
+      apiClient: {
+        listAssignedPackages: async () => [replacementSummary],
+        downloadAssignedPackage: async () => {
+          throw new Error('not used');
+        },
+      },
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-05-10T12:05:00.000Z'),
+    });
+    const refreshedCatalog = await service.refreshConnectedCatalog(session);
+
+    expect(refreshedCatalog.map((item) => item.id)).toEqual([
+      'manual-intake:20260510120000',
+      replacementSummary.id,
+    ]);
+    expect(
+      await runtime.repositories.userPartitions
+        .forUser(session.userId)
+        .workPackages.getSnapshot('manual-intake:20260510120000'),
+    ).toMatchObject({
+      summary: {
+        sourceReference: 'local-manual:20260510120000',
+      },
+    });
 
     await runtime.database.closeAsync?.();
   });

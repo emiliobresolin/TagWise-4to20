@@ -13,6 +13,7 @@ import {
   type VisualAiDiagnosisProjectionInput,
   type VisualReportSummaryRow,
 } from './serviceBackedReport';
+import { translateOperationalMessage } from './serviceBackedReport';
 
 export type VisualReviewRole = 'supervisor' | 'manager';
 
@@ -50,6 +51,7 @@ export interface VisualReviewQueueGroup {
   label: string;
   emptyLabel: string;
   items: VisualReviewQueueItemProjection[];
+  count: number;
 }
 
 export interface VisualReviewEvidenceReferenceProjection
@@ -130,8 +132,8 @@ export function buildVisualReviewAccess(
       entryVisible: false,
       canLoadQueue: false,
       canUseDecisionActions: false,
-      label: 'Demo-only approval',
-      detail: 'Signed-out approval screens are illustrative and never dispatch official decisions.',
+      label: 'Revisao indisponivel',
+      detail: 'Entre como supervisor ou gerente conectado para revisar relatorios oficiais.',
     };
   }
 
@@ -142,8 +144,8 @@ export function buildVisualReviewAccess(
       entryVisible: false,
       canLoadQueue: false,
       canUseDecisionActions: false,
-      label: 'Technician workflow',
-      detail: 'Technician sessions cannot access supervisor review queues or actions.',
+      label: 'Fluxo do tecnico',
+      detail: 'Tecnicos nao acessam filas ou acoes de revisao de supervisor.',
     };
   }
 
@@ -157,9 +159,9 @@ export function buildVisualReviewAccess(
       entryVisible: false,
       canLoadQueue: false,
       canUseDecisionActions: false,
-      label: 'Connected review required',
+      label: 'Conexao obrigatoria para revisao',
       detail:
-        'Official review queues and decisions require a connected reviewer session. Cached role metadata is not authoritative for approval.',
+        'Filas e decisoes oficiais exigem sessao conectada. Perfil em cache nao autoriza aprovacao.',
     };
   }
 
@@ -169,11 +171,11 @@ export function buildVisualReviewAccess(
     entryVisible: true,
     canLoadQueue: true,
     canUseDecisionActions: true,
-    label: reviewerRole === 'manager' ? 'Manager review' : 'Supervisor review',
+    label: reviewerRole === 'manager' ? 'Revisao gerencial' : 'Revisao do supervisor',
     detail:
       reviewerRole === 'manager'
-        ? 'Escalated reports load from the connected manager review service.'
-        : 'Server-accepted reports load from the connected supervisor review service.',
+        ? 'Relatorios escalados carregam do servico conectado de revisao gerencial.'
+        : 'Relatorios aceitos pelo servidor carregam do servico conectado de supervisao.',
   };
 }
 
@@ -188,12 +190,13 @@ export function buildVisualReviewQueueGroups(
     group.items.push({
       ...item,
       statusLabel: item.lifecycleState,
+      executionSummary: translateOperationalMessage(item.executionSummary),
       submittedAtLabel: formatTimestamp(item.submittedAt),
       acceptedAtLabel: formatTimestamp(item.acceptedAt),
     });
   }
 
-  return groups;
+  return groups.map((group) => ({ ...group, count: group.items.length }));
 }
 
 export function buildVisualReviewDetailProjection(
@@ -206,9 +209,9 @@ export function buildVisualReviewDetailProjection(
       state: 'unavailable',
       reportId: null,
       reviewerRole: access.reviewerRole,
-      title: 'No report selected',
-      lifecycleStateLabel: 'Unavailable',
-      syncStateLabel: 'Unavailable',
+      title: 'Nenhum relatorio selecionado',
+      lifecycleStateLabel: 'Indisponivel',
+      syncStateLabel: 'Indisponivel',
       summaryRows: [],
       evidenceReferences: [],
       riskFlags: [],
@@ -216,13 +219,13 @@ export function buildVisualReviewDetailProjection(
       evidenceStatusRows: [],
       approvalHistory: {
         items: [],
-        placeholder: 'Open a service-backed review report to see approval history.',
+        placeholder: 'Abra um relatorio de revisao para ver o historico de auditoria.',
       },
       aiDiagnosis: buildVisualAiDiagnosisProjection(aiDiagnosis),
       canApprove: false,
       canReturn: false,
       canEscalate: false,
-      unavailableReason: 'Select a report from the connected review queue.',
+      unavailableReason: 'Selecione um relatorio na fila conectada de revisao.',
     };
   }
 
@@ -233,52 +236,55 @@ export function buildVisualReviewDetailProjection(
     state: 'available',
     reportId: report.reportId,
     reviewerRole: access.reviewerRole,
-    title: `${report.tagId} review detail`,
+    title: `Detalhe da revisao ${report.tagId}`,
     lifecycleStateLabel: report.lifecycleState,
     syncStateLabel: report.syncState,
     summaryRows: [
-      { label: 'Report', value: report.reportId },
-      { label: 'Work package', value: report.workPackageId },
+      { label: 'Relatorio', value: report.reportId },
+      { label: 'Pacote', value: report.workPackageId },
       { label: 'Tag', value: report.tagId },
       { label: 'Template', value: `${report.templateId} (${report.templateVersion})` },
-      { label: 'Technician', value: report.technicianUserId },
-      { label: 'Submitted', value: formatTimestamp(report.submittedAt) },
-      { label: 'Accepted', value: formatTimestamp(report.acceptedAt) },
-      { label: 'Execution', value: report.executionSummary },
-      { label: 'History', value: report.historySummary },
-      { label: 'Deterministic guidance', value: report.draftDiagnosisSummary },
+      { label: 'Tecnico', value: report.technicianUserId },
+      { label: 'Enviado em', value: formatTimestamp(report.submittedAt) },
+      { label: 'Aceito em', value: formatTimestamp(report.acceptedAt) },
+      { label: 'Execucao', value: translateOperationalMessage(report.executionSummary) },
+      { label: 'Historico', value: translateOperationalMessage(report.historySummary) },
+      { label: 'Orientacao deterministica', value: translateOperationalMessage(report.draftDiagnosisSummary) },
     ],
     evidenceReferences: report.evidenceReferences.map((reference) => ({
       ...reference,
-      stateLabel: reference.satisfied ? 'Satisfied' : 'Missing',
+      label: translateOperationalMessage(reference.label),
+      detail: translateOperationalMessage(reference.detail),
+      stateLabel: reference.satisfied ? 'Atendida' : 'Ausente',
     })),
     riskFlags: report.riskFlags.map((riskFlag) => ({
       ...riskFlag,
+      reasonType: translateOperationalMessage(riskFlag.reasonType),
       stateLabel:
         riskFlag.justificationRequired && riskFlag.justificationText.trim().length === 0
-          ? 'Justification required'
-          : 'Visible risk',
-      justificationLabel: riskFlag.justificationText.trim() || 'Not captured',
+          ? 'Justificativa obrigatoria'
+          : 'Risco visivel',
+      justificationLabel: translateOperationalMessage(riskFlag.justificationText.trim()) || 'Nao capturada',
     })),
     photoAttachments: report.photoAttachments.map((attachment) => ({
       ...attachment,
       finalizedLabel: attachment.presenceFinalizedAt
         ? formatTimestamp(attachment.presenceFinalizedAt)
-        : 'Not finalized',
+        : 'Nao finalizada',
     })),
     evidenceStatusRows: [
-      { label: 'Evidence state', value: report.evidenceStatus.state },
-      { label: 'Photo evidence', value: report.evidenceStatus.message },
-      { label: 'Total photos', value: `${report.evidenceStatus.totalPhotoAttachments}` },
-      { label: 'Finalized photos', value: `${report.evidenceStatus.finalizedPhotoAttachments}` },
-      { label: 'Pending photos', value: `${report.evidenceStatus.pendingPhotoAttachments}` },
+      { label: 'Estado da evidencia', value: translateOperationalMessage(report.evidenceStatus.state) },
+      { label: 'Evidencia fotografica', value: translateOperationalMessage(report.evidenceStatus.message) },
+      { label: 'Fotos totais', value: `${report.evidenceStatus.totalPhotoAttachments}` },
+      { label: 'Fotos finalizadas', value: `${report.evidenceStatus.finalizedPhotoAttachments}` },
+      { label: 'Fotos pendentes', value: `${report.evidenceStatus.pendingPhotoAttachments}` },
     ],
     approvalHistory: {
       items: report.approvalHistory.items.map((item) => ({
         ...item,
         occurredAtLabel: formatTimestamp(item.occurredAt),
-        stateTransitionLabel: `${item.priorState ?? 'Unknown'} -> ${
-          item.nextState ?? 'Unknown'
+        stateTransitionLabel: `${item.priorState ?? 'Desconhecido'} -> ${
+          item.nextState ?? 'Desconhecido'
         }`,
       })),
       placeholder: report.approvalHistory.placeholder,
@@ -291,6 +297,24 @@ export function buildVisualReviewDetailProjection(
   };
 }
 
+export function buildVisualReviewDecisionFeedback(input: {
+  kind: VisualReviewDecisionKind;
+  reportId: string;
+  tagId?: string | null;
+}): string {
+  const target = input.tagId?.trim() || input.reportId;
+  switch (input.kind) {
+    case 'approve':
+      return `Relatorio ${target} aprovado.`;
+    case 'return':
+      return `Relatorio ${target} devolvido ao tecnico com comentario.`;
+    case 'escalate':
+      return `Relatorio ${target} escalonado para gerente.`;
+    default:
+      return `Decisao registrada para ${target}.`;
+  }
+}
+
 export function buildVisualReviewDecisionRequest(input: {
   kind: VisualReviewDecisionKind;
   detail: VisualReviewDetailProjection;
@@ -301,7 +325,7 @@ export function buildVisualReviewDecisionRequest(input: {
     return {
       state: 'blocked',
       kind: input.kind,
-      message: 'Open a service-backed review report before deciding.',
+      message: 'Abra um relatorio de revisao antes de decidir.',
     };
   }
 
@@ -310,7 +334,7 @@ export function buildVisualReviewDecisionRequest(input: {
       return {
         state: 'blocked',
         kind: input.kind,
-        message: 'Connected reviewer access is required before approving a report.',
+        message: 'Acesso conectado de revisor e obrigatorio antes de aprovar.',
       };
     }
 
@@ -318,9 +342,9 @@ export function buildVisualReviewDecisionRequest(input: {
       state: 'requires-confirmation',
       kind: input.kind,
       reportId: input.detail.reportId,
-      title: 'Confirm approval',
-      message: 'Approve this report through the connected review service?',
-      confirmLabel: 'Confirm approve',
+      title: 'Confirmar aprovacao',
+      message: 'Aprovar este relatorio pelo servico conectado de revisao?',
+      confirmLabel: 'Confirmar aprovacao',
       comment: null,
     };
   }
@@ -331,7 +355,7 @@ export function buildVisualReviewDecisionRequest(input: {
       return {
         state: 'blocked',
         kind: input.kind,
-        message: 'Connected reviewer access is required before returning a report.',
+        message: 'Acesso conectado de revisor e obrigatorio antes de devolver.',
       };
     }
 
@@ -339,7 +363,7 @@ export function buildVisualReviewDecisionRequest(input: {
       return {
         state: 'blocked',
         kind: input.kind,
-        message: 'Return comment is required before returning a report.',
+        message: 'Comentario e obrigatorio antes de devolver o relatorio.',
       };
     }
 
@@ -347,9 +371,9 @@ export function buildVisualReviewDecisionRequest(input: {
       state: 'requires-confirmation',
       kind: input.kind,
       reportId: input.detail.reportId,
-      title: 'Confirm return',
-      message: 'Return this report with the captured reviewer comment?',
-      confirmLabel: 'Confirm return',
+      title: 'Confirmar devolucao',
+      message: 'Devolver este relatorio com o comentario registrado?',
+      confirmLabel: 'Confirmar devolucao',
       comment,
     };
   }
@@ -359,7 +383,7 @@ export function buildVisualReviewDecisionRequest(input: {
     return {
       state: 'blocked',
       kind: input.kind,
-      message: 'Connected supervisor access is required before escalating a report.',
+      message: 'Acesso conectado de supervisor e obrigatorio antes de escalar.',
     };
   }
 
@@ -367,7 +391,7 @@ export function buildVisualReviewDecisionRequest(input: {
     return {
       state: 'blocked',
       kind: input.kind,
-      message: 'Escalation rationale is required before escalating a report.',
+      message: 'Justificativa e obrigatoria antes de escalar o relatorio.',
     };
   }
 
@@ -375,9 +399,9 @@ export function buildVisualReviewDecisionRequest(input: {
     state: 'requires-confirmation',
     kind: input.kind,
     reportId: input.detail.reportId,
-    title: 'Confirm escalation',
-    message: 'Escalate this report for connected manager review?',
-    confirmLabel: 'Confirm escalate',
+    title: 'Confirmar escalonamento',
+    message: 'Escalar este relatorio para revisao gerencial conectada?',
+    confirmLabel: 'Confirmar escalonamento',
     comment: rationale,
   };
 }
@@ -408,33 +432,38 @@ function buildEmptyGroups(): VisualReviewQueueGroup[] {
   return [
     {
       key: 'pending-review',
-      label: 'Pending Review',
-      emptyLabel: 'No server-accepted reports are waiting in this queue.',
+      label: 'Aguardando revisao',
+      emptyLabel: 'Nenhum relatorio aceito pelo servidor aguarda nesta fila.',
       items: [],
+      count: 0,
     },
     {
       key: 'escalated',
-      label: 'Escalated',
-      emptyLabel: 'No escalated reports are routed here.',
+      label: 'Escalados',
+      emptyLabel: 'Nenhum relatorio escalado esta nesta fila.',
       items: [],
+      count: 0,
     },
     {
       key: 'returned',
-      label: 'Returned',
-      emptyLabel: 'No returned reports are present in this service-backed list.',
+      label: 'Devolvidos',
+      emptyLabel: 'Nenhum relatorio devolvido aparece nesta lista conectada.',
       items: [],
+      count: 0,
     },
     {
       key: 'approved',
-      label: 'Approved',
-      emptyLabel: 'No approved reports are present in this service-backed list.',
+      label: 'Aprovados',
+      emptyLabel: 'Nenhum relatorio aprovado aparece nesta lista conectada.',
       items: [],
+      count: 0,
     },
     {
       key: 'other',
-      label: 'Other',
-      emptyLabel: 'No reports are present in this status group.',
+      label: 'Outros',
+      emptyLabel: 'Nenhum relatorio aparece neste grupo de status.',
       items: [],
+      count: 0,
     },
   ];
 }
@@ -458,5 +487,5 @@ function toQueueGroupKey(
 }
 
 function formatTimestamp(value: string | null) {
-  return value ? new Date(value).toLocaleString() : 'Not recorded';
+  return value ? new Date(value).toLocaleString('pt-BR') : 'Nao registrado';
 }

@@ -3,6 +3,7 @@ import type {
   LocalTagContext,
   LocalAssignedWorkPackageSummary,
 } from '../work-packages/model';
+import { isManualInstrumentWorkPackageId } from '../work-packages/manualInstrumentModel';
 
 export type VisualTagCategory = 'pending' | 'recurrent' | 'due' | 'recent';
 export type VisualSeverity = 'high' | 'medium' | 'low' | 'ok' | 'due';
@@ -101,6 +102,7 @@ export interface BuildVisualWorkflowInput {
   selectedTag?: LocalAssignedTagEntry | null;
   selectedTagContext?: LocalTagContext | null;
   authenticated?: boolean;
+  demoEnabled?: boolean;
 }
 
 const tagColors = {
@@ -240,7 +242,8 @@ export function buildTechnicianVisualWorkflow(
 ): VisualWorkflowModel {
   const localTags = input.localTags?.map(mapLocalTagToVisualTag) ?? [];
   const authenticated = input.authenticated ?? false;
-  const catalogTags = authenticated ? localTags : mergeVisualTags(localTags, seededTags);
+  const demoEnabled = input.demoEnabled ?? isVisualDemoShellEnabled();
+  const catalogTags = authenticated || !demoEnabled ? localTags : mergeVisualTags(localTags, seededTags);
   const pendingTags = catalogTags.filter((tag) => tag.category === 'pending');
   const recurrentTags = catalogTags.filter((tag) => tag.category === 'recurrent');
   const dueTags = catalogTags.filter((tag) => tag.category === 'due');
@@ -248,7 +251,9 @@ export function buildTechnicianVisualWorkflow(
     ? input.selectedTag
       ? mapLocalTagToVisualTag(input.selectedTag)
       : null
-    : defaultDemoTag;
+    : demoEnabled
+      ? defaultDemoTag
+      : null;
   const calculation = calculateVisualError({
     expectedValue: 8,
     observedValue: 9.45,
@@ -262,12 +267,14 @@ export function buildTechnicianVisualWorkflow(
       ? catalogTags.length > 0
         ? 'local-authenticated'
         : 'local-empty'
-      : 'seeded-demo',
+      : demoEnabled
+        ? 'seeded-demo'
+        : 'local-empty',
     counts: {
-      all: authenticated ? catalogTags.length : Math.max(32, catalogTags.length),
-      pending: authenticated ? pendingTags.length : Math.max(12, pendingTags.length),
-      recurrent: authenticated ? recurrentTags.length : Math.max(4, recurrentTags.length),
-      due: authenticated ? dueTags.length : Math.max(9, dueTags.length),
+      all: authenticated || !demoEnabled ? catalogTags.length : Math.max(32, catalogTags.length),
+      pending: authenticated || !demoEnabled ? pendingTags.length : Math.max(12, pendingTags.length),
+      recurrent: authenticated || !demoEnabled ? recurrentTags.length : Math.max(4, recurrentTags.length),
+      due: authenticated || !demoEnabled ? dueTags.length : Math.max(9, dueTags.length),
     },
     packageSummary: {
       packageCount: workPackages.length,
@@ -320,9 +327,16 @@ export function buildTechnicianVisualWorkflow(
   };
 }
 
+export function isVisualDemoShellEnabled(
+  value: string | undefined = process.env.EXPO_PUBLIC_TAGWISE_ENABLE_DEMO_SHELL,
+): boolean {
+  return value?.trim().toLowerCase() === 'true';
+}
+
 function mapLocalTagToVisualTag(tag: LocalAssignedTagEntry): VisualTagSummary {
   const prefix = tag.tagCode.split('-')[0] ?? tag.tagCode.slice(0, 2);
   const category: VisualTagCategory = 'pending';
+  const isManual = isManualInstrumentWorkPackageId(tag.workPackageId);
 
   return {
     id: tag.tagId,
@@ -331,13 +345,13 @@ function mapLocalTagToVisualTag(tag: LocalAssignedTagEntry): VisualTagSummary {
     source: 'local',
     code: tag.tagCode,
     prefix,
-    title: tag.instrumentFamily,
+    title: isManual ? 'Manual intake' : tag.instrumentFamily,
     description: tag.shortDescription,
     area: tag.area,
     category,
-    severity: category === 'pending' ? 'medium' : 'ok',
-    badgeLabel: category === 'pending' ? 'MEDIA' : 'OK',
-    badgeDetail: tag.area,
+    severity: isManual ? 'due' : category === 'pending' ? 'medium' : 'ok',
+    badgeLabel: isManual ? 'MANUAL' : category === 'pending' ? 'MEDIA' : 'OK',
+    badgeDetail: isManual ? 'Pending reconciliation' : tag.area,
     ringColor: resolveRingColor(prefix),
   };
 }

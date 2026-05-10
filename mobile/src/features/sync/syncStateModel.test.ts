@@ -19,12 +19,12 @@ describe('syncStateModel', () => {
   });
 
   it('formats sync badges without mixing transport state into approval state', () => {
-    expect(formatSyncStateLabel('local-only')).toBe('Local Only');
-    expect(formatSyncStateLabel('pending-validation')).toBe('Pending Validation');
+    expect(formatSyncStateLabel('local-only')).toBe('Somente local');
+    expect(formatSyncStateLabel('pending-validation')).toBe('Validacao pendente');
 
     expect(buildSyncStateBadgeModel('sync-issue', 'metadata unavailable')).toMatchObject({
       state: 'sync-issue',
-      label: 'Sync Issue',
+      label: 'Falha de sync',
       tone: 'attention',
       detail: 'metadata unavailable',
     });

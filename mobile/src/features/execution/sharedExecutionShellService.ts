@@ -276,7 +276,7 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     rawInputs: SharedExecutionCalculationRawInputs,
   ): Promise<SharedExecutionShell> {
-    if (!shell.calculation || isSubmittedReport(shell.report)) {
+    if (!shell.calculation || isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -330,7 +330,7 @@ export class SharedExecutionShellService {
   }
 
   updateObservationNotes(shell: SharedExecutionShell, observationNotes: string): SharedExecutionShell {
-    if (shell.evidence.observationNotes === observationNotes || isSubmittedReport(shell.report)) {
+    if (shell.evidence.observationNotes === observationNotes || isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -344,7 +344,7 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
   ): Promise<SharedExecutionShell> {
-    if (isSubmittedReport(shell.report)) {
+    if (isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -398,7 +398,7 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     photo: SharedExecutionPhotoAttachmentInput,
   ): Promise<SharedExecutionShell> {
-    if (isSubmittedReport(shell.report)) {
+    if (isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -412,11 +412,11 @@ export class SharedExecutionShellService {
       sourceUri: photo.uri,
     });
 
-      await store.evidenceMetadata.saveEvidenceMetadata({
-        evidenceId: buildPhotoEvidenceId(updatedAt),
-        businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
-        businessObjectId: draftReportId,
-        fileName: sandboxFile.fileName,
+    await store.evidenceMetadata.saveEvidenceMetadata({
+      evidenceId: buildPhotoEvidenceId(updatedAt),
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: draftReportId,
+      fileName: sandboxFile.fileName,
       mediaRelativePath: sandboxFile.relativePath,
       mimeType: photo.mimeType,
       payloadJson: JSON.stringify({
@@ -427,20 +427,20 @@ export class SharedExecutionShellService {
         templateVersion: shell.template.version,
         draftReportId,
         executionStepId: toExecutionStepKind(shell.progress.currentStepId),
-          source: photo.source,
-          width: photo.width,
-          height: photo.height,
-          fileSize: photo.fileSize,
-          syncState: isSubmittedReport(shell.report) ? QUEUED_SYNC_STATE : LOCAL_ONLY_SYNC_STATE,
-          metadataSyncedAt: null,
-          serverEvidenceId: null,
-          storageObjectKey: null,
-          uploadAuthorizedAt: null,
-          binaryUploadedAt: null,
-          presenceFinalizedAt: null,
-          syncIssue: null,
-        } satisfies StoredExecutionPhotoAttachmentPayload),
-      });
+        source: photo.source,
+        width: photo.width,
+        height: photo.height,
+        fileSize: photo.fileSize,
+        syncState: isSubmittedReport(shell.report) ? QUEUED_SYNC_STATE : LOCAL_ONLY_SYNC_STATE,
+        metadataSyncedAt: null,
+        serverEvidenceId: null,
+        storageObjectKey: null,
+        uploadAuthorizedAt: null,
+        binaryUploadedAt: null,
+        presenceFinalizedAt: null,
+        syncIssue: null,
+      } satisfies StoredExecutionPhotoAttachmentPayload),
+    });
 
     const reloadedShell = await this.loadShell(
       session,
@@ -459,7 +459,7 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     evidenceId: string,
   ): Promise<SharedExecutionShell> {
-    if (isSubmittedReport(shell.report)) {
+    if (isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -494,7 +494,7 @@ export class SharedExecutionShellService {
     checklistItemId: string,
     outcome: SharedExecutionChecklistOutcome,
   ): SharedExecutionShell {
-    if (isSubmittedReport(shell.report)) {
+    if (isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -521,7 +521,7 @@ export class SharedExecutionShellService {
     riskItemId: string,
     justificationText: string,
   ): SharedExecutionShell {
-    if (isSubmittedReport(shell.report)) {
+    if (isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -547,7 +547,7 @@ export class SharedExecutionShellService {
     shell: SharedExecutionShell,
     reviewNotes: string,
   ): SharedExecutionShell {
-    if (shell.report.reviewNotes === reviewNotes || isSubmittedReport(shell.report)) {
+    if (shell.report.reviewNotes === reviewNotes || isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
@@ -561,13 +561,16 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
   ): Promise<SharedExecutionShell> {
-    if (isSubmittedReport(shell.report)) {
+    if (isReportLockedForTechnician(shell.report)) {
       return shell;
     }
 
     const updatedAt = this.now().toISOString();
     const store = this.dependencies.userPartitions.forUser(session.userId);
     const lifecycleState = resolveDraftReportLifecycleState(shell.guidance.submitReadiness);
+    if (shell.report.state === SUBMITTED_PENDING_SYNC_REPORT_STATE) {
+      await clearQueuedSubmissionWork(store, shell);
+    }
     const draftRecord = await saveReportDraftRecord(store, shell, {
       state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
       reviewNotes: shell.report.reviewNotes,
@@ -1070,11 +1073,11 @@ function buildRiskItems(
       id: 'missing-context',
       reasonType: 'missing-context',
       severity: 'warning',
-      title: 'Missing context',
-      detail: `Missing locally cached context: ${context.riskInputs.missingContextFieldLabels.join(', ')}.`,
+      title: 'Contexto ausente',
+      detail: `Contexto local ausente: ${context.riskInputs.missingContextFieldLabels.join(', ')}.`,
       justificationRequired: true,
       justificationPrompt:
-        'Explain how you verified the work safely even though some field context was missing.',
+        'Explique como voce verificou o trabalho com seguranca mesmo com contexto ausente.',
       justificationText: '',
     });
   }
@@ -1099,12 +1102,12 @@ function buildRiskItems(
       id: buildEvidenceRiskId('expected-evidence', label),
       reasonType: 'missing-expected-evidence',
       severity: 'warning',
-      title: `Expected evidence missing: ${label}`,
+      title: `Evidencia esperada ausente: ${label}`,
       detail:
-        'The template marks this evidence as expected for a complete package. Work can continue, but the gap stays visible.',
+        'O template marca esta evidencia como esperada para um pacote completo. O trabalho continua, mas a lacuna fica visivel.',
       justificationRequired: true,
       justificationPrompt:
-        'Explain why this expected evidence could not be captured in the field.',
+        'Explique por que esta evidencia esperada nao foi capturada em campo.',
       justificationText: '',
     });
   }
@@ -1117,9 +1120,9 @@ function buildRiskItems(
       id: buildEvidenceRiskId('minimum-evidence', label),
       reasonType: 'missing-minimum-evidence',
       severity: 'submit-block',
-      title: `Minimum evidence missing: ${label}`,
+      title: `Evidencia minima ausente: ${label}`,
       detail:
-        'This evidence is part of the template minimum and will need to be captured before submission.',
+        'Esta evidencia faz parte do minimo do template e precisa ser capturada antes do envio.',
       justificationRequired: false,
       justificationPrompt: null,
       justificationText: '',
@@ -1138,11 +1141,11 @@ function buildHistoryRiskItem(
         id: 'history-stale',
         reasonType: 'missing-history',
         severity: 'warning',
-        title: 'Cached history is stale',
-        detail: 'History is present but flagged as stale, so the comparison may not reflect the latest upstream work.',
+        title: 'Historico local desatualizado',
+        detail: 'O historico existe, mas esta marcado como desatualizado; a comparacao pode nao refletir o trabalho mais recente.',
         justificationRequired: true,
         justificationPrompt:
-          'Explain how you proceeded with a stale history reference in the field.',
+          'Explique como voce prosseguiu com uma referencia de historico desatualizada.',
         justificationText: '',
       };
     case 'age-unknown':
@@ -1150,11 +1153,11 @@ function buildHistoryRiskItem(
         id: 'history-age-unknown',
         reasonType: 'missing-history',
         severity: 'warning',
-        title: 'Cached history age is unknown',
-        detail: 'History is present, but the package cannot confirm its freshness.',
+        title: 'Idade do historico local desconhecida',
+        detail: 'O historico existe, mas o pacote nao confirma sua atualidade.',
         justificationRequired: true,
         justificationPrompt:
-          'Explain how you handled the age-unknown history reference during execution.',
+          'Explique como voce tratou o historico com idade desconhecida durante a execucao.',
         justificationText: '',
       };
     case 'missing':
@@ -1162,11 +1165,11 @@ function buildHistoryRiskItem(
         id: 'history-missing',
         reasonType: 'missing-history',
         severity: 'warning',
-        title: 'History reference is missing',
-        detail: 'The cached package points to missing history data for this tag.',
+        title: 'Referencia de historico ausente',
+        detail: 'O pacote em cache aponta para historico ausente desta tag.',
         justificationRequired: true,
         justificationPrompt:
-          'Explain how you proceeded without the expected local history reference.',
+          'Explique como voce prosseguiu sem a referencia local de historico esperada.',
         justificationText: '',
       };
     case 'unavailable':
@@ -1174,11 +1177,11 @@ function buildHistoryRiskItem(
         id: 'history-unavailable',
         reasonType: 'missing-history',
         severity: 'warning',
-        title: 'History is unavailable',
-        detail: 'This cached package does not include local history for the selected tag.',
+        title: 'Historico indisponivel',
+        detail: 'Este pacote em cache nao inclui historico local para a tag selecionada.',
         justificationRequired: true,
         justificationPrompt:
-          'Explain how you proceeded without local history in the package.',
+          'Explique como voce prosseguiu sem historico local no pacote.',
         justificationText: '',
       };
     default:
@@ -1194,10 +1197,10 @@ function buildChecklistRiskItem(
       id: `checklist:${item.id}`,
       reasonType: 'checklist-skipped',
       severity: 'warning',
-      title: `Checklist skipped: ${item.prompt}`,
-      detail: `This leaves ${item.helpsRuleOut} unresolved until the technician explains why the step was skipped.`,
+      title: `Checklist ignorado: ${item.prompt}`,
+      detail: `Isto deixa ${item.helpsRuleOut} sem resolver ate o tecnico explicar por que ignorou a etapa.`,
       justificationRequired: true,
-      justificationPrompt: 'Explain why this checklist step was skipped.',
+      justificationPrompt: 'Explique por que esta etapa do checklist foi ignorada.',
       justificationText: '',
     };
   }
@@ -1207,10 +1210,10 @@ function buildChecklistRiskItem(
       id: `checklist:${item.id}`,
       reasonType: 'checklist-incomplete',
       severity: 'warning',
-      title: `Checklist incomplete: ${item.prompt}`,
-      detail: `This step still helps rule out ${item.helpsRuleOut}, so the incomplete state must stay visible.`,
+      title: `Checklist incompleto: ${item.prompt}`,
+      detail: `Esta etapa ainda ajuda a descartar ${item.helpsRuleOut}; por isso o estado incompleto fica visivel.`,
       justificationRequired: true,
-      justificationPrompt: 'Explain why this checklist step is still incomplete.',
+      justificationPrompt: 'Explique por que esta etapa do checklist ainda esta incompleta.',
       justificationText: '',
     };
   }
@@ -1279,7 +1282,7 @@ function buildEvidenceRiskId(
 }
 
 function formatRiskHook(item: SharedExecutionRiskItem): string {
-  return `${item.severity === 'submit-block' ? 'Submit-block' : 'Visible risk'}: ${item.title}.`;
+  return `${item.severity === 'submit-block' ? 'Bloqueia envio' : 'Risco visivel'}: ${item.title}.`;
 }
 
 function buildSubmitBlockingHooks(riskItems: SharedExecutionRiskItem[]): string[] {
@@ -1289,7 +1292,7 @@ function buildSubmitBlockingHooks(riskItems: SharedExecutionRiskItem[]): string[
 
   for (const item of riskItems) {
     if (item.justificationRequired && item.justificationText.trim().length === 0) {
-      hooks.push(`Justification required: ${item.title}.`);
+      hooks.push(`Justificativa obrigatoria: ${item.title}.`);
     }
   }
 
@@ -1875,6 +1878,12 @@ function resolveDraftReportLifecycleState(
 
 function isSubmittedReport(report: Pick<SharedExecutionReportDraftState, 'state'>): boolean {
   return isPersistedSubmittedReportState(report.state);
+}
+
+function isReportLockedForTechnician(
+  report: Pick<SharedExecutionReportDraftState, 'state'>,
+): boolean {
+  return report.state === SUBMITTED_PENDING_REVIEW_REPORT_STATE;
 }
 
 function isPersistedSubmittedReportState(state: SharedExecutionReportState): boolean {
@@ -2575,6 +2584,22 @@ async function saveReportDraftRecord(
   },
 ): Promise<UserOwnedDraftRecord> {
   return persistPerTagReportDraft(store, shell, input);
+}
+
+async function clearQueuedSubmissionWork(
+  store: UserPartitionedLocalStore,
+  shell: SharedExecutionShell,
+): Promise<void> {
+  await store.queueItems.deleteQueueItem(buildSubmitReportQueueItemId(shell.report.reportId));
+
+  for (const attachment of shell.evidence.photoAttachments) {
+    await store.queueItems.deleteQueueItem(
+      buildUploadEvidenceMetadataQueueItemId(attachment.evidenceId),
+    );
+    await store.queueItems.deleteQueueItem(
+      buildUploadEvidenceBinaryQueueItemId(attachment.evidenceId),
+    );
+  }
 }
 
 async function persistPerTagReportDraft(

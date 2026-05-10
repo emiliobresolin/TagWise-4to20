@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import { bootstrapLocalDatabase, type LocalRuntime } from '../data/local/bootstrapLocalDatabase';
+import type { UserOwnedDraftRecord } from '../data/local/repositories/userPartitionedLocalTypes';
 import {
   DEFAULT_SHELL_ROUTE,
   type BootstrapDemoRecord,
@@ -45,7 +46,10 @@ import type {
   SharedExecutionGuidanceItem,
   SharedExecutionLinkedGuidanceSnippet,
   SharedExecutionPhotoAttachment,
+  SharedExecutionReportLifecycleState,
+  SharedExecutionReportState,
   SharedExecutionShell,
+  SharedExecutionSyncState,
 } from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
 import { LocalTagContextService } from '../features/work-packages/localTagContextService';
@@ -54,6 +58,15 @@ import {
   LocalQrScanService,
   type LocalQrScanResult,
 } from '../features/work-packages/localQrScanService';
+import {
+  MANUAL_INSTRUMENT_TEMPLATE_ID,
+  isManualInstrumentWorkPackageId,
+  type ManualInstrumentInput,
+} from '../features/work-packages/manualInstrumentModel';
+import {
+  ManualInstrumentService,
+  ManualInstrumentValidationError,
+} from '../features/work-packages/manualInstrumentService';
 import {
   evaluateAssignedWorkPackageReadiness,
   formatAssignedWorkPackageFreshness,
@@ -77,6 +90,7 @@ import {
   formatSyncStateLabel,
   type SyncStateTone,
 } from '../features/sync/syncStateModel';
+import { LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE } from '../features/sync/queueContracts';
 import {
   SyncStateService,
   type ReportSyncDetail,
@@ -86,6 +100,11 @@ import { createEvidenceBinaryUploadBoundary } from '../platform/files/evidenceBi
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { createPhotoAcquisitionBoundary } from '../platform/media/photoAcquisitionBoundary';
 import { preserveVisualCatalogAfterQrFailure } from '../features/visual-shell/serviceBackedNavigation';
+import {
+  buildTechnicianReportSummaries,
+  type VisualTechnicianReportRecord,
+  type VisualTechnicianReportSummary,
+} from '../features/visual-shell/technicianReports';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
 import { VisualProductShell } from './VisualProductShell';
 
@@ -114,6 +133,7 @@ type BootstrapStatus =
       evidenceUploadOrchestrator: EvidenceUploadOrchestrator;
       syncStateService: SyncStateService;
       supervisorReviewService: SupervisorReviewService;
+      manualInstrumentService: ManualInstrumentService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
       authBusy: boolean;
@@ -126,6 +146,7 @@ type BootstrapStatus =
       selectedExecutionTemplateId: string | null;
       tagSearchQuery: string;
       visibleTags: LocalAssignedTagEntry[];
+      technicianReports: VisualTechnicianReportSummary[];
       selectedTag: LocalAssignedTagEntry | null;
       selectedTagContext: LocalTagContext | null;
       executionShell: SharedExecutionShell | null;
@@ -219,6 +240,9 @@ export function TagWiseApp() {
             secureStorage,
           }),
         );
+        const manualInstrumentService = new ManualInstrumentService({
+          userPartitions: runtime.repositories.userPartitions,
+        });
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
@@ -232,6 +256,9 @@ export function TagWiseApp() {
         const workPackages = session ? await workPackageCatalog.loadLocalCatalog(session) : [];
         const visibleTags = session
           ? await loadVisualShellTags(localTagEntryService, session, workPackages)
+          : [];
+        const technicianReports = session
+          ? await loadTechnicianReportSummaries(runtime, session, visibleTags)
           : [];
         const retrySummary =
           session?.connectionMode === 'connected'
@@ -269,6 +296,7 @@ export function TagWiseApp() {
           evidenceUploadOrchestrator,
           syncStateService,
           supervisorReviewService,
+          manualInstrumentService,
           session,
           localOwnership,
           authBusy: false,
@@ -288,6 +316,7 @@ export function TagWiseApp() {
           selectedExecutionTemplateId: null,
           tagSearchQuery: '',
           visibleTags,
+          technicianReports,
           selectedTag: null,
           selectedTagContext: null,
           executionShell: null,
@@ -443,6 +472,11 @@ export function TagWiseApp() {
         session,
         workPackages,
       );
+      const technicianReports = await loadTechnicianReportSummaries(
+        readyState.runtime,
+        session,
+        visibleTags,
+      );
 
       if (retrySummary.attempted > 0) {
         authMessage = `${authMessage} ${buildRetrySummaryMessage(retrySummary)}`;
@@ -466,6 +500,7 @@ export function TagWiseApp() {
               selectedExecutionTemplateId: null,
               tagSearchQuery: '',
               visibleTags,
+              technicianReports,
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
@@ -521,6 +556,11 @@ export function TagWiseApp() {
         readyState.session,
         workPackages,
       );
+      const technicianReports = await loadTechnicianReportSummaries(
+        readyState.runtime,
+        readyState.session,
+        visibleTags,
+      );
       setStatus((current) =>
         current.type !== 'ready'
           ? current
@@ -534,6 +574,7 @@ export function TagWiseApp() {
               selectedExecutionTemplateId: null,
               tagSearchQuery: '',
               visibleTags,
+              technicianReports,
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
@@ -586,6 +627,15 @@ export function TagWiseApp() {
         readyState.session,
         result.summaries,
       );
+      const visibleTags = await readyState.localTagEntryService.listPackageTags(
+        readyState.session,
+        result.snapshot.summary.id,
+      );
+      const technicianReports = await loadTechnicianReportSummaries(
+        readyState.runtime,
+        readyState.session,
+        visibleTags,
+      );
       setStatus((current) =>
         current.type !== 'ready'
           ? current
@@ -594,11 +644,12 @@ export function TagWiseApp() {
               workPackages: result.summaries,
               packageSyncSummaries,
               packageBusy: false,
-              authMessage: `Assigned package ${result.snapshot.summary.id} snapshot stored locally and freshness updated.`,
-              activeTagPackageId: null,
+              authMessage: `Assigned package ${result.snapshot.summary.id} snapshot stored locally with ${visibleTags.length} cached tag(s).`,
+              activeTagPackageId: result.snapshot.summary.id,
               selectedExecutionTemplateId: null,
               tagSearchQuery: '',
-              visibleTags: [],
+              visibleTags,
+              technicianReports,
               selectedTag: null,
               selectedTagContext: null,
               executionShell: null,
@@ -635,6 +686,16 @@ export function TagWiseApp() {
       readyState.session,
       workPackageId,
     );
+    const reportTags = await loadVisualShellTags(
+      readyState.localTagEntryService,
+      readyState.session,
+      readyState.workPackages,
+    );
+    const technicianReports = await loadTechnicianReportSummaries(
+      readyState.runtime,
+      readyState.session,
+      reportTags,
+    );
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -645,6 +706,7 @@ export function TagWiseApp() {
             selectedExecutionTemplateId: null,
             tagSearchQuery: '',
             visibleTags,
+            technicianReports,
             selectedTag: null,
             selectedTagContext: null,
             executionShell: null,
@@ -655,6 +717,102 @@ export function TagWiseApp() {
                 : `No cached tags are available in package ${workPackageId}. Download the snapshot first.`,
           },
     );
+  }
+
+  async function handleCreateManualInstrument(input: ManualInstrumentInput): Promise<boolean> {
+    if (status.type !== 'ready' || !readyState.session) {
+      return false;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            packageBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const result = await readyState.manualInstrumentService.createManualInstrument(
+        readyState.session,
+        input,
+      );
+      const workPackages = await readyState.workPackageCatalog.loadLocalCatalog(readyState.session);
+      const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        workPackages,
+      );
+      const visibleTags = await readyState.localTagEntryService.listPackageTags(
+        readyState.session,
+        result.workPackageId,
+      );
+      const selectedTag =
+        visibleTags.find((tag) => tag.tagId === result.tagId) ??
+        (await readyState.localTagEntryService.selectPackageTag(
+          readyState.session,
+          result.workPackageId,
+          result.tagId,
+        ));
+      const selectedTagContext = await readyState.localTagContextService.getTagContext(
+        readyState.session,
+        result.workPackageId,
+        result.tagId,
+      );
+      const selectedExecutionTemplateId =
+        selectedTagContext?.referencePointers.executionTemplates[0]?.id ??
+        MANUAL_INSTRUMENT_TEMPLATE_ID;
+      const reportTags = await loadVisualShellTags(
+        readyState.localTagEntryService,
+        readyState.session,
+        workPackages,
+      );
+      const technicianReports = await loadTechnicianReportSummaries(
+        readyState.runtime,
+        readyState.session,
+        reportTags,
+      );
+
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              workPackages,
+              packageSyncSummaries,
+              packageBusy: false,
+              authMessage:
+                'Manual instrument stored locally. It is pending reconciliation and will not be treated as an official backend asset.',
+              activeTagPackageId: result.workPackageId,
+              selectedExecutionTemplateId,
+              tagSearchQuery: '',
+              visibleTags,
+              technicianReports,
+              selectedTag,
+              selectedTagContext,
+              executionShell: null,
+              reportSyncDetail: null,
+              qrScanResult: null,
+            },
+      );
+
+      return true;
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              packageBusy: false,
+              authMessage:
+                error instanceof ManualInstrumentValidationError || error instanceof Error
+                  ? error.message
+                  : 'Manual instrument creation failed without a detailed message.',
+            },
+      );
+      return false;
+    }
   }
 
   async function handleTagSearchChange(query: string) {
@@ -792,6 +950,81 @@ export function TagWiseApp() {
     return openTagContext(selectedTag);
   }
 
+  async function handleOpenTechnicianReport(
+    report: VisualTechnicianReportSummary,
+  ): Promise<boolean> {
+    if (status.type !== 'ready' || !readyState.session) {
+      return false;
+    }
+
+    const selectedTag = await readyState.localTagEntryService.selectPackageTag(
+      readyState.session,
+      report.workPackageId,
+      report.tagId,
+    );
+
+    if (!selectedTag) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage: 'Relatorio local encontrado, mas a tag nao esta mais no cache.',
+            },
+      );
+      return false;
+    }
+
+    const selectedTagContext = await readyState.localTagContextService.getTagContext(
+      readyState.session,
+      report.workPackageId,
+      report.tagId,
+    );
+    const executionShell = await readyState.executionShellService.loadShell(
+      readyState.session,
+      report.workPackageId,
+      report.tagId,
+      report.templateId,
+    );
+    const reportSyncDetail = executionShell
+      ? await readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell)
+      : null;
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            activeTagPackageId: report.workPackageId,
+            selectedExecutionTemplateId: report.templateId,
+            selectedTag,
+            selectedTagContext,
+            executionShell,
+            reportSyncDetail,
+            authMessage: executionShell
+              ? `Relatorio local aberto para ${executionShell.tagCode}.`
+              : 'Nao foi possivel carregar o relatorio local desta tag.',
+          },
+    );
+
+    return Boolean(executionShell);
+  }
+
+  async function loadCurrentTechnicianReports(
+    state: Extract<BootstrapStatus, { type: 'ready' }>,
+  ): Promise<VisualTechnicianReportSummary[]> {
+    if (!state.session) {
+      return [];
+    }
+
+    const reportTags = await loadVisualShellTags(
+      state.localTagEntryService,
+      state.session,
+      state.workPackages,
+    );
+    return loadTechnicianReportSummaries(state.runtime, state.session, reportTags);
+  }
+
   async function handleProceedToExecutionShell(): Promise<boolean> {
     const selectedTemplateId = readyState.selectedExecutionTemplateId;
 
@@ -827,8 +1060,49 @@ export function TagWiseApp() {
               executionShell,
               reportSyncDetail,
               authMessage: executionShell
-                ? `Shared execution shell loaded for ${executionShell.tagCode} using ${executionShell.template.testPattern}.`
-                : 'No local template contract is available for this tag.',
+                ? `Teste local aberto para ${executionShell.tagCode}.`
+                : 'Nao ha contrato local de teste para esta tag.',
+          },
+    );
+
+    return Boolean(executionShell);
+  }
+
+  async function handleOpenExecutionTemplate(templateId: string): Promise<boolean> {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.selectedTag ||
+      !readyState.selectedTagContext ||
+      !canProceedToExecutionShell(
+        readyState.selectedTagContext.referencePointers.executionTemplates,
+        templateId,
+      )
+    ) {
+      return false;
+    }
+
+    const executionShell = await readyState.executionShellService.loadShell(
+      readyState.session,
+      readyState.selectedTag.workPackageId,
+      readyState.selectedTag.tagId,
+      templateId,
+    );
+    const reportSyncDetail = executionShell
+      ? await readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell)
+      : null;
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            selectedExecutionTemplateId: templateId,
+            executionShell,
+            reportSyncDetail,
+            authMessage: executionShell
+              ? `Teste local aberto para ${executionShell.tagCode}.`
+              : 'Nao ha contrato local de teste para esta tag.',
           },
     );
 
@@ -909,7 +1183,7 @@ export function TagWiseApp() {
       current.type !== 'ready' ||
       !current.executionShell ||
       !current.executionShell.calculation ||
-      current.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(current.executionShell.report.state)
         ? current
         : {
             ...current,
@@ -934,7 +1208,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      current.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(current.executionShell.report.state)
         ? current
         : {
             ...current,
@@ -951,7 +1225,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      current.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(current.executionShell.report.state)
         ? current
         : {
             ...current,
@@ -967,7 +1241,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      current.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(current.executionShell.report.state)
         ? current
         : {
             ...current,
@@ -984,7 +1258,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      current.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(current.executionShell.report.state)
         ? current
         : {
             ...current,
@@ -1001,7 +1275,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell?.calculation ||
-      readyState.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(readyState.executionShell.report.state)
     ) {
       return;
     }
@@ -1012,6 +1286,7 @@ export function TagWiseApp() {
         readyState.executionShell,
         readyState.executionShell.calculation.rawInputs,
       );
+      const technicianReports = await loadCurrentTechnicianReports(readyState);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1019,8 +1294,9 @@ export function TagWiseApp() {
           : {
               ...current,
               executionShell,
+              technicianReports,
               authMessage: executionShell.calculation?.result
-                ? `Deterministic calculation saved locally for ${executionShell.tagCode}.`
+                ? `Calculo salvo localmente para ${executionShell.tagCode}.`
                 : current.authMessage,
             },
       );
@@ -1044,7 +1320,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      readyState.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(readyState.executionShell.report.state)
     ) {
       return;
     }
@@ -1053,6 +1329,7 @@ export function TagWiseApp() {
       readyState.session,
       readyState.executionShell,
     );
+    const technicianReports = await loadCurrentTechnicianReports(readyState);
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -1060,7 +1337,45 @@ export function TagWiseApp() {
         : {
             ...current,
             executionShell,
-            authMessage: `Structured execution evidence saved locally for ${executionShell.tagCode}.`,
+            technicianReports,
+            authMessage: `Checklist, observacoes e justificativas salvos localmente para ${executionShell.tagCode}.`,
+          },
+    );
+  }
+
+  async function handleSaveLoopTestNote(note: string) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+    ) {
+      return;
+    }
+
+    const existingNotes = readyState.executionShell.evidence.observationNotes.trim();
+    const mergedNotes = existingNotes
+      ? `${existingNotes}\n\n${note}`
+      : note;
+    const draftShell = readyState.executionShellService.updateObservationNotes(
+      readyState.executionShell,
+      mergedNotes,
+    );
+    const executionShell = await readyState.executionShellService.saveGuidanceEvidence(
+      readyState.session,
+      draftShell,
+    );
+    const technicianReports = await loadCurrentTechnicianReports(readyState);
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+            technicianReports,
+            authMessage:
+              'Teste de loop salvo localmente. Proximo: comparar historico, abrir checklist ou adicionar evidencia.',
           },
     );
   }
@@ -1070,7 +1385,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      readyState.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(readyState.executionShell.report.state)
     ) {
       return;
     }
@@ -1097,6 +1412,7 @@ export function TagWiseApp() {
           readyState.workPackages,
         ),
       ]);
+      const technicianReports = await loadCurrentTechnicianReports(readyState);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1106,7 +1422,8 @@ export function TagWiseApp() {
               executionShell,
               reportSyncDetail,
               packageSyncSummaries,
-              authMessage: `Photo attachment saved locally for ${executionShell.tagCode}.`,
+              technicianReports,
+              authMessage: `Foto salva localmente para ${executionShell.tagCode}.`,
             },
       );
     } catch (error) {
@@ -1129,7 +1446,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      readyState.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(readyState.executionShell.report.state)
     ) {
       return;
     }
@@ -1146,6 +1463,7 @@ export function TagWiseApp() {
         readyState.workPackages,
       ),
     ]);
+    const technicianReports = await loadCurrentTechnicianReports(readyState);
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -1155,7 +1473,8 @@ export function TagWiseApp() {
             executionShell,
             reportSyncDetail,
             packageSyncSummaries,
-            authMessage: `Photo attachment removed locally for ${executionShell.tagCode}.`,
+            technicianReports,
+            authMessage: `Foto removida localmente para ${executionShell.tagCode}.`,
           },
     );
   }
@@ -1165,7 +1484,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      readyState.executionShell.report.state !== 'technician-owned-draft'
+      !isTechnicianEditableReportState(readyState.executionShell.report.state)
     ) {
       return;
     }
@@ -1181,6 +1500,7 @@ export function TagWiseApp() {
         readyState.workPackages,
       ),
     ]);
+    const technicianReports = await loadCurrentTechnicianReports(readyState);
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -1190,7 +1510,8 @@ export function TagWiseApp() {
             executionShell,
             reportSyncDetail,
             packageSyncSummaries,
-            authMessage: `Per-tag report draft saved locally for ${executionShell.tagCode}.`,
+            technicianReports,
+            authMessage: `Rascunho do relatorio salvo localmente para ${executionShell.tagCode}.`,
           },
     );
   }
@@ -1459,6 +1780,8 @@ export function TagWiseApp() {
               result.state === 'cleared' ? null : current.selectedExecutionTemplateId,
             tagSearchQuery: result.state === 'cleared' ? '' : current.tagSearchQuery,
             visibleTags: result.state === 'cleared' ? [] : current.visibleTags,
+            technicianReports:
+              result.state === 'cleared' ? [] : current.technicianReports,
             selectedTag: result.state === 'cleared' ? null : current.selectedTag,
             selectedTagContext: result.state === 'cleared' ? null : current.selectedTagContext,
             executionShell: result.state === 'cleared' ? null : current.executionShell,
@@ -1487,12 +1810,46 @@ export function TagWiseApp() {
         return;
       }
 
+      if (isManualInstrumentWorkPackageId(readyState.executionShell.workPackageId)) {
+        try {
+          const executionShell = await readyState.executionShellService.saveReportDraft(
+            readyState.session,
+            readyState.executionShell,
+          );
+          const technicianReports = await loadCurrentTechnicianReports(readyState);
+          setStatus((current) =>
+            current.type !== 'ready'
+              ? current
+              : {
+                  ...current,
+                  executionShell,
+                  technicianReports,
+                  authMessage:
+                    'Relatorio manual salvo localmente. Envio ao backend depende de reconciliacao futura e nao foi simulado.',
+                },
+          );
+        } catch (error) {
+          setStatus((current) =>
+            current.type !== 'ready'
+              ? current
+              : {
+                  ...current,
+                  authMessage:
+                    error instanceof Error
+                      ? error.message
+                      : 'Manual instrument draft save failed without a detailed message.',
+                },
+          );
+        }
+        return;
+      }
+
       try {
         let executionShell = await readyState.executionShellService.submitReport(
           readyState.session,
           readyState.executionShell,
         );
-        let authMessage = `Per-tag report queued locally for sync for ${executionShell.tagCode}.`;
+        let authMessage = `Relatorio de ${executionShell.tagCode} entrou na fila local de sincronizacao.`;
 
         if (readyState.session.connectionMode === 'connected') {
           try {
@@ -1511,8 +1868,8 @@ export function TagWiseApp() {
           } catch (error) {
             authMessage =
               error instanceof Error
-                ? `Per-tag report queued locally. Evidence upload hit an issue and remains on-device: ${error.message}`
-                : 'Per-tag report queued locally. Evidence upload hit an issue and remains on-device.';
+                ? `Relatorio ficou na fila local. Upload de evidencias encontrou problema e permanece no aparelho: ${error.message}`
+                : 'Relatorio ficou na fila local. Upload de evidencias encontrou problema e permanece no aparelho.';
           }
         }
         const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
@@ -1522,6 +1879,7 @@ export function TagWiseApp() {
             readyState.workPackages,
           ),
         ]);
+        const technicianReports = await loadCurrentTechnicianReports(readyState);
 
         setStatus((current) =>
           current.type !== 'ready'
@@ -1531,6 +1889,7 @@ export function TagWiseApp() {
                 executionShell,
                 reportSyncDetail,
                 packageSyncSummaries,
+                technicianReports,
                 authMessage,
               },
         );
@@ -1543,7 +1902,7 @@ export function TagWiseApp() {
               authMessage:
                 error instanceof Error
                   ? error.message
-                  : 'Local report submission failed without a detailed message.',
+                  : 'Envio local do relatorio falhou sem mensagem detalhada.',
             },
       );
     }
@@ -1576,6 +1935,7 @@ export function TagWiseApp() {
           readyState.workPackages,
         ),
       ]);
+      const technicianReports = await loadCurrentTechnicianReports(readyState);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1586,7 +1946,8 @@ export function TagWiseApp() {
               executionShell,
               reportSyncDetail,
               packageSyncSummaries,
-              authMessage: `Sync retry processed for ${executionShell.tagCode}.`,
+              technicianReports,
+              authMessage: `Tentativa de sincronizacao processada para ${executionShell.tagCode}.`,
             },
       );
     } catch (error) {
@@ -1605,6 +1966,7 @@ export function TagWiseApp() {
         readyState.session,
         readyState.workPackages,
       );
+      const technicianReports = await loadCurrentTechnicianReports(readyState);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1615,10 +1977,11 @@ export function TagWiseApp() {
               executionShell,
               reportSyncDetail,
               packageSyncSummaries,
+              technicianReports,
               authMessage:
                 error instanceof Error
-                  ? `Sync retry kept local records queued: ${error.message}`
-                  : 'Sync retry kept local records queued.',
+                  ? `Registros continuam na fila local: ${error.message}`
+                  : 'Registros continuam na fila local.',
             },
       );
     }
@@ -1635,7 +1998,7 @@ export function TagWiseApp() {
           ? current
           : {
               ...current,
-              authMessage: 'Reconnect before refreshing server report status.',
+              authMessage: 'Reconecte antes de atualizar o status do relatorio no servidor.',
             },
       );
       return;
@@ -1666,6 +2029,11 @@ export function TagWiseApp() {
           workPackages,
         ),
       ]);
+      const technicianReports = await loadTechnicianReportSummaries(
+        readyState.runtime,
+        readyState.session,
+        await loadVisualShellTags(readyState.localTagEntryService, readyState.session, workPackages),
+      );
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1677,7 +2045,8 @@ export function TagWiseApp() {
               executionShell,
               reportSyncDetail,
               packageSyncSummaries,
-              authMessage: `Server status refreshed for ${executionShell.tagCode}.`,
+              technicianReports,
+              authMessage: `Status do servidor atualizado para ${executionShell.tagCode}.`,
             },
       );
     } catch (error) {
@@ -1727,9 +2096,7 @@ export function TagWiseApp() {
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `${supervisorReviewQueue.length} ${
-                isManagerReview ? 'manager' : 'supervisor'
-              } review report(s) loaded.`,
+              authMessage: `${supervisorReviewQueue.length} relatorio(s) de revisao carregado(s).`,
             },
       );
     } catch (error) {
@@ -1784,7 +2151,7 @@ export function TagWiseApp() {
               selectedSupervisorReviewReport,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `Review report loaded for ${selectedSupervisorReviewReport.tagId}.`,
+              authMessage: `Detalhe de revisao carregado para ${selectedSupervisorReviewReport.tagId}.`,
             },
       );
     } catch (error) {
@@ -1864,6 +2231,9 @@ export function TagWiseApp() {
             readyState.session,
             reportId,
           );
+      const supervisorReviewQueue = isManagerReview
+        ? await readyState.supervisorReviewService.refreshManagerQueue(readyState.session)
+        : await readyState.supervisorReviewService.refreshQueue(readyState.session);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1871,15 +2241,11 @@ export function TagWiseApp() {
           : {
               ...current,
               reviewBusy: false,
-              supervisorReviewQueue: current.supervisorReviewQueue.filter(
-                (item) => item.reportId !== decision.reportId,
-              ),
+              supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `Report ${decision.reportId} approved by ${
-                isManagerReview ? 'manager' : 'supervisor'
-              } and recorded in the audit trail.`,
+              authMessage: `Relatorio ${decision.reportId} aprovado e registrado na trilha de auditoria.`,
             },
       );
     } catch (error) {
@@ -1926,6 +2292,9 @@ export function TagWiseApp() {
             reportId,
             readyState.supervisorReturnComment,
           );
+      const supervisorReviewQueue = isManagerReview
+        ? await readyState.supervisorReviewService.refreshManagerQueue(readyState.session)
+        : await readyState.supervisorReviewService.refreshQueue(readyState.session);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1933,15 +2302,11 @@ export function TagWiseApp() {
           : {
               ...current,
               reviewBusy: false,
-              supervisorReviewQueue: current.supervisorReviewQueue.filter(
-                (item) => item.reportId !== decision.reportId,
-              ),
+              supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `Report ${decision.reportId} returned with ${
-                isManagerReview ? 'manager' : 'supervisor'
-              } comments.`,
+              authMessage: `Relatorio ${decision.reportId} devolvido ao tecnico com comentario.`,
             },
       );
     } catch (error) {
@@ -1981,6 +2346,8 @@ export function TagWiseApp() {
         reportId,
         readyState.supervisorEscalationRationale,
       );
+      const supervisorReviewQueue =
+        await readyState.supervisorReviewService.refreshQueue(readyState.session);
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1988,13 +2355,11 @@ export function TagWiseApp() {
           : {
               ...current,
               reviewBusy: false,
-              supervisorReviewQueue: current.supervisorReviewQueue.filter(
-                (item) => item.reportId !== decision.reportId,
-              ),
+              supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
-              authMessage: `Report ${decision.reportId} escalated for manager review.`,
+              authMessage: `Relatorio ${decision.reportId} escalonado para gerente.`,
             },
       );
     } catch (error) {
@@ -2032,6 +2397,7 @@ export function TagWiseApp() {
       selectedTag={readyState.selectedTag}
       selectedTagContext={readyState.selectedTagContext}
       session={readyState.session}
+      technicianReports={readyState.technicianReports}
       supervisorEscalationRationale={readyState.supervisorEscalationRationale}
       supervisorReturnComment={readyState.supervisorReturnComment}
       supervisorReviewQueue={readyState.supervisorReviewQueue}
@@ -2043,15 +2409,20 @@ export function TagWiseApp() {
       }
       onAttachReportPhoto={(source) => handleAttachExecutionPhoto(source)}
       onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
+      onBrowsePackageTags={(workPackageId) => handleBrowsePackageTags(workPackageId)}
       onCancelQrScanner={handleCancelQrScanner}
       onCalculationInputChange={handleExecutionCalculationInputChange}
       onChecklistOutcomeChange={handleChecklistOutcomeChange}
       onCloseSupervisorReviewReport={handleCloseSupervisorReviewReport}
+      onCreateManualInstrument={(input) => handleCreateManualInstrument(input)}
+      onDownloadPackage={(workPackageId) => handleDownloadAssignedPackage(workPackageId)}
       onEmailChange={setEmail}
       onEscalateSupervisorReviewReport={(reportId) =>
         handleEscalateSupervisorReviewReport(reportId)
       }
+      onOpenTechnicianReport={(report) => handleOpenTechnicianReport(report)}
       onOpenTag={(identity) => handleOpenVisualTag(identity)}
+      onOpenExecutionTemplate={(templateId) => handleOpenExecutionTemplate(templateId)}
       onOpenSupervisorReviewReport={(reportId) => handleOpenSupervisorReviewReport(reportId)}
       onPasswordChange={setPassword}
       onProceedToExecutionShell={() => handleProceedToExecutionShell()}
@@ -2067,6 +2438,7 @@ export function TagWiseApp() {
       onRiskJustificationChange={handleRiskJustificationChange}
       onSaveCalculation={() => handleSaveExecutionCalculation()}
       onSaveGuidanceEvidence={() => handleSaveExecutionEvidence()}
+      onSaveLoopTestNote={(note) => handleSaveLoopTestNote(note)}
       onSaveReportDraft={() => handleSaveReportDraft()}
       onSelectExecutionTemplate={handleSelectExecutionTemplate}
       onSignIn={() => void handleSignIn()}
@@ -4238,6 +4610,106 @@ async function loadVisualShellTags(
   );
 
   return tagGroups.flat();
+}
+
+async function loadTechnicianReportSummaries(
+  runtime: LocalRuntime,
+  session: ActiveUserSession,
+  tags: LocalAssignedTagEntry[],
+): Promise<VisualTechnicianReportSummary[]> {
+  const drafts = await runtime.repositories.userPartitions
+    .forUser(session.userId)
+    .drafts.listDrafts();
+  const records = drafts
+    .map(parseTechnicianReportRecord)
+    .filter((record): record is VisualTechnicianReportRecord => record !== null);
+
+  return buildTechnicianReportSummaries({ records, tags });
+}
+
+function parseTechnicianReportRecord(draft: UserOwnedDraftRecord): VisualTechnicianReportRecord | null {
+  if (draft.businessObjectType !== LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(draft.payloadJson) as Partial<VisualTechnicianReportRecord> & {
+      state?: unknown;
+    };
+    if (
+      typeof parsed.reportId !== 'string' ||
+      typeof parsed.workPackageId !== 'string' ||
+      typeof parsed.tagId !== 'string' ||
+      typeof parsed.templateId !== 'string' ||
+      typeof parsed.templateVersion !== 'string' ||
+      !isSharedExecutionReportState(parsed.reportState ?? parsed.state) ||
+      !isSharedExecutionLifecycleState(parsed.lifecycleState) ||
+      !isSharedExecutionSyncState(parsed.syncState) ||
+      typeof parsed.updatedAt !== 'string'
+    ) {
+      return null;
+    }
+
+    const reportState = parsed.reportState ?? parsed.state;
+    if (!isSharedExecutionReportState(reportState)) {
+      return null;
+    }
+
+    return {
+      reportId: parsed.reportId,
+      workPackageId: parsed.workPackageId,
+      tagId: parsed.tagId,
+      templateId: parsed.templateId,
+      templateVersion: parsed.templateVersion,
+      reportState,
+      lifecycleState: parsed.lifecycleState,
+      syncState: parsed.syncState,
+      reviewNotes: typeof parsed.reviewNotes === 'string' ? parsed.reviewNotes : '',
+      updatedAt: parsed.updatedAt,
+      submittedAt: typeof parsed.submittedAt === 'string' ? parsed.submittedAt : null,
+      syncIssue: typeof parsed.syncIssue === 'string' ? parsed.syncIssue : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isSharedExecutionReportState(value: unknown): value is SharedExecutionReportState {
+  return (
+    value === 'technician-owned-draft' ||
+    value === 'submitted-pending-sync' ||
+    value === 'submitted-pending-review'
+  );
+}
+
+function isTechnicianEditableReportState(value: SharedExecutionReportState): boolean {
+  return value === 'technician-owned-draft' || value === 'submitted-pending-sync';
+}
+
+function isSharedExecutionLifecycleState(
+  value: unknown,
+): value is SharedExecutionReportLifecycleState {
+  return (
+    value === 'In Progress' ||
+    value === 'Ready to Submit' ||
+    value === 'Submitted - Pending Sync' ||
+    value === 'Submitted - Pending Supervisor Review' ||
+    value === 'Escalated - Pending Manager Review' ||
+    value === 'Returned by Supervisor' ||
+    value === 'Returned by Manager' ||
+    value === 'Approved'
+  );
+}
+
+function isSharedExecutionSyncState(value: unknown): value is SharedExecutionSyncState {
+  return (
+    value === 'local-only' ||
+    value === 'queued' ||
+    value === 'syncing' ||
+    value === 'pending-validation' ||
+    value === 'synced' ||
+    value === 'sync-issue'
+  );
 }
 
 async function flushMobileDiagnosticsSafely(

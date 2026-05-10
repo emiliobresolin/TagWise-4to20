@@ -53,6 +53,7 @@ export interface VisualLoopConversionMetadata {
 export type VisualLoopConversionMode =
   | 'process-to-milliamp'
   | 'milliamp-to-process'
+  | 'process-to-percent'
   | 'milliamp-to-percent'
   | 'percent-to-milliamp';
 
@@ -83,6 +84,14 @@ export interface VisualExecutionHistoryViewModel {
   unavailableReason: string | null;
 }
 
+export interface VisualHistoryPointOption {
+  id: string;
+  label: string;
+  pointPercent: number | null;
+  rows: VisualExecutionHistoryRow[];
+  emptyLabel: string;
+}
+
 export interface VisualExecutionGuidanceViewModel {
   state: 'available' | 'missing' | 'unavailable';
   tagCode: string;
@@ -105,8 +114,8 @@ export interface VisualExecutionGuidanceViewModel {
 
 const unavailableConversion: VisualLoopConversionMetadata = {
   state: 'unavailable',
-  reason: '4-20 mA conversion metadata is not available for this selected template.',
-  basisLabel: 'Unavailable',
+  reason: 'Metadados de conversao 4-20 mA indisponiveis para este teste.',
+  basisLabel: 'Indisponivel',
   processRange: null,
   loopRange: null,
 };
@@ -117,25 +126,25 @@ export function buildVisualExecutionCalculation(
   if (!shell?.calculation) {
     return {
       state: 'unavailable',
-      tagCode: shell?.tagCode ?? 'No tag selected',
-      templateTitle: shell?.template.title ?? 'No execution template loaded',
-      modeLabel: 'Unavailable',
-      acceptanceLabel: 'Unavailable',
-      expectedLabel: 'Expected value',
-      observedLabel: 'Observed value',
+      tagCode: shell?.tagCode ?? 'Nenhuma tag selecionada',
+      templateTitle: shell?.template.title ?? 'Nenhum teste carregado',
+      modeLabel: 'Indisponivel',
+      acceptanceLabel: 'Indisponivel',
+      expectedLabel: 'Valor esperado',
+      observedLabel: 'Valor medido',
       expectedValue: '',
       observedValue: '',
-      unitLabel: 'Unavailable',
-      rangeLabel: 'Unavailable',
-      toleranceLabel: 'Unavailable',
-      conversionBasisLabel: 'Unavailable',
-      expectedRangeLabel: 'Unavailable',
+      unitLabel: 'Indisponivel',
+      rangeLabel: 'Indisponivel',
+      toleranceLabel: 'Indisponivel',
+      conversionBasisLabel: 'Indisponivel',
+      expectedRangeLabel: 'Indisponivel',
       result: null,
-      updatedAtLabel: 'Not saved yet',
+      updatedAtLabel: 'Ainda nao salvo',
       editable: false,
       conversion: unavailableConversion,
       unavailableReason:
-        'Load a local execution template for the selected tag before entering readings.',
+        'Carregue um teste local da tag antes de inserir medicoes.',
     };
   }
 
@@ -146,22 +155,24 @@ export function buildVisualExecutionCalculation(
     state: 'available',
     tagCode: shell.tagCode,
     templateTitle: shell.template.title,
-    modeLabel: definition.modeLabel,
-    acceptanceLabel: definition.acceptanceLabel,
-    expectedLabel: definition.expectedLabel,
-    observedLabel: definition.observedLabel,
+    modeLabel: translateVisibleText(definition.modeLabel) ?? definition.modeLabel,
+    acceptanceLabel: translateVisibleText(definition.acceptanceLabel) ?? definition.acceptanceLabel,
+    expectedLabel: translateVisibleText(definition.expectedLabel) ?? definition.expectedLabel,
+    observedLabel: translateVisibleText(definition.observedLabel) ?? definition.observedLabel,
     expectedValue: calculation.rawInputs.expectedValue,
     observedValue: calculation.rawInputs.observedValue,
-    unitLabel: definition.unit ?? 'Local unit unavailable',
+    unitLabel: definition.unit ?? 'Unidade local indisponivel',
     rangeLabel: formatRange(definition.calculationRange),
     toleranceLabel: formatTolerance(definition),
     conversionBasisLabel:
-      definition.executionContext.conversionBasisSummary ?? 'No conversion basis declared',
+      translateVisibleText(definition.executionContext.conversionBasisSummary) ??
+      'Base de conversao nao declarada',
     expectedRangeLabel:
-      definition.executionContext.expectedRangeSummary ?? 'No expected range declared',
+      translateVisibleText(definition.executionContext.expectedRangeSummary) ??
+      'Faixa esperada nao declarada',
     result: buildCalculationResult(calculation),
-    updatedAtLabel: calculation.updatedAt ? formatTimestamp(calculation.updatedAt) : 'Not saved yet',
-    editable: shell.report.state === 'technician-owned-draft',
+    updatedAtLabel: calculation.updatedAt ? formatTimestamp(calculation.updatedAt) : 'Ainda nao salvo',
+    editable: isTechnicianEditableReport(shell.report.state),
     conversion: resolveLoopConversionMetadata(definition),
     unavailableReason: null,
   };
@@ -175,16 +186,16 @@ export function buildVisualExecutionHistory(
   if (!shell || !historyStep) {
     return {
       state: 'unavailable',
-      tagCode: shell?.tagCode ?? 'No tag selected',
-      title: 'History comparison unavailable',
-      summary: 'No local execution shell history step is loaded.',
-      detail: 'The technician can continue, but no cached history comparison is available here.',
-      currentResultLabel: 'Not entered yet',
+      tagCode: shell?.tagCode ?? 'Nenhuma tag selecionada',
+      title: 'Comparacao historica indisponivel',
+      summary: 'Nenhuma etapa local de historico foi carregada.',
+      detail: 'O tecnico pode continuar, mas nao ha comparacao historica local aqui.',
+      currentResultLabel: 'Ainda nao informado',
       currentResultSeverity: 'medium',
-      historyStateLabel: 'Unavailable',
+      historyStateLabel: 'Indisponivel',
       rows: [],
       unavailableReason:
-        'Load a local execution template for the selected tag before comparing history.',
+        'Carregue um teste local da tag antes de comparar o historico.',
     };
   }
 
@@ -195,12 +206,13 @@ export function buildVisualExecutionHistory(
   return {
     state: mapHistoryState(shell.riskInputs.historyState),
     tagCode: shell.tagCode,
-    title: historyStep.title,
-    summary: historyStep.summary,
-    detail: historyStep.detail,
-    currentResultLabel: currentResultField?.value ?? 'Not entered yet',
+    title: translateVisibleText(historyStep.title) ?? historyStep.title,
+    summary: translateVisibleText(historyStep.summary) ?? historyStep.summary,
+    detail: translateVisibleText(historyStep.detail) ?? historyStep.detail,
+    currentResultLabel: translateCommonValue(currentResultField?.value) ?? currentResultField?.value ?? 'Ainda nao informado',
     currentResultSeverity: acceptanceSeverity(currentAcceptance),
-    historyStateLabel: historyStateField?.value ?? toHistoryStateLabel(shell.riskInputs.historyState),
+    historyStateLabel:
+      translateCommonValue(historyStateField?.value) ?? toHistoryStateLabel(shell.riskInputs.historyState),
     rows: historyStep.fields.map(mapHistoryRow),
     unavailableReason: null,
   };
@@ -214,49 +226,49 @@ export function buildVisualExecutionGuidance(
   if (!shell || !guidanceStep) {
     return {
       state: 'unavailable',
-      tagCode: shell?.tagCode ?? 'No tag selected',
-      title: 'Checklist and guidance unavailable',
-      summary: 'No local execution shell guidance step is loaded.',
-      detail: 'The technician can continue, but no cached checklist or references are available here.',
+      tagCode: shell?.tagCode ?? 'Nenhuma tag selecionada',
+      title: 'Checklist e orientacao indisponiveis',
+      summary: 'Nenhuma etapa local de orientacao foi carregada.',
+      detail: 'O tecnico pode continuar, mas nao ha checklist ou referencias locais aqui.',
       checklistItems: [],
       guidedDiagnosisPrompts: [],
       linkedGuidance: [],
       riskItems: [],
       observationNotes: '',
-      guidanceEvidenceSavedAtLabel: 'Not saved yet',
-      riskStateLabel: 'Unavailable',
+      guidanceEvidenceSavedAtLabel: 'Ainda nao salvo',
+      riskStateLabel: 'Indisponivel',
       riskSeverity: 'medium',
-      submitReadinessLabel: 'Unavailable',
+      submitReadinessLabel: 'Indisponivel',
       submitReadinessSeverity: 'medium',
       editable: false,
       unavailableReason:
-        'Load a local execution template for the selected tag before using checklist guidance.',
+        'Carregue um teste local da tag antes de usar o checklist.',
     };
   }
 
   return {
     state: mapGuidanceState(shell.guidance),
     tagCode: shell.tagCode,
-    title: guidanceStep.title,
-    summary: guidanceStep.summary,
-    detail: guidanceStep.detail,
-    checklistItems: shell.guidance.checklistItems,
-    guidedDiagnosisPrompts: shell.guidance.guidedDiagnosisPrompts,
-    linkedGuidance: shell.guidance.linkedGuidance,
-    riskItems: shell.guidance.riskItems,
+    title: translateVisibleText(guidanceStep.title) ?? guidanceStep.title,
+    summary: translateVisibleText(guidanceStep.summary) ?? guidanceStep.summary,
+    detail: translateVisibleText(guidanceStep.detail) ?? guidanceStep.detail,
+    checklistItems: shell.guidance.checklistItems.map(translateChecklistItem),
+    guidedDiagnosisPrompts: shell.guidance.guidedDiagnosisPrompts.map(translateGuidanceItem),
+    linkedGuidance: shell.guidance.linkedGuidance.map(translateLinkedGuidance),
+    riskItems: shell.guidance.riskItems.map(translateRiskItem),
     observationNotes: shell.evidence.observationNotes,
     guidanceEvidenceSavedAtLabel: shell.evidence.guidanceEvidenceUpdatedAt
       ? formatTimestamp(shell.evidence.guidanceEvidenceUpdatedAt)
-      : 'Not saved yet',
+      : 'Ainda nao salvo',
     riskStateLabel:
-      shell.guidance.riskState === 'flagged' ? 'Visible risk flagged' : 'No visible risk flagged',
+      shell.guidance.riskState === 'flagged' ? 'Risco visivel ativo' : 'Sem risco visivel ativo',
     riskSeverity: shell.guidance.riskState === 'flagged' ? 'due' : 'ok',
     submitReadinessLabel:
       shell.guidance.submitReadiness === 'blocked'
-        ? 'Submit-blocking hooks active'
-        : 'No submit-blocking hooks active',
+        ? 'Pendencias que bloqueiam envio'
+        : 'Sem bloqueio para envio',
     submitReadinessSeverity: shell.guidance.submitReadiness === 'blocked' ? 'due' : 'ok',
-    editable: shell.report.state === 'technician-owned-draft',
+    editable: isTechnicianEditableReport(shell.report.state),
     unavailableReason: null,
   };
 }
@@ -274,14 +286,20 @@ export function resolveLoopConversionMetadata(
   const hasLoopBasis = /4\s*(?:-|to|a)\s*20\s*m?A/i.test(basisText);
 
   if (!hasLoopBasis) {
-    return unavailableConversion;
+    return {
+      ...unavailableConversion,
+      reason:
+        basisText.trim().length > 0
+          ? 'Este teste tem faixa local, mas nao declara base analogica 4-20 mA/HART para conversao.'
+          : unavailableConversion.reason,
+    };
   }
 
   const processRange = resolveProcessRange(definition);
 
   return {
     state: 'available',
-    reason: '4-20 mA conversion metadata is available locally for this selected template.',
+    reason: 'Conversao 4-20 mA disponivel localmente para este teste.',
     basisLabel: definition.executionContext.conversionBasisSummary ?? '4-20 mA loop',
     processRange,
     loopRange: {
@@ -290,6 +308,10 @@ export function resolveLoopConversionMetadata(
       unit: 'mA',
     },
   };
+}
+
+function isTechnicianEditableReport(state: SharedExecutionShell['report']['state']): boolean {
+  return state === 'technician-owned-draft' || state === 'submitted-pending-sync';
 }
 
 export function convertLoopValue(
@@ -303,35 +325,76 @@ export function convertLoopValue(
 
   const value = Number(rawValue.trim().replace(',', '.'));
   if (!Number.isFinite(value)) {
-    return unavailableResult('Enter a numeric value before converting.');
+    return unavailableResult('Informe um valor numerico antes de converter.');
   }
 
   switch (mode) {
     case 'process-to-milliamp': {
       if (!metadata.processRange) {
-        return unavailableResult('Process value range metadata is unavailable for PV conversion.');
+        return unavailableResult('Faixa PV indisponivel para conversao.');
       }
       const converted = scaleValue(value, metadata.processRange, metadata.loopRange);
-      return availableResult(converted, 'PV to mA', `${formatNumber(value)} ${metadata.processRange.unit} maps to ${formatNumber(converted)} mA.`);
+      return availableResult(converted, 'PV para mA', `${formatNumber(value)} ${metadata.processRange.unit} = ${formatNumber(converted)} mA.`);
+    }
+    case 'process-to-percent': {
+      if (!metadata.processRange) {
+        return unavailableResult('Faixa PV indisponivel para conversao.');
+      }
+      const converted = scaleValue(value, metadata.processRange, { min: 0, max: 100, unit: '%' });
+      return availableResult(converted, 'PV para percentual', `${formatNumber(value)} ${metadata.processRange.unit} = ${formatNumber(converted)}%.`);
     }
     case 'milliamp-to-process': {
       if (!metadata.processRange) {
-        return unavailableResult('Process value range metadata is unavailable for PV conversion.');
+        return unavailableResult('Faixa PV indisponivel para conversao.');
       }
       const converted = scaleValue(value, metadata.loopRange, metadata.processRange);
-      return availableResult(converted, 'mA to PV', `${formatNumber(value)} mA maps to ${formatNumber(converted)} ${metadata.processRange.unit}.`);
+      return availableResult(converted, 'mA para PV', `${formatNumber(value)} mA = ${formatNumber(converted)} ${metadata.processRange.unit}.`);
     }
     case 'milliamp-to-percent': {
       const converted = scaleValue(value, metadata.loopRange, { min: 0, max: 100, unit: '%' });
-      return availableResult(converted, 'mA to percent', `${formatNumber(value)} mA maps to ${formatNumber(converted)}%.`);
+      return availableResult(converted, 'mA para percentual', `${formatNumber(value)} mA = ${formatNumber(converted)}%.`);
     }
     case 'percent-to-milliamp': {
       const converted = scaleValue(value, { min: 0, max: 100, unit: '%' }, metadata.loopRange);
-      return availableResult(converted, 'Percent to mA', `${formatNumber(value)}% maps to ${formatNumber(converted)} mA.`);
+      return availableResult(converted, 'Percentual para mA', `${formatNumber(value)}% = ${formatNumber(converted)} mA.`);
     }
     default:
-      return unavailableResult('Unsupported conversion mode.');
+      return unavailableResult('Modo de conversao indisponivel.');
   }
+}
+
+export function buildVisualHistoryPointOptions(
+  history: VisualExecutionHistoryViewModel,
+  conversion: VisualLoopConversionMetadata,
+): VisualHistoryPointOption[] {
+  if (conversion.state === 'available') {
+    const points = [0, 25, 50, 75, 100];
+    return points.map((point) => {
+      const matchingRows = history.rows.filter((row) =>
+        row.label.includes(`${point}%`) || row.value.includes(`${point}%`),
+      );
+      return {
+        id: `point-${point}`,
+        label: `${point}%`,
+        pointPercent: point,
+        rows: matchingRows,
+        emptyLabel:
+          matchingRows.length > 0
+            ? ''
+            : `Sem dados suficientes para grafico no ponto ${point}%.`,
+      };
+    });
+  }
+
+  return [
+    {
+      id: 'current-result',
+      label: 'Resultado atual',
+      pointPercent: null,
+      rows: history.rows,
+      emptyLabel: 'Sem dados suficientes para grafico nesta variavel.',
+    },
+  ];
 }
 
 function buildCalculationResult(calculation: SharedExecutionCalculationState) {
@@ -351,10 +414,10 @@ function buildCalculationResult(calculation: SharedExecutionCalculationState) {
     percentOfSpanLabel:
       calculation.result.percentOfSpan !== null
         ? `${formatNumber(calculation.result.percentOfSpan)}%`
-        : 'Unavailable',
+        : 'Indisponivel',
     acceptanceLabel: toAcceptanceLabel(calculation.result.acceptance),
     acceptanceSeverity: acceptanceSeverity(calculation.result.acceptance),
-    acceptanceReason: calculation.result.acceptanceReason,
+    acceptanceReason: translateVisibleText(calculation.result.acceptanceReason) ?? calculation.result.acceptanceReason,
   };
 }
 
@@ -425,7 +488,7 @@ function availableResult(value: number, label: string, detail: string): VisualLo
 function unavailableResult(detail: string): VisualLoopConversionResult {
   return {
     state: 'unavailable',
-    label: 'Unavailable',
+    label: 'Indisponivel',
     detail,
     value: null,
   };
@@ -433,11 +496,75 @@ function unavailableResult(detail: string): VisualLoopConversionResult {
 
 function mapHistoryRow(field: SharedExecutionField): VisualExecutionHistoryRow {
   return {
-    label: field.label,
-    value: field.value,
+    label: translateStepLabel(field.label),
+    value: translateCommonValue(field.value) ?? translateVisibleText(field.value) ?? field.value,
     stateLabel: toFieldStateLabel(field.state),
     severity: field.state === 'available' ? 'ok' : field.state === 'missing' ? 'due' : 'medium',
   };
+}
+
+function translateStepLabel(value: string): string {
+  switch (value) {
+    case 'History state':
+      return 'Estado do historico';
+    case 'Current result':
+      return 'Resultado atual';
+    case 'Prior result':
+      return 'Resultado anterior';
+    case 'Recurrence cue':
+      return 'Recorrencia';
+    case 'Last observed':
+      return 'Ultima observacao';
+    case 'Expected range':
+      return 'Faixa esperada';
+    case 'Minimum evidence':
+      return 'Evidencia minima';
+    case 'Expected evidence':
+      return 'Evidencia esperada';
+    case 'Draft report':
+      return 'Rascunho do relatorio';
+    case 'Calculation evidence saved':
+      return 'Calculo salvo';
+    case 'Guidance evidence saved':
+      return 'Checklist salvo';
+    case 'Observation notes':
+      return 'Observacoes';
+    case 'Photo evidence':
+      return 'Evidencia fotografica';
+    case 'Guidance risk state':
+      return 'Estado de risco';
+    case 'Visible risk hooks':
+      return 'Riscos visiveis';
+    case 'Required justifications':
+      return 'Justificativas obrigatorias';
+    default:
+      return translateVisibleText(value) ?? value;
+  }
+}
+
+function translateCommonValue(value: string | undefined): string | null {
+  switch (value) {
+    case undefined:
+      return null;
+    case 'Available':
+      return 'Disponivel';
+    case 'Missing':
+      return 'Ausente';
+    case 'Unavailable':
+      return 'Indisponivel';
+    case 'Stale':
+      return 'Desatualizado';
+    case 'Pass':
+      return 'OK';
+    case 'Fail':
+      return 'Falha';
+    case 'Flagged':
+      return 'Com risco';
+    case 'Clear':
+      return 'Sem risco';
+    default:
+      return translateVisibleText(value) ?? value;
+  }
 }
 
 function mapHistoryState(
@@ -468,36 +595,36 @@ function mapGuidanceState(
 function toFieldStateLabel(state: SharedExecutionField['state']) {
   switch (state) {
     case 'available':
-      return 'Available';
+      return 'Disponivel';
     case 'missing':
-      return 'Missing';
+      return 'Ausente';
     default:
-      return 'Unavailable';
+      return 'Indisponivel';
   }
 }
 
 function toHistoryStateLabel(state: SharedExecutionShell['riskInputs']['historyState']) {
   switch (state) {
     case 'available':
-      return 'Available';
+      return 'Disponivel';
     case 'stale':
-      return 'Stale';
+      return 'Desatualizado';
     case 'age-unknown':
-      return 'Age unknown';
+      return 'Idade desconhecida';
     case 'missing':
-      return 'Missing';
+      return 'Ausente';
     default:
-      return 'Unavailable';
+      return 'Indisponivel';
   }
 }
 
 function formatRange(range: SharedExecutionCalculationRange | null) {
-  return range ? `${formatNumber(range.min)} to ${formatNumber(range.max)} ${range.unit}` : 'Unavailable';
+  return range ? `${formatNumber(range.min)} a ${formatNumber(range.max)} ${range.unit}` : 'Indisponivel';
 }
 
 function formatTolerance(definition: SharedExecutionCalculationDefinition) {
   if (definition.toleranceMode === 'percent-of-span' && definition.toleranceValue !== null) {
-    return `${formatNumber(definition.toleranceValue)}% of span (${definition.toleranceSource})`;
+    return `${formatNumber(definition.toleranceValue)}% do span (${definition.toleranceSource})`;
   }
 
   if (definition.toleranceMode === 'absolute' && definition.toleranceValue !== null) {
@@ -506,7 +633,7 @@ function formatTolerance(definition: SharedExecutionCalculationDefinition) {
       : `${formatNumber(definition.toleranceValue)} (${definition.toleranceSource})`;
   }
 
-  return `${definition.toleranceSource} (numeric tolerance unavailable)`;
+  return `${definition.toleranceSource} (tolerancia numerica indisponivel)`;
 }
 
 function formatDeviation(value: number, unit: string | null) {
@@ -514,21 +641,120 @@ function formatDeviation(value: number, unit: string | null) {
 }
 
 function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString('pt-BR');
 }
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
+export function translateVisibleText(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return value;
+  }
+
+  const exact: Record<string, string> = {
+    'Expected value': 'Valor esperado',
+    'Observed value': 'Valor medido',
+    'Expected flow': 'Vazao esperada',
+    'Observed flow': 'Vazao medida',
+    'Calculation setup': 'Medicoes e calculo',
+    'History comparison': 'Comparacao historica',
+    'Checklist and guidance': 'Checklist e orientacao',
+    'Report draft review': 'Revisao do relatorio',
+    'Point deviation': 'Desvio pontual',
+    'point deviation': 'desvio pontual',
+    'local tolerance': 'tolerancia local',
+    'Ready to Submit': 'Pronto para envio',
+    'In Progress': 'Em andamento',
+    'Submitted - Pending Sync': 'Enviado - pendente de sync',
+    'Submitted - Pending Supervisor Review': 'Enviado - em revisao do supervisor',
+    'Returned by Supervisor': 'Devolvido pelo supervisor',
+    'Returned by Manager': 'Devolvido pelo gerente',
+    Approved: 'Aprovado',
+  };
+
+  if (exact[trimmed]) {
+    return exact[trimmed];
+  }
+
+  return trimmed
+    .replace(/\bCached history is stale\b/gi, 'Historico local desatualizado')
+    .replace(/\bExpected evidence missing\b/gi, 'Evidencia esperada ausente')
+    .replace(/\bMinimum evidence missing\b/gi, 'Evidencia minima ausente')
+    .replace(/\bExpected photo is missing\b/gi, 'Foto esperada ausente')
+    .replace(/\bPhoto evidence\b/gi, 'Evidencia fotografica')
+    .replace(/\bphoto\b/gi, 'foto')
+    .replace(/\bSubmit-blocking\b/gi, 'Bloqueia envio')
+    .replace(/\bSubmit blocking\b/gi, 'Bloqueia envio')
+    .replace(/\bRisk justification\b/gi, 'Justificativa de risco')
+    .replace(/\bHistory is present but flagged as stale\b/gi, 'Historico existe, mas esta desatualizado')
+    .replace(/\bHistory state\b/gi, 'Estado do historico')
+    .replace(/\bCurrent result\b/gi, 'Resultado atual')
+    .replace(/\bPrior result\b/gi, 'Resultado anterior')
+    .replace(/\bPass\b/g, 'OK')
+    .replace(/\bFail\b/g, 'Falha')
+    .replace(/\bAvailable\b/g, 'Disponivel')
+    .replace(/\bMissing\b/g, 'Ausente')
+    .replace(/\bUnavailable\b/g, 'Indisponivel')
+    .replace(/\bStale\b/g, 'Desatualizado')
+    .replace(/\bExpected\b/g, 'Esperado')
+    .replace(/\bObserved\b/g, 'Medido')
+    .replace(/\bMeasured\b/g, 'Medido')
+    .replace(/\bTolerance\b/g, 'Tolerancia')
+    .replace(/\bspan\b/gi, 'span')
+    .replace(/\bof\b/g, 'de');
+}
+
+function translateGuidanceItem<T extends { prompt: string; whyItMatters: string; helpsRuleOut: string; sourceReference: string }>(
+  item: T,
+): T {
+  return {
+    ...item,
+    prompt: translateVisibleText(item.prompt) ?? item.prompt,
+    whyItMatters: translateVisibleText(item.whyItMatters) ?? item.whyItMatters,
+    helpsRuleOut: translateVisibleText(item.helpsRuleOut) ?? item.helpsRuleOut,
+  };
+}
+
+function translateChecklistItem(item: SharedExecutionChecklistItem): SharedExecutionChecklistItem {
+  return translateGuidanceItem(item);
+}
+
+function translateLinkedGuidance(
+  item: SharedExecutionLinkedGuidanceSnippet,
+): SharedExecutionLinkedGuidanceSnippet {
+  return {
+    ...item,
+    title: translateVisibleText(item.title) ?? item.title,
+    summary: translateVisibleText(item.summary) ?? item.summary,
+    whyItMatters: translateVisibleText(item.whyItMatters) ?? item.whyItMatters,
+  };
+}
+
+function translateRiskItem(item: SharedExecutionRiskItem): SharedExecutionRiskItem {
+  return {
+    ...item,
+    title: translateVisibleText(item.title) ?? item.title,
+    detail: translateVisibleText(item.detail) ?? item.detail,
+    justificationPrompt:
+      translateVisibleText(item.justificationPrompt) ?? item.justificationPrompt,
+  };
+}
+
 function toAcceptanceLabel(value: SharedExecutionCalculationAcceptance) {
   switch (value) {
     case 'pass':
-      return 'PASS';
+      return 'OK';
     case 'fail':
-      return 'FAIL';
+      return 'FALHA';
     default:
-      return 'UNAVAILABLE';
+      return 'INDISPONIVEL';
   }
 }
 

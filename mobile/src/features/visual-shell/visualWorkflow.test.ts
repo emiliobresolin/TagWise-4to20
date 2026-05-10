@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildTechnicianVisualWorkflow, calculateVisualError } from './model';
+import {
+  buildTechnicianVisualWorkflow,
+  calculateVisualError,
+  isVisualDemoShellEnabled,
+} from './model';
 import type {
   LocalAssignedTagEntry,
   LocalAssignedWorkPackageSummary,
@@ -8,9 +12,21 @@ import type {
 } from '../work-packages/model';
 
 describe('technician visual workflow model', () => {
-  it('keeps seeded PT-204 data only in signed-out demo mode', () => {
+  it('disables seeded signed-out operational demo by default', () => {
     const model = buildTechnicianVisualWorkflow();
 
+    expect(isVisualDemoShellEnabled(undefined)).toBe(false);
+    expect(isVisualDemoShellEnabled('false')).toBe(false);
+    expect(model.source).toBe('local-empty');
+    expect(model.selectedTag).toBeNull();
+    expect(model.pendingTags).toEqual([]);
+    expect(model.report.tagCode).toBe('Sem tag selecionada');
+  });
+
+  it('keeps seeded PT-204 data only when the explicit demo flag is enabled', () => {
+    const model = buildTechnicianVisualWorkflow({ demoEnabled: true });
+
+    expect(isVisualDemoShellEnabled('true')).toBe(true);
     expect(model.source).toBe('seeded-demo');
     expect(model.selectedTag?.code).toBe('PT-204');
     expect(model.pendingTags.map((tag) => tag.code)).toContain('PT-204');

@@ -1,8 +1,10 @@
 import { CameraView, type BarcodeScanningResult } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -19,6 +21,7 @@ import type {
 } from '../features/execution/model';
 import {
   buildTechnicianVisualWorkflow,
+  isVisualDemoShellEnabled,
   type VisualHistoryPoint,
   type VisualSeverity,
   type VisualTagCategory,
@@ -39,10 +42,12 @@ import {
   buildVisualExecutionCalculation,
   buildVisualExecutionGuidance,
   buildVisualExecutionHistory,
+  buildVisualHistoryPointOptions,
   convertLoopValue,
   type VisualExecutionCalculationViewModel,
   type VisualExecutionGuidanceViewModel,
   type VisualExecutionHistoryViewModel,
+  type VisualHistoryPointOption,
   type VisualLoopConversionMode,
   type VisualLoopConversionResult,
 } from '../features/visual-shell/serviceBackedExecution';
@@ -50,9 +55,15 @@ import {
   buildVisualReportProjection,
   createVisualReportActions,
   type VisualReportProjection,
+  type VisualReportPendingActionRoute,
 } from '../features/visual-shell/serviceBackedReport';
 import {
+  buildVisualWorkPackagePreparation,
+  type VisualWorkPackagePreparationProjection,
+} from '../features/visual-shell/serviceBackedPackages';
+import {
   buildVisualReviewAccess,
+  buildVisualReviewDecisionFeedback,
   buildVisualReviewDecisionRequest,
   buildVisualReviewDetailProjection,
   buildVisualReviewQueueGroups,
@@ -63,6 +74,32 @@ import {
   type VisualReviewQueueGroup,
   type VisualReviewQueueGroupKey,
 } from '../features/visual-shell/serviceBackedReview';
+import {
+  calculateFieldValue,
+  calculateLoopTest,
+  buildCalculatorApplyTargets,
+  createDefaultLoopPoints,
+  formatLoopTestEvidenceNote,
+  normalizeLoopPointCount,
+  updateLoopPoint,
+  type FieldCalculatorMode,
+  type FieldCalculatorInput,
+  type LoopPointInputMode,
+  type LoopTestPoint,
+} from '../features/visual-shell/fieldCalculator';
+import {
+  buildExecutionStages,
+  resolveVisualExecutionPattern,
+  shouldScrollRouteToTop,
+  toPtBrTemplateLabel,
+  type VisualExecutionStage,
+  type VisualExecutionRoute,
+} from '../features/visual-shell/executionFlow';
+import {
+  buildTagWorkStatus,
+  type VisualTechnicianReportSummary,
+  type VisualTagWorkStatus,
+} from '../features/visual-shell/technicianReports';
 import type { ReportSyncDetail } from '../features/sync/syncStateService';
 import type {
   SupervisorReviewQueueItem,
@@ -73,17 +110,55 @@ import type {
   LocalAssignedWorkPackageSummary,
   LocalTagContext,
 } from '../features/work-packages/model';
+import type { ManualInstrumentInput } from '../features/work-packages/manualInstrumentModel';
 import type { LocalQrScanResult } from '../features/work-packages/localQrScanService';
 
 type VisualRoute =
   | 'dashboard'
   | 'detail'
+  | 'manual-intake'
+  | 'calculator'
+  | 'reports'
   | 'calculation'
+  | 'loop-test'
   | 'history'
   | 'diagnosis'
   | 'report'
   | 'review'
   | 'approval';
+
+type VisualStageRoute = VisualExecutionRoute | 'history' | 'report' | 'detail';
+
+function createEmptyManualInstrumentDraft(): ManualInstrumentInput {
+  return {
+    tagCode: '',
+    description: '',
+    area: '',
+    instrumentFamily: '',
+    instrumentSubtype: '',
+    measuredVariable: '',
+    signalType: '',
+    rangeMin: '',
+    rangeMax: '',
+    unit: '',
+    tolerance: '',
+    reason: '',
+    notes: '',
+  };
+}
+
+function createEmptyFieldCalculatorDraft(): FieldCalculatorInput {
+  return {
+    mode: 'pv-to-ma',
+    value: '',
+    processMin: '',
+    processMax: '',
+    unit: '',
+    expected: '',
+    measured: '',
+    tolerance: '',
+  };
+}
 
 export interface VisualProductShellProps {
   session: ActiveUserSession | null;
@@ -95,6 +170,7 @@ export interface VisualProductShellProps {
   apiBaseUrl: string;
   workPackages: LocalAssignedWorkPackageSummary[];
   visibleTags: LocalAssignedTagEntry[];
+  technicianReports: VisualTechnicianReportSummary[];
   selectedTag: LocalAssignedTagEntry | null;
   selectedTagContext: LocalTagContext | null;
   selectedExecutionTemplateId: string | null;
@@ -114,6 +190,10 @@ export interface VisualProductShellProps {
   onSignIn: () => void;
   onSwitchUser: () => void;
   onRefreshPackages: () => void;
+  onDownloadPackage: (workPackageId: string) => Promise<void>;
+  onBrowsePackageTags: (workPackageId: string) => Promise<void>;
+  onCreateManualInstrument: (input: ManualInstrumentInput) => Promise<boolean>;
+  onOpenTechnicianReport: (report: VisualTechnicianReportSummary) => Promise<boolean>;
   onOpenTag: (identity: VisualTagIdentity) => Promise<boolean>;
   onStartQrScanner: () => void;
   onBarcodeScanned: (event: BarcodeScanningResult) => void;
@@ -121,6 +201,7 @@ export interface VisualProductShellProps {
   onResolveQrManualPayload: () => Promise<LocalQrScanResult | null>;
   onCancelQrScanner: () => void;
   onSelectExecutionTemplate: (templateId: string) => void;
+  onOpenExecutionTemplate: (templateId: string) => Promise<boolean>;
   onProceedToExecutionShell: () => Promise<boolean>;
   onCalculationInputChange: (
     key: 'expectedValue' | 'observedValue',
@@ -134,6 +215,7 @@ export interface VisualProductShellProps {
   onObservationNotesChange: (value: string) => void;
   onRiskJustificationChange: (riskItemId: string, justificationText: string) => void;
   onSaveGuidanceEvidence: () => Promise<void>;
+  onSaveLoopTestNote: (note: string) => Promise<void>;
   onReportReviewNotesChange: (value: string) => void;
   onSaveReportDraft: () => Promise<void>;
   onAttachReportPhoto: (source: 'camera' | 'library') => Promise<void>;
@@ -161,6 +243,7 @@ export function VisualProductShell({
   apiBaseUrl,
   workPackages,
   visibleTags,
+  technicianReports,
   selectedTag: selectedLocalTag,
   selectedTagContext,
   selectedExecutionTemplateId,
@@ -180,6 +263,10 @@ export function VisualProductShell({
   onSignIn,
   onSwitchUser,
   onRefreshPackages,
+  onDownloadPackage,
+  onBrowsePackageTags,
+  onCreateManualInstrument,
+  onOpenTechnicianReport,
   onOpenTag,
   onStartQrScanner,
   onBarcodeScanned,
@@ -187,6 +274,7 @@ export function VisualProductShell({
   onResolveQrManualPayload,
   onCancelQrScanner,
   onSelectExecutionTemplate,
+  onOpenExecutionTemplate,
   onProceedToExecutionShell,
   onCalculationInputChange,
   onSaveCalculation,
@@ -194,6 +282,7 @@ export function VisualProductShell({
   onObservationNotesChange,
   onRiskJustificationChange,
   onSaveGuidanceEvidence,
+  onSaveLoopTestNote,
   onReportReviewNotesChange,
   onSaveReportDraft,
   onAttachReportPhoto,
@@ -210,27 +299,50 @@ export function VisualProductShell({
   onSupervisorReturnCommentChange,
   onSupervisorEscalationRationaleChange,
 }: VisualProductShellProps) {
+  const scrollRef = useRef<ScrollView>(null);
   const [route, setRoute] = useState<VisualRoute>('dashboard');
   const [activeFilter, setActiveFilter] = useState<VisualTagCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDemoTag, setSelectedDemoTag] = useState<VisualTagSummary | null>(null);
   const [selectedSymptom, setSelectedSymptom] = useState('Sem Resposta');
   const [justification, setJustification] = useState('');
+  const [manualInstrumentDraft, setManualInstrumentDraft] = useState<ManualInstrumentInput>(
+    createEmptyManualInstrumentDraft,
+  );
+  const [fieldCalculatorDraft, setFieldCalculatorDraft] = useState<FieldCalculatorInput>(
+    createEmptyFieldCalculatorDraft,
+  );
+  const [calculatorReturnRoute, setCalculatorReturnRoute] = useState<VisualRoute>('dashboard');
+  const [loopInputMode, setLoopInputMode] = useState<LoopPointInputMode>('pv');
+  const [loopPoints, setLoopPoints] = useState<LoopTestPoint[]>(() => createDefaultLoopPoints());
+  const [activeHistoryPointId, setActiveHistoryPointId] = useState('current-result');
+  const [calculatorApplyTargetId, setCalculatorApplyTargetId] = useState('expectedValue:main');
   const [activeReviewGroupKey, setActiveReviewGroupKey] =
     useState<VisualReviewQueueGroupKey>('pending-review');
   const [pendingReviewDecision, setPendingReviewDecision] =
     useState<VisualReviewDecisionRequest | null>(null);
   const [shellMessage, setShellMessage] = useState<string | null>(null);
+  const demoShellEnabled = isVisualDemoShellEnabled();
   const model = useMemo(
     () =>
       buildTechnicianVisualWorkflow({
         authenticated: Boolean(session),
+        demoEnabled: demoShellEnabled,
         workPackages,
         localTags: visibleTags,
         selectedTag: selectedLocalTag,
         selectedTagContext,
       }),
-    [selectedLocalTag, selectedTagContext, session, visibleTags, workPackages],
+    [demoShellEnabled, selectedLocalTag, selectedTagContext, session, visibleTags, workPackages],
+  );
+  const packagePreparation = useMemo(
+    () =>
+      buildVisualWorkPackagePreparation({
+        session,
+        workPackages,
+        packageBusy,
+      }),
+    [packageBusy, session, workPackages],
   );
   const serviceCalculation = useMemo(
     () => buildVisualExecutionCalculation(executionShell),
@@ -239,6 +351,25 @@ export function VisualProductShell({
   const serviceHistory = useMemo(() => buildVisualExecutionHistory(executionShell), [
     executionShell,
   ]);
+  const selectedTemplateOption = useMemo(
+    () =>
+      selectedTagContext?.referencePointers.executionTemplates.find(
+        (template) => template.id === selectedExecutionTemplateId,
+      ) ?? null,
+    [selectedExecutionTemplateId, selectedTagContext],
+  );
+  const selectedExecutionPattern = useMemo(
+    () => resolveVisualExecutionPattern(executionShell?.template ?? selectedTemplateOption),
+    [executionShell, selectedTemplateOption],
+  );
+  const executionStages = useMemo(
+    () => buildExecutionStages(selectedExecutionPattern.pattern),
+    [selectedExecutionPattern.pattern],
+  );
+  const historyPointOptions = useMemo(
+    () => buildVisualHistoryPointOptions(serviceHistory, serviceCalculation.conversion),
+    [serviceCalculation.conversion, serviceHistory],
+  );
   const serviceGuidance = useMemo(() => buildVisualExecutionGuidance(executionShell), [
     executionShell,
   ]);
@@ -288,10 +419,27 @@ export function VisualProductShell({
     ],
   );
   const selectedTag = session ? model.selectedTag : selectedDemoTag ?? model.selectedTag;
+  const reportStatusByTag = useMemo(() => {
+    const statusMap = new Map<string, VisualTagWorkStatus>();
+    for (const tag of visibleTags) {
+      statusMap.set(
+        `${tag.workPackageId}:${tag.tagId}`,
+        buildTagWorkStatus({ tag, reports: technicianReports }),
+      );
+    }
+    return statusMap;
+  }, [technicianReports, visibleTags]);
   const visibleDashboardTags = filterTags(
     [...model.pendingTags, ...model.recurrentTags, ...model.dueTags],
     activeFilter,
     searchQuery,
+  );
+  const calculatorApplyTargets = useMemo(
+    () =>
+      buildCalculatorApplyTargets(
+        selectedExecutionPattern.pattern === 'loop' ? loopPoints : [],
+      ),
+    [loopPoints, selectedExecutionPattern.pattern],
   );
 
   useEffect(() => {
@@ -305,9 +453,28 @@ export function VisualProductShell({
     }
   }, [qrScanResult, selectedLocalTag, session]);
 
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [route]);
+
+  useEffect(() => {
+    const firstOption = historyPointOptions[0]?.id ?? 'current-result';
+    if (!historyPointOptions.some((option) => option.id === activeHistoryPointId)) {
+      setActiveHistoryPointId(firstOption);
+    }
+  }, [activeHistoryPointId, historyPointOptions]);
+
   function openRoute(nextRoute: VisualRoute) {
     setShellMessage(null);
+    if (shouldScrollRouteToTop(route, nextRoute)) {
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+    }
     setRoute(nextRoute);
+  }
+
+  function openCalculator(returnRoute: VisualRoute = route) {
+    setCalculatorReturnRoute(returnRoute);
+    openRoute('calculator');
   }
 
   async function handleOpenTag(tag: VisualTagSummary) {
@@ -344,15 +511,94 @@ export function VisualProductShell({
     setShellMessage(null);
 
     if (session && !selectedExecutionTemplateId) {
-      setShellMessage('Select a cached execution template before opening the technical screen.');
+      setShellMessage('Selecione um teste baixado antes de abrir a etapa tecnica.');
     } else if (session && selectedExecutionTemplateId) {
       const didLoad = await onProceedToExecutionShell();
       if (!didLoad) {
-        setShellMessage('The local execution shell is unavailable for this selected tag/template.');
+        setShellMessage('O teste local nao esta disponivel para esta tag/template.');
       }
     }
 
     setRoute(nextRoute);
+  }
+
+  async function handleSelectTemplateAndOpen(templateId: string) {
+    setShellMessage(null);
+    const template =
+      selectedTagContext?.referencePointers.executionTemplates.find(
+        (candidate) => candidate.id === templateId,
+      ) ?? null;
+    const pattern = resolveVisualExecutionPattern(template);
+    const didOpen = await onOpenExecutionTemplate(templateId);
+
+    if (didOpen) {
+      setShellMessage(`${pattern.label}: ${pattern.detail}`);
+      setRoute(pattern.route);
+      return;
+    }
+
+    setShellMessage('Nao foi possivel abrir o teste local. Verifique se o pacote foi baixado.');
+  }
+
+  function handleOpenStageRoute(nextRoute: VisualStageRoute) {
+    openRoute(nextRoute);
+  }
+
+  async function handleSaveLoopTest() {
+    const result = calculateLoopTest({
+      points: loopPoints,
+      inputMode: loopInputMode,
+      processMin: resolveLoopProcessMin(serviceCalculation),
+      processMax: resolveLoopProcessMax(serviceCalculation),
+      tolerance: resolveLoopTolerance(serviceCalculation),
+    });
+    const note = formatLoopTestEvidenceNote({
+      rows: result.rows,
+      summary: result.summary,
+      inputMode: loopInputMode,
+      unit: serviceCalculation.conversion.processRange?.unit ?? serviceCalculation.unitLabel,
+    });
+
+    await onSaveLoopTestNote(note);
+    setShellMessage('Teste de loop salvo localmente. Proximo: comparar historico ou abrir checklist.');
+  }
+
+  function handleApplyCalculatorResult() {
+    const result = calculateFieldValue(fieldCalculatorDraft);
+    if (result.state !== 'available' || result.value === null) {
+      setShellMessage('Calcule um valor valido antes de usar em um teste.');
+      return;
+    }
+
+    const target = calculatorApplyTargets.find(
+      (candidate) =>
+        `${candidate.field}:${candidate.pointId ?? 'main'}` === calculatorApplyTargetId,
+    );
+    if (!target) {
+      setShellMessage('Escolha onde usar o resultado do calculo.');
+      return;
+    }
+
+    const value = String(result.value);
+    if (target.pointId) {
+      setLoopPoints((current) =>
+        updateLoopPoint(
+          current,
+          target.pointId!,
+          target.field === 'expectedValue' ? 'expected' : 'measured',
+          value,
+        ),
+      );
+      setShellMessage(
+        `Resultado aplicado ao ponto ${target.pointLabel}. Revise e salve o teste de loop.`,
+      );
+      setRoute('loop-test');
+      return;
+    }
+
+    onCalculationInputChange(target.field, value);
+    setShellMessage(`Resultado aplicado em ${target.label.toLowerCase()}. Salve o calculo local.`);
+    setRoute('calculation');
   }
 
   async function handleOpenReviewRoute() {
@@ -393,12 +639,105 @@ export function VisualProductShell({
 
     setPendingReviewDecision(null);
     await reviewDecisionActions.confirmDecision(request);
+    setShellMessage(
+      buildVisualReviewDecisionFeedback({
+        kind: request.kind,
+        reportId: request.reportId,
+        tagId: selectedSupervisorReviewReport?.tagId,
+      }),
+    );
+  }
+
+  async function handleCreateManualInstrument() {
+    setShellMessage(null);
+    const didCreate = await onCreateManualInstrument(manualInstrumentDraft);
+
+    if (didCreate) {
+      setManualInstrumentDraft(createEmptyManualInstrumentDraft());
+      setRoute('detail');
+    }
+  }
+
+  function handleManualInstrumentDraftChange(
+    key: keyof ManualInstrumentInput,
+    value: string,
+  ) {
+    setManualInstrumentDraft((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  function handleFieldCalculatorChange(key: keyof FieldCalculatorInput, value: string) {
+    setFieldCalculatorDraft((current) => {
+      if (key === 'mode') {
+        return {
+          ...current,
+          mode: isFieldCalculatorMode(value) ? value : current.mode,
+        };
+      }
+
+      return {
+        ...current,
+        [key]: value,
+      };
+    });
+  }
+
+  function handlePrefillCalculatorFromSelectedTag() {
+    setFieldCalculatorDraft((current) => ({
+      ...current,
+      processMin: resolveRangePart(selectedTagContext?.range.value, 'min') ?? current.processMin,
+      processMax: resolveRangePart(selectedTagContext?.range.value, 'max') ?? current.processMax,
+      unit: resolveRangeUnit(selectedTagContext?.range.value) ?? current.unit,
+    }));
+  }
+
+  function handleLoopPointCountChange(value: string) {
+    const parsed = Number(value.replace(',', '.'));
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    setLoopPoints((current) => normalizeLoopPointCount(current, parsed));
+  }
+
+  if (!session && !demoShellEnabled) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.flexOne}
+        >
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <SignedOutLoginScreen
+            apiBaseUrl={apiBaseUrl}
+            authBusy={authBusy}
+            authMessage={authMessage}
+            email={email}
+            password={password}
+            onEmailChange={onEmailChange}
+            onPasswordChange={onPasswordChange}
+            onSignIn={onSignIn}
+          />
+        </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
   }
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.flexOne}
+      >
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
         {route === 'dashboard' ? (
           <DashboardScreen
             activeFilter={activeFilter}
@@ -408,20 +747,29 @@ export function VisualProductShell({
             email={email}
             model={model}
             packageBusy={packageBusy}
+            packagePreparation={packagePreparation}
             password={password}
             reviewAccess={reviewAccess}
             reviewBusy={reviewBusy}
             reviewQueueCount={supervisorReviewQueue.length}
+            reportStatusByTag={reportStatusByTag}
             searchQuery={searchQuery}
             session={session}
             shellMessage={shellMessage}
+            technicianReports={technicianReports}
             visibleTags={visibleDashboardTags}
+            workPackages={workPackages}
             onEmailChange={onEmailChange}
             onFilterChange={setActiveFilter}
             onOpenDetail={(tag) => void handleOpenTag(tag)}
+            onOpenManualInstrument={() => openRoute('manual-intake')}
+            onOpenReports={() => openRoute('reports')}
+            onOpenStandaloneCalculator={() => openCalculator('dashboard')}
             onPasswordChange={onPasswordChange}
             onBarcodeScanned={onBarcodeScanned}
             onCancelQrScanner={onCancelQrScanner}
+            onBrowsePackageTags={(workPackageId) => void onBrowsePackageTags(workPackageId)}
+            onDownloadPackage={(workPackageId) => void onDownloadPackage(workPackageId)}
             onRefreshPackages={onRefreshPackages}
             onOpenReview={() => void handleOpenReviewRoute()}
             onResolveQrManualPayload={() => void handleResolveQrManualPayload()}
@@ -433,6 +781,40 @@ export function VisualProductShell({
             qrManualPayload={qrManualPayload}
             qrScanResult={qrScanResult}
             qrScannerVisible={qrScannerVisible}
+          />
+        ) : route === 'manual-intake' ? (
+          <ManualInstrumentScreen
+            draft={manualInstrumentDraft}
+            packageBusy={packageBusy}
+            onBack={() => openRoute(calculatorReturnRoute)}
+            onChange={handleManualInstrumentDraftChange}
+            onCreate={() => void handleCreateManualInstrument()}
+          />
+        ) : route === 'calculator' ? (
+          <FieldCalculatorScreen
+            applyTargetId={calculatorApplyTargetId}
+            applyTargets={calculatorApplyTargets}
+            draft={fieldCalculatorDraft}
+            canApplyToTest={Boolean(session && selectedExecutionTemplateId)}
+            selectedTag={selectedTag}
+            selectedTagContext={selectedTagContext}
+            onBack={() => openRoute('dashboard')}
+            onApplyTargetChange={setCalculatorApplyTargetId}
+            onApplyToTest={handleApplyCalculatorResult}
+            onChange={handleFieldCalculatorChange}
+            onPrefillFromSelectedTag={handlePrefillCalculatorFromSelectedTag}
+          />
+        ) : route === 'reports' ? (
+          <TechnicianReportsScreen
+            reports={technicianReports}
+            onBack={() => openRoute('dashboard')}
+            onOpenReport={(report) =>
+              void onOpenTechnicianReport(report).then((opened) => {
+                if (opened) {
+                  setRoute('report');
+                }
+              })
+            }
           />
         ) : route === 'detail' && selectedTag ? (
           <TagDetailScreen
@@ -446,7 +828,7 @@ export function VisualProductShell({
             onOpenDiagnosis={() => void handleOpenExecutionRoute('diagnosis')}
             onOpenHistory={() => void handleOpenExecutionRoute('history')}
             onOpenReport={() => void handleOpenExecutionRoute('report')}
-            onSelectExecutionTemplate={onSelectExecutionTemplate}
+            onSelectExecutionTemplate={(templateId) => void handleSelectTemplateAndOpen(templateId)}
           />
         ) : route === 'detail' ? (
           <NoSelectedTagScreen onBack={() => openRoute('dashboard')} />
@@ -480,11 +862,43 @@ export function VisualProductShell({
           session ? (
             <ServiceCalculationScreen
               calculation={serviceCalculation}
+              stages={executionStages}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
               onBack={() => openRoute('detail')}
+              onOpenCalculator={() => openCalculator('calculation')}
+              onOpenStage={handleOpenStageRoute}
               onInputChange={onCalculationInputChange}
-              onSaveCalculation={() => void onSaveCalculation()}
+              onSaveCalculation={async () => {
+                await onSaveCalculation();
+                setShellMessage('Calculo salvo localmente. Proximo: comparar historico ou abrir checklist.');
+              }}
+            />
+          ) : (
+            <DemoCalculationScreen
+              calculation={model.calculation}
+              selectedTag={selectedTag}
+              onBack={() => openRoute('detail')}
+            />
+          )
+        ) : route === 'loop-test' ? (
+          session ? (
+            <LoopExecutionScreen
+              calculation={serviceCalculation}
+              inputMode={loopInputMode}
+              points={loopPoints}
+              selectedTag={selectedTag}
+              shellMessage={shellMessage ?? authMessage}
+              stages={executionStages}
+              onBack={() => openRoute('detail')}
+              onInputModeChange={setLoopInputMode}
+              onOpenCalculator={() => openCalculator('loop-test')}
+              onOpenStage={handleOpenStageRoute}
+              onPointChange={(pointId, key, value) =>
+                setLoopPoints((current) => updateLoopPoint(current, pointId, key, value))
+              }
+              onPointCountChange={handleLoopPointCountChange}
+              onSaveLoop={() => void handleSaveLoopTest()}
             />
           ) : (
             <DemoCalculationScreen
@@ -496,10 +910,15 @@ export function VisualProductShell({
         ) : route === 'history' ? (
           session ? (
             <ServiceHistoryScreen
+              activePointId={activeHistoryPointId}
               history={serviceHistory}
+              pointOptions={historyPointOptions}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
+              stages={executionStages}
               onBack={() => openRoute('detail')}
+              onOpenStage={handleOpenStageRoute}
+              onPointChange={setActiveHistoryPointId}
               onOpenDiagnosis={() => openRoute('diagnosis')}
             />
           ) : (
@@ -514,14 +933,19 @@ export function VisualProductShell({
           session ? (
             <ServiceGuidanceScreen
               guidance={serviceGuidance}
+              stages={executionStages}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
               onBack={() => openRoute('detail')}
               onChecklistOutcomeChange={onChecklistOutcomeChange}
               onObservationNotesChange={onObservationNotesChange}
+              onOpenStage={handleOpenStageRoute}
               onOpenReport={() => openRoute('report')}
               onRiskJustificationChange={onRiskJustificationChange}
-              onSaveGuidanceEvidence={() => void onSaveGuidanceEvidence()}
+              onSaveGuidanceEvidence={async () => {
+                await onSaveGuidanceEvidence();
+                setShellMessage('Checklist salvo localmente. Proximo: adicionar evidencia ou gerar relatorio.');
+              }}
             />
           ) : (
             <DemoDiagnosisScreen
@@ -538,6 +962,7 @@ export function VisualProductShell({
           session ? (
             <ServiceReportScreen
               report={serviceReport}
+              stages={executionStages}
               shellMessage={shellMessage ?? authMessage}
               syncBusy={syncBusy}
               onAttachCamera={() => void reportActions.attachPhotoFromCamera()}
@@ -546,9 +971,17 @@ export function VisualProductShell({
               onRefreshServerStatus={() => void reportActions.refreshServerStatus()}
               onRemovePhoto={(evidenceId) => void reportActions.removePhoto(evidenceId)}
               onRetrySync={() => void reportActions.retrySync()}
+              onNavigatePending={(pendingRoute) => openRoute(pendingRoute)}
+              onOpenStage={handleOpenStageRoute}
               onReviewNotesChange={onReportReviewNotesChange}
-              onSaveDraft={() => void reportActions.saveDraft()}
-              onSubmitReport={() => void reportActions.submitReport()}
+              onSaveDraft={async () => {
+                await reportActions.saveDraft();
+                setShellMessage('Rascunho salvo localmente. Proximo: enviar para fila local ou adicionar evidencias.');
+              }}
+              onSubmitReport={async () => {
+                await reportActions.submitReport();
+                setShellMessage('Envio solicitado. O status local/sync permanece visivel neste relatorio.');
+              }}
             />
           ) : (
             <DemoReportScreen
@@ -577,6 +1010,7 @@ export function VisualProductShell({
           <NoSelectedTagScreen onBack={() => openRoute('dashboard')} />
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -589,22 +1023,30 @@ function DashboardScreen({
   email,
   model,
   packageBusy,
+  packagePreparation,
   password,
   reviewAccess,
   reviewBusy,
   reviewQueueCount,
+  reportStatusByTag,
   searchQuery,
   session,
   shellMessage,
+  technicianReports,
   visibleTags,
   onEmailChange,
   onFilterChange,
   onOpenDetail,
+  onOpenManualInstrument,
   onPasswordChange,
   onBarcodeScanned,
   onCancelQrScanner,
+  onBrowsePackageTags,
+  onDownloadPackage,
   onQrManualPayloadChange,
+  onOpenReports,
   onOpenReview,
+  onOpenStandaloneCalculator,
   onResolveQrManualPayload,
   onRefreshPackages,
   onSearchChange,
@@ -622,22 +1064,31 @@ function DashboardScreen({
   email: string;
   model: ReturnType<typeof buildTechnicianVisualWorkflow>;
   packageBusy: boolean;
+  packagePreparation: VisualWorkPackagePreparationProjection;
   password: string;
   reviewAccess: ReturnType<typeof buildVisualReviewAccess>;
   reviewBusy: boolean;
   reviewQueueCount: number;
+  reportStatusByTag: Map<string, VisualTagWorkStatus>;
   searchQuery: string;
   session: ActiveUserSession | null;
   shellMessage: string | null;
+  technicianReports: VisualTechnicianReportSummary[];
   visibleTags: VisualTagSummary[];
+  workPackages: LocalAssignedWorkPackageSummary[];
   onEmailChange: (value: string) => void;
   onFilterChange: (value: VisualTagCategory | 'all') => void;
   onOpenDetail: (tag: VisualTagSummary) => void;
+  onOpenManualInstrument: () => void;
   onPasswordChange: (value: string) => void;
   onBarcodeScanned: (event: BarcodeScanningResult) => void;
   onCancelQrScanner: () => void;
+  onBrowsePackageTags: (workPackageId: string) => void;
+  onDownloadPackage: (workPackageId: string) => void;
   onQrManualPayloadChange: (value: string) => void;
+  onOpenReports: () => void;
   onOpenReview: () => void;
+  onOpenStandaloneCalculator: () => void;
   onResolveQrManualPayload: () => void;
   onRefreshPackages: () => void;
   onSearchChange: (value: string) => void;
@@ -653,17 +1104,22 @@ function DashboardScreen({
       <View style={styles.dashboardHeader}>
         <View>
           <TagWiseLogo large />
-          <Text style={styles.headerSubtitle}>Calculo, diagnostico e evidencia por tag</Text>
-        </View>
-        <View style={styles.headerIconRow}>
-          <IconBubble label="☁" />
-          <IconBubble label="●" badge />
+          <Text style={styles.headerSubtitle}>Campo, calculo e relatorio por tag</Text>
         </View>
       </View>
 
+      {session ? (
+        <DashboardActionPanel
+          reports={technicianReports}
+          onOpenManualInstrument={onOpenManualInstrument}
+          onOpenReports={onOpenReports}
+          onOpenStandaloneCalculator={onOpenStandaloneCalculator}
+        />
+      ) : null}
+
       <View style={styles.searchGrid}>
         <View style={styles.searchBox}>
-          <Text style={styles.searchIcon}>⌕</Text>
+          <Text style={styles.searchIcon}>?</Text>
           <TextInput
             autoCapitalize="characters"
             autoCorrect={false}
@@ -673,10 +1129,9 @@ function DashboardScreen({
             style={styles.searchInput}
             value={searchQuery}
           />
-          <Text style={styles.microphoneIcon}>▮</Text>
         </View>
         <Pressable accessibilityRole="button" onPress={onStartQrScanner} style={styles.qrButton}>
-          <Text style={styles.qrIcon}>▦</Text>
+          <Text style={styles.qrIcon}>QR</Text>
           <Text style={styles.qrButtonLabel}>Escanear QR</Text>
         </Pressable>
       </View>
@@ -724,7 +1179,7 @@ function DashboardScreen({
 
       {shellMessage ? <InlineMessage text={shellMessage} /> : null}
 
-      <SectionHeader actionLabel="Ver todas" icon="◷" title="Abertas recentemente" />
+      <SectionHeader title="Abertas recentemente" />
       <ScrollView
         contentContainerStyle={styles.recentRow}
         horizontal
@@ -752,6 +1207,21 @@ function DashboardScreen({
         onSwitchUser={onSwitchUser}
       />
 
+      {session ? (
+        <>
+          <WorkPackagePreparationPanel
+            packageBusy={packageBusy}
+            preparation={packagePreparation}
+            onBrowsePackageTags={onBrowsePackageTags}
+            onDownloadPackage={onDownloadPackage}
+            onRefreshPackages={onRefreshPackages}
+          />
+          <ManualInstrumentPanel
+            onOpen={onOpenManualInstrument}
+          />
+        </>
+      ) : null}
+
       {reviewAccess.state === 'available' || reviewAccess.state === 'connected-required' ? (
         <ReviewAccessCard
           access={reviewAccess}
@@ -761,13 +1231,9 @@ function DashboardScreen({
         />
       ) : null}
 
-      {session && model.source === 'local-empty' ? (
-        <EmptyCatalogState onRefreshPackages={onRefreshPackages} packageBusy={packageBusy} />
-      ) : null}
-
       <TagSection
         accentColor="#ff8b49"
-        actionLabel={activeFilter === 'pending' ? undefined : 'Ver todas'}
+        reportStatusByTag={reportStatusByTag}
         tags={visibleTags.filter((tag) => tag.category === 'pending')}
         title="Pendentes"
         totalLabel={`(${model.counts.pending})`}
@@ -775,7 +1241,7 @@ function DashboardScreen({
       />
       <TagSection
         accentColor={colors.red}
-        actionLabel={activeFilter === 'recurrent' ? undefined : 'Ver todas'}
+        reportStatusByTag={reportStatusByTag}
         tags={visibleTags.filter((tag) => tag.category === 'recurrent')}
         title="Reincidentes"
         totalLabel={`(${model.counts.recurrent})`}
@@ -783,13 +1249,641 @@ function DashboardScreen({
       />
       <TagSection
         accentColor={colors.amber}
-        actionLabel={activeFilter === 'due' ? undefined : 'Ver todas'}
+        reportStatusByTag={reportStatusByTag}
         tags={visibleTags.filter((tag) => tag.category === 'due')}
         title="Vencendo"
         totalLabel={`(${model.counts.due})`}
         onOpenDetail={onOpenDetail}
       />
     </>
+  );
+}
+
+function SignedOutLoginScreen({
+  apiBaseUrl,
+  authBusy,
+  authMessage,
+  email,
+  password,
+  onEmailChange,
+  onPasswordChange,
+  onSignIn,
+}: {
+  apiBaseUrl: string;
+  authBusy: boolean;
+  authMessage: string | null;
+  email: string;
+  password: string;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSignIn: () => void;
+}) {
+  return (
+    <>
+      <View style={styles.dashboardHeader}>
+        <View>
+          <TagWiseLogo large />
+          <Text style={styles.headerSubtitle}>Entre para acessar a execucao de campo</Text>
+        </View>
+      </View>
+
+      <View style={styles.connectionCard}>
+        <View style={styles.connectionHeader}>
+          <View>
+            <Text style={styles.connectionTitle}>TagWise login</Text>
+            <Text style={styles.connectionBody}>
+              O login conectado carrega pacotes atribuidos de {apiBaseUrl}. A restauracao offline
+              fica disponivel depois do primeiro login bem-sucedido.
+            </Text>
+          </View>
+          <StatusPill label="Login" severity="medium" />
+        </View>
+
+        {authMessage ? <Text style={styles.connectionMessage}>{authMessage}</Text> : null}
+
+        <View style={styles.loginGrid}>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            onChangeText={onEmailChange}
+            placeholder="Email"
+            placeholderTextColor={colors.textSubtle}
+            style={styles.darkInput}
+            value={email}
+          />
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={onPasswordChange}
+            placeholder="Senha"
+            placeholderTextColor={colors.textSubtle}
+            secureTextEntry
+            style={styles.darkInput}
+            value={password}
+          />
+          <Pressable
+            accessibilityRole="button"
+            disabled={authBusy}
+            onPress={onSignIn}
+            style={[styles.smallActionButton, authBusy ? styles.disabledAction : null]}
+          >
+            <Text style={styles.smallActionLabel}>{authBusy ? 'Entrando...' : 'Entrar'}</Text>
+          </Pressable>
+        </View>
+      </View>
+    </>
+  );
+}
+
+function WorkPackagePreparationPanel({
+  packageBusy,
+  preparation,
+  onBrowsePackageTags,
+  onDownloadPackage,
+  onRefreshPackages,
+}: {
+  packageBusy: boolean;
+  preparation: VisualWorkPackagePreparationProjection;
+  onBrowsePackageTags: (workPackageId: string) => void;
+  onDownloadPackage: (workPackageId: string) => void;
+  onRefreshPackages: () => void;
+}) {
+  return (
+    <View style={styles.connectionCard}>
+      <View style={styles.connectionHeader}>
+        <View>
+          <Text style={styles.connectionTitle}>{preparation.title}</Text>
+          <Text style={styles.connectionBody}>{preparation.detail}</Text>
+        </View>
+        <StatusPill
+          label={preparation.state === 'available' ? `${preparation.packages.length}` : 'Pacotes'}
+          severity={preparation.state === 'available' ? 'ok' : 'medium'}
+        />
+      </View>
+
+      <View style={styles.connectionActionRow}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!preparation.canRefresh}
+          onPress={onRefreshPackages}
+          style={[styles.smallActionButton, !preparation.canRefresh ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallActionLabel}>
+            {packageBusy ? 'Atualizando...' : 'Atualizar lista'}
+          </Text>
+        </Pressable>
+      </View>
+
+      {preparation.packages.length === 0 ? (
+        <InlineMessage text={preparation.detail} />
+      ) : (
+        <View style={styles.packageList}>
+          {preparation.packages.map((workPackage) => (
+            <View key={workPackage.id} style={styles.packageCard}>
+              <View style={styles.connectionHeader}>
+                <View style={styles.flexOne}>
+                  <Text style={styles.templateTitle}>{workPackage.title}</Text>
+                  <Text style={styles.templateBody}>
+                    {workPackage.sourceReference} - {workPackage.tagCountLabel}
+                  </Text>
+                </View>
+                <StatusPill
+                  label={workPackage.cacheLabel}
+                  severity={workPackage.cacheState === 'cached' ? 'ok' : 'medium'}
+                />
+              </View>
+              <Text style={styles.connectionBody}>{workPackage.detail}</Text>
+              {workPackage.reconciliationLabel ? (
+                <Text style={styles.connectionMessage}>{workPackage.reconciliationLabel}</Text>
+              ) : null}
+              <View style={styles.connectionActionRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!workPackage.canDownload}
+                  onPress={() => onDownloadPackage(workPackage.id)}
+                  style={[
+                    styles.smallActionButton,
+                    !workPackage.canDownload ? styles.disabledAction : null,
+                  ]}
+                >
+                  <Text style={styles.smallActionLabel}>
+                    {workPackage.cacheState === 'cached' ? 'Atualizar snapshot' : 'Baixar snapshot'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!workPackage.canBrowse}
+                  onPress={() => onBrowsePackageTags(workPackage.id)}
+                  style={[
+                    styles.smallGhostButton,
+                    !workPackage.canBrowse ? styles.disabledAction : null,
+                  ]}
+                >
+                  <Text style={styles.smallGhostLabel}>Abrir tags</Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ManualInstrumentPanel({ onOpen }: { onOpen: () => void }) {
+  return (
+    <View style={styles.connectionCard}>
+      <View style={styles.connectionHeader}>
+        <View style={styles.flexOne}>
+          <Text style={styles.connectionTitle}>Instrumento fora do pacote?</Text>
+          <Text style={styles.connectionBody}>
+            Cadastre um instrumento manual local. Ele fica marcado como pendente de reconciliacao
+            e nao vira ativo oficial automaticamente.
+          </Text>
+        </View>
+        <StatusPill label="Manual" severity="due" />
+      </View>
+      <Pressable accessibilityRole="button" onPress={onOpen} style={styles.smallActionButton}>
+        <Text style={styles.smallActionLabel}>Cadastrar instrumento manual</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function ManualInstrumentScreen({
+  draft,
+  packageBusy,
+  onBack,
+  onChange,
+  onCreate,
+}: {
+  draft: ManualInstrumentInput;
+  packageBusy: boolean;
+  onBack: () => void;
+  onChange: (key: keyof ManualInstrumentInput, value: string) => void;
+  onCreate: () => void;
+}) {
+  const requiredReady =
+    draft.description.trim().length > 0 &&
+    draft.area.trim().length > 0 &&
+    draft.instrumentFamily.trim().length > 0 &&
+    draft.reason.trim().length > 0;
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      <Text style={styles.screenTitle}>Cadastrar instrumento</Text>
+      <InlineMessage text="Cadastro local para campo. Use quando a tag nao existe no pacote baixado. A reconciliacao com SAP/Maximo/TOTVS fica pendente." />
+
+      <View style={styles.connectionCard}>
+        <Text style={styles.sectionTitle}>Dados basicos</Text>
+        <View style={styles.loginGrid}>
+          <TextInput
+            autoCapitalize="characters"
+            autoCorrect={false}
+            onChangeText={(value) => onChange('tagCode', value)}
+            placeholder="Tag/codigo opcional"
+            placeholderTextColor={colors.textSubtle}
+            style={styles.darkInput}
+            value={draft.tagCode}
+          />
+          <TextInput
+            autoCorrect={false}
+            onChangeText={(value) => onChange('description', value)}
+            placeholder="Descricao do instrumento"
+            placeholderTextColor={colors.textSubtle}
+            style={styles.darkInput}
+            value={draft.description}
+          />
+          <TextInput
+            autoCorrect={false}
+            onChangeText={(value) => onChange('area', value)}
+            placeholder="Area/localizacao"
+            placeholderTextColor={colors.textSubtle}
+            style={styles.darkInput}
+            value={draft.area}
+          />
+        </View>
+      </View>
+
+      <View style={styles.connectionCard}>
+        <Text style={styles.sectionTitle}>Tipo e sinal</Text>
+        <PickerChips
+          label="Familia"
+          options={['Transmissor de pressao', 'Transmissor de temperatura', 'Transmissor de nivel', 'Transmissor de vazao', 'Valvula de controle']}
+          value={draft.instrumentFamily ?? ''}
+          onChange={(value) => onChange('instrumentFamily', value)}
+        />
+        <PickerChips
+          label="Variavel"
+          options={['Pressao', 'Temperatura', 'Nivel', 'Vazao', 'Corrente']}
+          value={draft.measuredVariable ?? ''}
+          onChange={(value) => onChange('measuredVariable', value)}
+        />
+        <PickerChips
+          label="Sinal"
+          options={['4-20 mA', 'HART', 'Digital', 'Pneumatico', 'Outro']}
+          value={draft.signalType ?? ''}
+          onChange={(value) => onChange('signalType', value)}
+        />
+        <TextInput
+          autoCorrect={false}
+          onChangeText={(value) => onChange('instrumentSubtype', value)}
+          placeholder="Subtipo ou modelo opcional"
+          placeholderTextColor={colors.textSubtle}
+          style={styles.darkInput}
+          value={draft.instrumentSubtype}
+        />
+      </View>
+
+      <View style={styles.connectionCard}>
+        <Text style={styles.sectionTitle}>Faixa e tolerancia</Text>
+        <PickerChips
+          label="Unidade"
+          options={['bar', 'mbar', 'psi', 'degC', 'm', '%', 'm3/h']}
+          value={draft.unit ?? ''}
+          onChange={(value) => onChange('unit', value)}
+        />
+        <View style={styles.twoColumnRow}>
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('rangeMin', value)}
+            placeholder="Range min"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.rangeMin}
+          />
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('rangeMax', value)}
+            placeholder="Range max"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.rangeMax}
+          />
+        </View>
+        <PickerChips
+          label="Tolerancia comum"
+          options={['+/-0.1%', '+/-0.2%', '+/-0.5%', '+/-1%', '+/-0.25 unidade']}
+          value={draft.tolerance ?? ''}
+          onChange={(value) => onChange('tolerance', value)}
+        />
+      </View>
+
+      <View style={styles.connectionCard}>
+        <Text style={styles.sectionTitle}>Motivo</Text>
+        <TextInput
+          autoCorrect={false}
+          multiline
+          onChangeText={(value) => onChange('reason', value)}
+          placeholder="Por que o cadastro manual e necessario?"
+          placeholderTextColor={colors.textSubtle}
+          style={styles.justificationInput}
+          value={draft.reason}
+        />
+        <TextInput
+          autoCorrect={false}
+          multiline
+          onChangeText={(value) => onChange('notes', value)}
+          placeholder="Notas opcionais"
+          placeholderTextColor={colors.textSubtle}
+          style={styles.justificationInput}
+          value={draft.notes}
+        />
+      </View>
+
+      <View style={styles.stickyActionBar}>
+        <Pressable accessibilityRole="button" onPress={onBack} style={styles.smallGhostButton}>
+          <Text style={styles.smallGhostLabel}>Voltar</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!requiredReady || packageBusy}
+          onPress={onCreate}
+          style={[
+            styles.smallActionButton,
+            !requiredReady || packageBusy ? styles.disabledAction : null,
+          ]}
+        >
+          <Text style={styles.smallActionLabel}>
+            {packageBusy ? 'Salvando...' : 'Criar cadastro local'}
+          </Text>
+        </Pressable>
+      </View>
+    </>
+  );
+}
+
+function DashboardActionPanel({
+  reports,
+  onOpenManualInstrument,
+  onOpenReports,
+  onOpenStandaloneCalculator,
+}: {
+  reports: VisualTechnicianReportSummary[];
+  onOpenManualInstrument: () => void;
+  onOpenReports: () => void;
+  onOpenStandaloneCalculator: () => void;
+}) {
+  const pendingSync = reports.filter((report) => report.status === 'pending-sync').length;
+  const returned = reports.filter((report) => report.status === 'returned').length;
+
+  return (
+    <View style={styles.quickActionPanel}>
+      <Text style={styles.sectionTitle}>O que fazer agora?</Text>
+      <View style={styles.quickActionGrid}>
+        <Pressable accessibilityRole="button" onPress={onOpenStandaloneCalculator} style={styles.quickActionButton}>
+          <Text style={styles.quickActionTitle}>Calculadora</Text>
+          <Text style={styles.quickActionBody}>4-20 mA, PV e erro.</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" onPress={onOpenReports} style={styles.quickActionButton}>
+          <Text style={styles.quickActionTitle}>Meus relatorios</Text>
+          <Text style={styles.quickActionBody}>
+            {reports.length} local(is), {pendingSync} pendente(s) sync.
+          </Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" onPress={onOpenManualInstrument} style={styles.quickActionButton}>
+          <Text style={styles.quickActionTitle}>Novo instrumento</Text>
+          <Text style={styles.quickActionBody}>Cadastro manual local.</Text>
+        </Pressable>
+        <View style={styles.quickActionButton}>
+          <Text style={styles.quickActionTitle}>Correcoes</Text>
+          <Text style={styles.quickActionBody}>{returned} devolvido(s) para retrabalho.</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function FieldCalculatorScreen({
+  applyTargetId,
+  applyTargets,
+  canApplyToTest,
+  draft,
+  selectedTag,
+  selectedTagContext,
+  onBack,
+  onApplyTargetChange,
+  onApplyToTest,
+  onChange,
+  onPrefillFromSelectedTag,
+}: {
+  applyTargetId: string;
+  applyTargets: ReturnType<typeof buildCalculatorApplyTargets>;
+  canApplyToTest: boolean;
+  draft: FieldCalculatorInput;
+  selectedTag: VisualTagSummary | null;
+  selectedTagContext: LocalTagContext | null;
+  onBack: () => void;
+  onApplyTargetChange: (value: string) => void;
+  onApplyToTest: () => void;
+  onChange: (key: keyof FieldCalculatorInput, value: string) => void;
+  onPrefillFromSelectedTag: () => void;
+}) {
+  const result = calculateFieldValue(draft);
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      <Text style={styles.screenTitle}>Calculadora de campo</Text>
+      <InlineMessage text="Use como ferramenta independente ou preencha pela tag selecionada. Nada aqui envia dados ao servidor sozinho." />
+
+      {selectedTag && selectedTagContext ? (
+        <Pressable accessibilityRole="button" onPress={onPrefillFromSelectedTag} style={styles.smallGhostButton}>
+          <Text style={styles.smallGhostLabel}>Usar faixa de {selectedTag.code}</Text>
+        </Pressable>
+      ) : null}
+
+      <View style={styles.connectionCard}>
+        <Text style={styles.sectionTitle}>Conversor rapido</Text>
+        <PickerChips
+          label="Modo"
+          options={['pv-to-ma', 'ma-to-pv', 'pv-to-percent', 'ma-to-percent', 'percent-to-ma', 'error']}
+          value={draft.mode}
+          onChange={(value) => onChange('mode', value)}
+        />
+        <View style={styles.twoColumnRow}>
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('processMin', value)}
+            placeholder="PV min"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.processMin}
+          />
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('processMax', value)}
+            placeholder="PV max"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.processMax}
+          />
+        </View>
+        <View style={styles.twoColumnRow}>
+          <TextInput
+            autoCorrect={false}
+            onChangeText={(value) => onChange('unit', value)}
+            placeholder="Unidade"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.unit}
+          />
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('value', value)}
+            placeholder="Valor"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.value}
+          />
+        </View>
+        <View style={styles.twoColumnRow}>
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('expected', value)}
+            placeholder="Esperado"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.expected}
+          />
+          <TextInput
+            autoCorrect={false}
+            keyboardType="numeric"
+            onChangeText={(value) => onChange('measured', value)}
+            placeholder="Medido"
+            placeholderTextColor={colors.textSubtle}
+            style={[styles.darkInput, styles.flexOne]}
+            value={draft.measured}
+          />
+        </View>
+        <TextInput
+          autoCorrect={false}
+          keyboardType="numeric"
+          onChangeText={(value) => onChange('tolerance', value)}
+          placeholder="Tolerancia"
+          placeholderTextColor={colors.textSubtle}
+          style={styles.darkInput}
+          value={draft.tolerance}
+        />
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingTitle}>{result.label}</Text>
+          <Text style={styles.pendingText}>{result.detail}</Text>
+          {result.errorPercent !== null ? (
+            <Text style={styles.pendingText}>Erro percentual: {result.errorPercent.toLocaleString('pt-BR')}%</Text>
+          ) : null}
+        </View>
+      </View>
+
+      {canApplyToTest ? (
+        <View style={styles.connectionCard}>
+          <Text style={styles.sectionTitle}>Usar resultado em teste</Text>
+          <InlineMessage text="Escolha exatamente onde aplicar. O app nao assume 50% nem altera o teste sem sua escolha." />
+          <PickerChips
+            label="Destino"
+            options={applyTargets.map((target) => `${target.field}:${target.pointId ?? 'main'}`)}
+            value={applyTargetId}
+            onChange={onApplyTargetChange}
+            labelForOption={(option) =>
+              applyTargets.find((target) => `${target.field}:${target.pointId ?? 'main'}` === option)
+                ?.label ?? option
+            }
+          />
+          <Pressable accessibilityRole="button" onPress={onApplyToTest} style={styles.fullWidthPrimary}>
+            <Text style={styles.fullWidthPrimaryLabel}>Usar este valor em um teste</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <InlineMessage text="O teste de loop completo fica dentro do fluxo do instrumento selecionado. Esta calculadora permanece como ferramenta geral." />
+      )}
+    </>
+  );
+}
+
+function TechnicianReportsScreen({
+  reports,
+  onBack,
+  onOpenReport,
+}: {
+  reports: VisualTechnicianReportSummary[];
+  onBack: () => void;
+  onOpenReport: (report: VisualTechnicianReportSummary) => void;
+}) {
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      <Text style={styles.screenTitle}>Meus relatorios</Text>
+      {reports.length === 0 ? (
+        <InlineMessage text="Nenhum rascunho ou envio local foi criado neste aparelho ainda." />
+      ) : (
+        reports.map((report) => (
+          <Pressable
+            accessibilityRole="button"
+            disabled={!report.canOpen}
+            key={report.reportId}
+            onPress={() => onOpenReport(report)}
+            style={[styles.packageCard, !report.canOpen ? styles.disabledAction : null]}
+          >
+            <View style={styles.connectionHeader}>
+              <View style={styles.flexOne}>
+                <Text style={styles.templateTitle}>{report.tagCode}</Text>
+                <Text style={styles.templateBody}>{report.title}</Text>
+              </View>
+              <StatusPill label={report.statusLabel} severity={reportStatusSeverity(report.status)} />
+            </View>
+            <Text style={styles.connectionBody}>{report.detail}</Text>
+            <Text style={styles.historySubtitle}>Atualizado: {report.updatedAtLabel}</Text>
+            {report.canEdit ? (
+              <Text style={styles.connectionMessage}>Editavel enquanto estiver local ou pendente de sync.</Text>
+            ) : null}
+          </Pressable>
+        ))
+      )}
+    </>
+  );
+}
+
+function PickerChips({
+  labelForOption,
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  labelForOption?: (value: string) => string;
+  label: string;
+  options: string[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <View style={styles.pickerBlock}>
+      <Text style={styles.formLabel}>{label}</Text>
+      <View style={styles.pickerChipRow}>
+        {options.map((option) => {
+          const active = option === value;
+          return (
+            <Pressable
+              accessibilityRole="button"
+              key={option}
+              onPress={() => onChange(option)}
+              style={[styles.pickerChip, active ? styles.pickerChipActive : null]}
+            >
+              <Text style={[styles.pickerChipText, active ? styles.pickerChipTextActive : null]}>
+                {labelForOption ? labelForOption(option) : modeLabel(option)}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 
@@ -1114,20 +2208,25 @@ function TagDetailScreen({
         <View style={styles.separator} />
         <MetricLine
           label="Vencimento"
-          value={selectedTagContext?.dueIndicator.value ?? 'Demo visual'}
+          value={selectedTagContext?.dueIndicator.value ?? 'Indisponivel'}
         />
       </View>
 
       <View style={styles.twoColumnRow}>
-        <InfoPill icon="!" label={selectedTagContext?.historyPreview.title ?? 'Historico demo'} />
-        <InfoPill icon="▣" label="Vence em 12 dias" warning />
+        <InfoPill icon="!" label={selectedTagContext?.historyPreview.title ?? 'Historico indisponivel'} />
+        <InfoPill
+          icon="!"
+          label={selectedTagContext?.dueIndicator.value ?? 'Vencimento indisponivel'}
+          warning={selectedTagContext?.dueIndicator.overdue ?? false}
+        />
       </View>
 
       <View style={styles.sectionBand}>
-        <SectionHeader actionLabel="Ver todas" icon="◷" title="Pendentes (12)" />
+        <SectionHeader title="Escolher teste" />
         {templates.length > 0 ? (
           templates.map((template) => {
             const selected = template.id === selectedExecutionTemplateId;
+            const pattern = resolveVisualExecutionPattern(template);
             return (
               <Pressable
                 accessibilityRole="button"
@@ -1136,11 +2235,14 @@ function TagDetailScreen({
                 style={[styles.templateRow, selected ? styles.templateRowSelected : null]}
               >
                 <View style={styles.flexOne}>
-                  <Text style={styles.templateTitle}>{template.title}</Text>
-                  <Text style={styles.templateBody}>{template.testPattern}</Text>
+                  <Text style={styles.templateTitle}>{toPtBrTemplateLabel(template.title)}</Text>
+                  <Text style={styles.templateBody}>
+                    {pattern.label} - {toPtBrTemplateLabel(template.testPattern)}
+                  </Text>
+                  <Text style={styles.historySubtitle}>{pattern.detail}</Text>
                 </View>
                 <StatusPill
-                  label={selected ? 'Selecionado' : 'Escolher'}
+                  label={selected ? 'Abrindo' : 'Iniciar'}
                   severity={selected ? 'ok' : 'medium'}
                 />
               </Pressable>
@@ -1149,7 +2251,6 @@ function TagDetailScreen({
         ) : (
           <InlineMessage text="Nenhum template local disponivel para esta tag." />
         )}
-        <TagListItem tag={selectedTag} onPress={() => onOpenCalculation()} />
         <View style={styles.resultGrid}>
           <Pressable accessibilityRole="button" onPress={onOpenCalculation} style={styles.resultTile}>
             <Text style={styles.resultIcon}>✓</Text>
@@ -1178,16 +2279,22 @@ function TagDetailScreen({
 
 function ServiceCalculationScreen({
   calculation,
+  stages,
   selectedTag,
   shellMessage,
   onBack,
+  onOpenCalculator,
+  onOpenStage,
   onInputChange,
   onSaveCalculation,
 }: {
   calculation: VisualExecutionCalculationViewModel;
+  stages: VisualExecutionStage[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
   onBack: () => void;
+  onOpenCalculator: () => void;
+  onOpenStage: (route: VisualStageRoute) => void;
   onInputChange: (key: 'expectedValue' | 'observedValue', value: string) => void;
   onSaveCalculation: () => void;
 }) {
@@ -1222,13 +2329,14 @@ function ServiceCalculationScreen({
     <>
       <ScreenHeader onBack={onBack} />
       {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <ExecutionStageStepper activeRoute="calculation" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.tagHeroTitle}>{calculation.tagCode || selectedTag.code}</Text>
       <Text style={styles.tagHeroSubtitle}>{calculation.templateTitle}</Text>
 
       <View style={styles.selectBox}>
         <Text style={styles.selectText}>{calculation.modeLabel}</Text>
         <StatusPill
-          label={calculation.result?.acceptanceLabel ?? 'PENDING'}
+          label={calculation.result?.acceptanceLabel ?? 'PENDENTE'}
           severity={calculation.result?.acceptanceSeverity ?? 'medium'}
         />
       </View>
@@ -1256,19 +2364,19 @@ function ServiceCalculationScreen({
       />
 
       <View style={styles.executionMetricGrid}>
-        <ExecutionMetric label="Unit" value={calculation.unitLabel} />
-        <ExecutionMetric label="Range" value={calculation.rangeLabel} />
-        <ExecutionMetric label="Tolerance" value={calculation.toleranceLabel} />
-        <ExecutionMetric label="Acceptance" value={calculation.acceptanceLabel} />
-        <ExecutionMetric label="Conversion basis" value={calculation.conversionBasisLabel} />
-        <ExecutionMetric label="Expected range" value={calculation.expectedRangeLabel} />
+        <ExecutionMetric label="Unidade" value={calculation.unitLabel} />
+        <ExecutionMetric label="Faixa" value={calculation.rangeLabel} />
+        <ExecutionMetric label="Tolerancia" value={calculation.toleranceLabel} />
+        <ExecutionMetric label="Aceite" value={calculation.acceptanceLabel} />
+        <ExecutionMetric label="Base conversao" value={calculation.conversionBasisLabel} />
+        <ExecutionMetric label="Faixa esperada" value={calculation.expectedRangeLabel} />
       </View>
 
       <View style={styles.failureBar}>
         <Text style={styles.failureBarText}>
           {calculation.result
-            ? `Error: ${calculation.result.absoluteDeviationLabel}`
-            : 'Enter values and save to calculate locally'}
+            ? `Erro: ${calculation.result.absoluteDeviationLabel}`
+            : 'Informe valores e salve para calcular localmente'}
         </Text>
         <StatusPill
           label={calculation.result?.acceptanceLabel ?? 'LOCAL'}
@@ -1279,12 +2387,12 @@ function ServiceCalculationScreen({
         <View style={styles.pendingCard}>
           <Text style={styles.pendingTitle}>{calculation.result.acceptanceReason}</Text>
           <Text style={styles.pendingText}>
-            Signed deviation: {calculation.result.signedDeviationLabel}
+            Desvio assinado: {calculation.result.signedDeviationLabel}
           </Text>
           <Text style={styles.pendingText}>
-            Percent of span: {calculation.result.percentOfSpanLabel}
+            Percentual do span: {calculation.result.percentOfSpanLabel}
           </Text>
-          <Text style={styles.pendingText}>Saved: {calculation.updatedAtLabel}</Text>
+          <Text style={styles.pendingText}>Salvo em: {calculation.updatedAtLabel}</Text>
         </View>
       ) : null}
 
@@ -1294,24 +2402,42 @@ function ServiceCalculationScreen({
         onPress={onSaveCalculation}
         style={[styles.fullWidthPrimary, !calculation.editable ? styles.disabledAction : null]}
       >
-        <Text style={styles.fullWidthPrimaryLabel}>Save deterministic calculation</Text>
+        <Text style={styles.fullWidthPrimaryLabel}>Salvar calculo local</Text>
       </Pressable>
+      <View style={styles.nextActionPanel}>
+        <Text style={styles.pendingTitle}>Proximo passo</Text>
+        <Text style={styles.pendingText}>
+          Salve a medicao, compare com o historico ou abra o checklist tecnico.
+        </Text>
+        <View style={styles.reportActionGrid}>
+          <Pressable accessibilityRole="button" onPress={onOpenCalculator} style={styles.smallGhostButton}>
+            <Text style={styles.smallGhostLabel}>Calculadora</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onOpenStage('history')} style={styles.smallActionButton}>
+            <Text style={styles.smallActionLabel}>Comparar</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onOpenStage('diagnosis')} style={styles.smallActionButton}>
+            <Text style={styles.smallActionLabel}>Checklist</Text>
+          </Pressable>
+        </View>
+      </View>
 
-      <Text style={styles.sectionTitle}>Offline conversion</Text>
+      <Text style={styles.sectionTitle}>Conversao offline</Text>
       <Text style={styles.pendingText}>{calculation.conversion.reason}</Text>
       <TextInput
         keyboardType="numeric"
         onChangeText={setConversionValue}
-        placeholder="Value to convert"
+        placeholder="Valor para converter"
         placeholderTextColor={colors.textSubtle}
         style={styles.darkInput}
         value={conversionValue}
       />
       <View style={styles.conversionGrid}>
-        <ConversionButton label="PV to mA" onPress={() => handleConvert('process-to-milliamp')} />
-        <ConversionButton label="mA to PV" onPress={() => handleConvert('milliamp-to-process')} />
-        <ConversionButton label="mA to %" onPress={() => handleConvert('milliamp-to-percent')} />
-        <ConversionButton label="% to mA" onPress={() => handleConvert('percent-to-milliamp')} />
+        <ConversionButton label="PV para mA" onPress={() => handleConvert('process-to-milliamp')} />
+        <ConversionButton label="mA para PV" onPress={() => handleConvert('milliamp-to-process')} />
+        <ConversionButton label="PV para %" onPress={() => handleConvert('process-to-percent')} />
+        <ConversionButton label="mA para %" onPress={() => handleConvert('milliamp-to-percent')} />
+        <ConversionButton label="% para mA" onPress={() => handleConvert('percent-to-milliamp')} />
       </View>
       {conversionResult ? (
         <View style={styles.conversionResultCard}>
@@ -1319,6 +2445,178 @@ function ServiceCalculationScreen({
           <Text style={styles.pendingText}>{conversionResult.detail}</Text>
         </View>
       ) : null}
+    </>
+  );
+}
+
+function LoopExecutionScreen({
+  calculation,
+  inputMode,
+  points,
+  selectedTag,
+  shellMessage,
+  stages,
+  onBack,
+  onInputModeChange,
+  onOpenCalculator,
+  onOpenStage,
+  onPointChange,
+  onPointCountChange,
+  onSaveLoop,
+}: {
+  calculation: VisualExecutionCalculationViewModel;
+  inputMode: LoopPointInputMode;
+  points: LoopTestPoint[];
+  selectedTag: VisualTagSummary;
+  shellMessage: string | null;
+  stages: VisualExecutionStage[];
+  onBack: () => void;
+  onInputModeChange: (mode: LoopPointInputMode) => void;
+  onOpenCalculator: () => void;
+  onOpenStage: (route: VisualStageRoute) => void;
+  onPointChange: (pointId: string, key: 'expected' | 'measured', value: string) => void;
+  onPointCountChange: (value: string) => void;
+  onSaveLoop: () => void;
+}) {
+  const processMin = resolveLoopProcessMin(calculation);
+  const processMax = resolveLoopProcessMax(calculation);
+  const tolerance = resolveLoopTolerance(calculation);
+  const unit = resolveLoopUnit(calculation);
+  const result = calculateLoopTest({
+    points,
+    inputMode,
+    processMin,
+    processMax,
+    tolerance,
+  });
+
+  if (calculation.state !== 'available') {
+    return (
+      <ExecutionUnavailableScreen
+        message={shellMessage}
+        onBack={onBack}
+        title="Teste de loop indisponivel"
+        unavailableReason={calculation.unavailableReason}
+      />
+    );
+  }
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <ExecutionStageStepper activeRoute="loop-test" stages={stages} onOpenStage={onOpenStage} />
+      <Text style={styles.tagHeroTitle}>{calculation.tagCode || selectedTag.code}</Text>
+      <Text style={styles.tagHeroSubtitle}>Teste de loop do instrumento</Text>
+
+      <View style={styles.nextActionPanel}>
+        <Text style={styles.pendingTitle}>Pontos do teste</Text>
+        <Text style={styles.pendingText}>
+          Comece com 5 pontos e ajuste ate 10 quando o procedimento pedir. A calculadora fica como apoio, mas o teste completo fica aqui.
+        </Text>
+        <View style={styles.reportActionGrid}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => onInputModeChange('pv')}
+            style={[styles.smallGhostButton, inputMode === 'pv' ? styles.smallActionButton : null]}
+          >
+            <Text style={inputMode === 'pv' ? styles.smallActionLabel : styles.smallGhostLabel}>Modo PV</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => onInputModeChange('ma')}
+            style={[styles.smallGhostButton, inputMode === 'ma' ? styles.smallActionButton : null]}
+          >
+            <Text style={inputMode === 'ma' ? styles.smallActionLabel : styles.smallGhostLabel}>Modo mA</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.formLabel}>Quantidade de pontos</Text>
+        <TextInput
+          keyboardType="numeric"
+          onChangeText={onPointCountChange}
+          placeholder="5"
+          placeholderTextColor={colors.textSubtle}
+          style={styles.darkInput}
+          value={`${points.length}`}
+        />
+      </View>
+
+      <View style={styles.executionMetricGrid}>
+        <ExecutionMetric label="Faixa" value={`${processMin || '?'} a ${processMax || '?'} ${unit}`} />
+        <ExecutionMetric label="Tolerancia" value={tolerance ? `${tolerance} ${inputMode}` : calculation.toleranceLabel} />
+        <ExecutionMetric label="Resultado" value={loopSummaryLabel(result.summary.state, result.summary.overallLabel)} />
+        <ExecutionMetric label="Base" value={calculation.conversionBasisLabel} />
+      </View>
+
+      {result.rows.map((row, index) => (
+        <View key={row.id} style={styles.loopPointCard}>
+          <View style={styles.loopPointHeader}>
+            <Text style={styles.historyTitle}>Ponto {index + 1} - {row.setpointPercent}%</Text>
+            <StatusPill
+              label={loopPointStatusLabel(row.passed)}
+              severity={row.passed === false ? 'high' : row.passed === true ? 'ok' : 'medium'}
+            />
+          </View>
+          <View style={styles.loopInputGrid}>
+            <View style={styles.flexOne}>
+              <Text style={styles.formLabel}>Esperado ({inputMode})</Text>
+              <TextInput
+                editable={calculation.editable}
+                keyboardType="numeric"
+                onChangeText={(value) => onPointChange(row.id, 'expected', value)}
+                placeholder="Esperado"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, !calculation.editable ? styles.disabledAction : null]}
+                value={row.expected}
+              />
+            </View>
+            <View style={styles.flexOne}>
+              <Text style={styles.formLabel}>Medido ({inputMode})</Text>
+              <TextInput
+                editable={calculation.editable}
+                keyboardType="numeric"
+                onChangeText={(value) => onPointChange(row.id, 'measured', value)}
+                placeholder="Medido"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, !calculation.editable ? styles.disabledAction : null]}
+                value={row.measured}
+              />
+            </View>
+          </View>
+          <Text style={styles.pendingText}>
+            PV esperado {formatNullableNumber(row.expectedPv)} {unit} | mA esperado {formatNullableNumber(row.expectedMa)}
+          </Text>
+          <Text style={styles.pendingText}>
+            PV medido {formatNullableNumber(row.measuredPv)} {unit} | mA medido {formatNullableNumber(row.measuredMa)}
+          </Text>
+          <Text style={styles.pendingText}>
+            Percentual medido {formatNullableNumber(row.measuredPercent)}% | Erro {formatNullableNumber(row.error)} {inputMode} ({formatNullableNumber(row.errorPercent)}%)
+          </Text>
+        </View>
+      ))}
+
+      <View style={styles.nextActionPanel}>
+        <Text style={styles.pendingTitle}>Resumo do teste</Text>
+        <Text style={styles.pendingText}>
+          {result.summary.passedCount} aprovados, {result.summary.failedCount} fora da tolerancia, {result.summary.pendingCount} pendentes.
+        </Text>
+        <View style={styles.reportActionGrid}>
+          <Pressable accessibilityRole="button" onPress={onOpenCalculator} style={styles.smallGhostButton}>
+            <Text style={styles.smallGhostLabel}>Abrir calculadora</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!calculation.editable}
+            onPress={onSaveLoop}
+            style={[styles.smallActionButton, !calculation.editable ? styles.disabledAction : null]}
+          >
+            <Text style={styles.smallActionLabel}>Salvar loop</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" onPress={() => onOpenStage('history')} style={styles.smallActionButton}>
+            <Text style={styles.smallActionLabel}>Comparar</Text>
+          </Pressable>
+        </View>
+      </View>
     </>
   );
 }
@@ -1376,18 +2674,31 @@ function DemoCalculationScreen({
 }
 
 function ServiceHistoryScreen({
+  activePointId,
   history,
+  pointOptions,
   selectedTag,
   shellMessage,
+  stages,
   onBack,
+  onOpenStage,
+  onPointChange,
   onOpenDiagnosis,
 }: {
+  activePointId: string;
   history: VisualExecutionHistoryViewModel;
+  pointOptions: VisualHistoryPointOption[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
+  stages: VisualExecutionStage[];
   onBack: () => void;
+  onOpenStage: (route: VisualStageRoute) => void;
+  onPointChange: (value: string) => void;
   onOpenDiagnosis: () => void;
 }) {
+  const selectedPoint =
+    pointOptions.find((option) => option.id === activePointId) ?? pointOptions[0] ?? null;
+
   if (history.state === 'unavailable' && history.rows.length === 0) {
     return (
       <ExecutionUnavailableScreen
@@ -1403,6 +2714,7 @@ function ServiceHistoryScreen({
     <>
       <ScreenHeader onBack={onBack} />
       {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <ExecutionStageStepper activeRoute="history" stages={stages} onOpenStage={onOpenStage} />
       <View style={styles.titleRow}>
         <View>
           <Text style={styles.tagHeroTitle}>{history.tagCode || selectedTag.code}</Text>
@@ -1418,21 +2730,63 @@ function ServiceHistoryScreen({
       <View style={styles.chartCard}>
         <View style={styles.chartHeader}>
           <View>
-            <Text style={styles.chartTitle}>Current comparison</Text>
-            <Text style={styles.currentComparisonValue}>{history.currentResultLabel}</Text>
+            <Text style={styles.chartTitle}>Comparacao historica</Text>
+            <Text style={styles.currentComparisonValue}>
+              {selectedPoint?.label ?? history.currentResultLabel}
+            </Text>
           </View>
           <StatusPill
-            label={history.currentResultSeverity === 'high' ? 'FAIL' : 'LOCAL'}
+            label={history.currentResultSeverity === 'high' ? 'FALHA' : 'LOCAL'}
             severity={history.currentResultSeverity}
           />
         </View>
+        {pointOptions.length > 1 ? (
+          <ScrollView
+            contentContainerStyle={styles.chipRow}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+          >
+            {pointOptions.map((option) => (
+              <FilterChip
+                active={option.id === selectedPoint?.id}
+                key={option.id}
+                label={option.label}
+                onPress={() => onPointChange(option.id)}
+              />
+            ))}
+          </ScrollView>
+        ) : null}
+        {selectedPoint && selectedPoint.rows.length > 0 ? (
+          <View style={styles.chartRail}>
+            {selectedPoint.rows.slice(0, 6).map((row, index) => (
+              <View key={`${row.label}:${row.value}`} style={styles.chartPointColumn}>
+                <View
+                  style={[
+                    styles.chartBar,
+                    { height: 24 + (index % 4) * 18 },
+                    row.severity === 'due' || row.severity === 'high' ? styles.chartBarHot : null,
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.chartDot,
+                    row.severity === 'due' || row.severity === 'high' ? styles.chartDotHot : null,
+                  ]}
+                />
+                <Text style={styles.chartLabel}>{row.stateLabel}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <InlineMessage text={selectedPoint?.emptyLabel ?? 'Sem dados suficientes para grafico.'} />
+        )}
         <Text style={styles.pendingText}>{history.summary}</Text>
         <Text style={styles.pendingText}>{history.detail}</Text>
       </View>
 
-      <SectionHeader icon="H" title="Cached history fields" />
-      {history.rows.length > 0 ? (
-        history.rows.map((row) => (
+      <SectionHeader icon="H" title="Linha do tempo do ponto selecionado" />
+      {selectedPoint && selectedPoint.rows.length > 0 ? (
+        selectedPoint.rows.map((row) => (
           <View key={`${row.label}:${row.value}`} style={styles.historyRow}>
             <View style={styles.flexOne}>
               <Text style={styles.historyTitle}>{row.label}</Text>
@@ -1443,12 +2797,12 @@ function ServiceHistoryScreen({
           </View>
         ))
       ) : (
-        <InlineMessage text="No local history rows were cached for this selected tag." />
+        <InlineMessage text={selectedPoint?.emptyLabel ?? 'Nenhum campo de historico local esta em cache para esta tag.'} />
       )}
 
       <Pressable accessibilityRole="button" onPress={onOpenDiagnosis} style={styles.fullWidthPrimary}>
         <Text style={styles.fullWidthPrimaryIcon}>G</Text>
-        <Text style={styles.fullWidthPrimaryLabel}>Open local guidance</Text>
+        <Text style={styles.fullWidthPrimaryLabel}>Abrir orientacao local</Text>
       </Pressable>
     </>
   );
@@ -1523,16 +2877,19 @@ function DemoHistoryScreen({
 
 function ServiceGuidanceScreen({
   guidance,
+  stages,
   selectedTag,
   shellMessage,
   onBack,
   onChecklistOutcomeChange,
   onObservationNotesChange,
+  onOpenStage,
   onOpenReport,
   onRiskJustificationChange,
   onSaveGuidanceEvidence,
 }: {
   guidance: VisualExecutionGuidanceViewModel;
+  stages: VisualExecutionStage[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
   onBack: () => void;
@@ -1541,6 +2898,7 @@ function ServiceGuidanceScreen({
     outcome: SharedExecutionChecklistOutcome,
   ) => void;
   onObservationNotesChange: (value: string) => void;
+  onOpenStage: (route: VisualStageRoute) => void;
   onOpenReport: () => void;
   onRiskJustificationChange: (riskItemId: string, justificationText: string) => void;
   onSaveGuidanceEvidence: () => void;
@@ -1548,7 +2906,7 @@ function ServiceGuidanceScreen({
   const nextStep =
     guidance.guidedDiagnosisPrompts[0]?.prompt ??
     guidance.checklistItems[0]?.prompt ??
-    'No local next-step guidance was cached for this selected template.';
+    'Nenhuma proxima orientacao local esta em cache para este teste.';
 
   if (guidance.state === 'unavailable') {
     return (
@@ -1565,29 +2923,30 @@ function ServiceGuidanceScreen({
     <>
       <ScreenHeader onBack={onBack} />
       {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <ExecutionStageStepper activeRoute="diagnosis" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.tagHeroTitle}>{guidance.tagCode || selectedTag.code}</Text>
       <Text style={styles.tagHeroSubtitle}>{guidance.title}</Text>
 
       <View style={styles.executionMetricGrid}>
-        <ExecutionMetric label="Risk state" value={guidance.riskStateLabel} />
-        <ExecutionMetric label="Submit readiness" value={guidance.submitReadinessLabel} />
-        <ExecutionMetric label="Last guidance save" value={guidance.guidanceEvidenceSavedAtLabel} />
+        <ExecutionMetric label="Risco" value={guidance.riskStateLabel} />
+        <ExecutionMetric label="Envio" value={guidance.submitReadinessLabel} />
+        <ExecutionMetric label="Ultimo salvamento" value={guidance.guidanceEvidenceSavedAtLabel} />
       </View>
 
-      <Text style={styles.kicker}>NEXT STEP</Text>
+      <Text style={styles.kicker}>PROXIMO PASSO</Text>
       <View style={styles.nextStepCard}>
         <Text style={styles.nextStepIcon}>N</Text>
         <Text style={styles.nextStepText}>{nextStep}</Text>
       </View>
 
       <View style={styles.whyBlock}>
-        <Text style={styles.whyTitle}>Local guidance summary</Text>
+        <Text style={styles.whyTitle}>Resumo da orientacao local</Text>
         <Text style={styles.whyBody}>{guidance.summary}</Text>
         <Text style={styles.whyBody}>{guidance.detail}</Text>
       </View>
 
       <View style={styles.checklistBlock}>
-        <Text style={styles.sectionTitle}>Technical checklist</Text>
+        <Text style={styles.sectionTitle}>Checklist tecnico</Text>
         {guidance.checklistItems.length > 0 ? (
           guidance.checklistItems.map((item) => (
             <GuidanceChecklistCard
@@ -1598,24 +2957,24 @@ function ServiceGuidanceScreen({
             />
           ))
         ) : (
-          <InlineMessage text="No checklist steps were cached for this selected template. Continue with observation notes if needed." />
+          <InlineMessage text="Nenhum passo de checklist esta em cache para este teste. Continue com observacoes se necessario." />
         )}
       </View>
 
-      <Text style={styles.sectionTitle}>Observation notes</Text>
+      <Text style={styles.sectionTitle}>Observacoes do tecnico</Text>
       <TextInput
         autoCapitalize="sentences"
         autoCorrect
         editable={guidance.editable}
         multiline
         onChangeText={onObservationNotesChange}
-        placeholder="Capture field observations for this local execution."
+        placeholder="Registre observacoes de campo desta execucao local."
         placeholderTextColor={colors.textSubtle}
         style={[styles.justificationInput, !guidance.editable ? styles.disabledAction : null]}
         value={guidance.observationNotes}
       />
 
-      <Text style={styles.sectionTitle}>Visible risks</Text>
+      <Text style={styles.sectionTitle}>Riscos visiveis</Text>
       {guidance.riskItems.length > 0 ? (
         guidance.riskItems.map((item) => (
           <GuidanceRiskCard
@@ -1626,25 +2985,25 @@ function ServiceGuidanceScreen({
           />
         ))
       ) : (
-        <InlineMessage text="No visible risk is currently flagged by local history, context, checklist, or evidence state." />
+        <InlineMessage text="Nenhum risco visivel foi marcado pelo historico, contexto, checklist ou evidencias locais." />
       )}
 
-      <Text style={styles.sectionTitle}>Guided prompts</Text>
+      <Text style={styles.sectionTitle}>Perguntas guiadas</Text>
       {guidance.guidedDiagnosisPrompts.length > 0 ? (
         guidance.guidedDiagnosisPrompts.map((item) => (
-          <GuidancePromptView key={item.id} item={item} title="Deterministic prompt" />
+          <GuidancePromptView key={item.id} item={item} title="Pergunta deterministica" />
         ))
       ) : (
-        <InlineMessage text="No guided diagnosis prompts were cached for this selected template." />
+        <InlineMessage text="Nenhuma pergunta de diagnostico guiado esta em cache para este teste." />
       )}
 
-      <Text style={styles.sectionTitle}>Best practices and references</Text>
+      <Text style={styles.sectionTitle}>Boas praticas e referencias</Text>
       {guidance.linkedGuidance.length > 0 ? (
         guidance.linkedGuidance.map((item) => (
           <LinkedGuidanceView key={item.id} item={item} />
         ))
       ) : (
-        <InlineMessage text="No best-practice or normative reference snippets were cached for this selected tag." />
+        <InlineMessage text="Nenhuma boa pratica ou referencia normativa esta em cache para esta tag." />
       )}
 
       <Pressable
@@ -1653,11 +3012,11 @@ function ServiceGuidanceScreen({
         onPress={onSaveGuidanceEvidence}
         style={[styles.fullWidthPrimary, !guidance.editable ? styles.disabledAction : null]}
       >
-        <Text style={styles.fullWidthPrimaryLabel}>Save checklist and notes</Text>
+        <Text style={styles.fullWidthPrimaryLabel}>Salvar checklist e observacoes</Text>
       </Pressable>
 
       <Pressable accessibilityRole="button" onPress={onOpenReport} style={styles.secondaryFullWidth}>
-        <Text style={styles.returnLabel}>Continue to report draft</Text>
+        <Text style={styles.returnLabel}>Continuar para relatorio</Text>
       </Pressable>
     </>
   );
@@ -1736,11 +3095,14 @@ function DemoDiagnosisScreen({
 
 function ServiceReportScreen({
   report,
+  stages,
   shellMessage,
   syncBusy,
   onAttachCamera,
   onAttachLibrary,
   onBack,
+  onNavigatePending,
+  onOpenStage,
   onRefreshServerStatus,
   onRemovePhoto,
   onRetrySync,
@@ -1749,11 +3111,14 @@ function ServiceReportScreen({
   onSubmitReport,
 }: {
   report: VisualReportProjection;
+  stages: VisualExecutionStage[];
   shellMessage: string | null;
   syncBusy: boolean;
   onAttachCamera: () => void;
   onAttachLibrary: () => void;
   onBack: () => void;
+  onNavigatePending: (route: VisualReportPendingActionRoute) => void;
+  onOpenStage: (route: VisualStageRoute) => void;
   onRefreshServerStatus: () => void;
   onRemovePhoto: (evidenceId: string) => void;
   onRetrySync: () => void;
@@ -1765,7 +3130,7 @@ function ServiceReportScreen({
     return (
       <ExecutionUnavailableScreen
         message={shellMessage}
-        title="Report draft unavailable"
+        title="Relatorio indisponivel"
         unavailableReason={report.unavailableReason}
         onBack={onBack}
       />
@@ -1776,24 +3141,52 @@ function ServiceReportScreen({
     <>
       <ScreenHeader onBack={onBack} />
       {shellMessage ? <InlineMessage text={shellMessage} /> : null}
-      <Text style={styles.screenTitle}>Report</Text>
+      <ExecutionStageStepper activeRoute="report" stages={stages} onOpenStage={onOpenStage} />
+      <Text style={styles.screenTitle}>Relatorio</Text>
 
       <View style={styles.summaryCard}>
         <SummaryLine label="Tag" value={report.tagCode} />
         <SummaryLine label="Template" value={report.templateTitle} />
-        <SummaryLine label="Lifecycle" value={report.lifecycleStateLabel} pill />
-        <SummaryLine label="Owner" value={report.reportStateLabel} />
-        <SummaryLine label="Sync" value={`${report.syncBadge.label}: ${report.syncBadge.detail}`} />
+        <SummaryLine label="Ciclo" value={reviewLifecycleLabel(report.lifecycleStateLabel)} pill />
+        <SummaryLine label="Estado" value={report.reportStateLabel} />
+        <SummaryLine label="Sync" value={`${syncLabel(report.syncBadge.state)}: ${report.syncBadge.detail}`} />
       </View>
 
-      <Text style={styles.sectionTitle}>Automatic Summary</Text>
+      <Text style={styles.sectionTitle}>Resumo automatico</Text>
       <View style={styles.summaryCard}>
         {report.summaryRows.map((row) => (
-          <SummaryLine key={row.label} label={row.label} value={row.value} />
+          <ReportSummaryBlock key={row.label} label={row.label} value={row.value} />
         ))}
       </View>
 
-      <Text style={styles.sectionTitle}>Checklist Outcomes</Text>
+      <Text style={styles.sectionTitle}>Pendencias e acoes</Text>
+      {report.pendingActions.length > 0 ? (
+        report.pendingActions.map((action) => (
+          <Pressable
+            accessibilityRole="button"
+            key={action.id}
+            onPress={() => onNavigatePending(action.route)}
+            style={[
+              styles.pendingActionCard,
+              action.blocking ? styles.guidanceCardWarning : null,
+            ]}
+          >
+            <View style={styles.loopPointHeader}>
+              <Text style={styles.historyTitle}>{action.label}</Text>
+              <StatusPill
+                label={action.blocking ? 'Bloqueia envio' : 'Justificar'}
+                severity={action.blocking ? 'high' : 'medium'}
+              />
+            </View>
+            <Text style={styles.pendingText}>{action.detail}</Text>
+            <Text style={styles.smallGhostLabel}>Abrir etapa para resolver</Text>
+          </Pressable>
+        ))
+      ) : (
+        <InlineMessage text="Nenhuma pendencia critica local foi projetada para este relatorio." />
+      )}
+
+      <Text style={styles.sectionTitle}>Resultado do checklist</Text>
       {report.checklistOutcomes.length > 0 ? (
         report.checklistOutcomes.map((item) => (
           <View key={item.id} style={styles.historyRow}>
@@ -1809,15 +3202,21 @@ function ServiceReportScreen({
       ) : (
         <View style={styles.pendingCard}>
           <Text style={styles.pendingText}>
-            No checklist outcomes have been captured for this local report draft yet.
+            Nenhum resultado de checklist foi capturado neste rascunho local ainda.
           </Text>
         </View>
       )}
 
       <SectionHeader
-        actionLabel={`${report.photoAttachments.length} local photos`}
-        title="Evidence"
+        actionLabel={`${report.photoAttachments.length} fotos locais`}
+        title="Evidencias"
       />
+      <View style={styles.nextActionPanel}>
+        <Text style={styles.pendingTitle}>Fotos e anexos</Text>
+        <Text style={styles.pendingText}>
+          Adicione fotos ou arquivos da galeria quando o procedimento pedir evidencia minima ou esperada.
+        </Text>
+      </View>
       <View style={styles.reportActionGrid}>
         <Pressable
           accessibilityRole="button"
@@ -1833,7 +3232,7 @@ function ServiceReportScreen({
           onPress={onAttachLibrary}
           style={[styles.smallGhostButton, !report.editable ? styles.disabledAction : null]}
         >
-          <Text style={styles.smallGhostLabel}>Library</Text>
+          <Text style={styles.smallGhostLabel}>Galeria</Text>
         </Pressable>
       </View>
 
@@ -1877,7 +3276,7 @@ function ServiceReportScreen({
                   !report.editable ? styles.disabledAction : null,
                 ]}
               >
-                <Text style={styles.smallGhostLabel}>Remove</Text>
+                <Text style={styles.smallGhostLabel}>Remover</Text>
               </Pressable>
             </View>
           ))}
@@ -1885,12 +3284,12 @@ function ServiceReportScreen({
       ) : (
         <View style={styles.pendingCard}>
           <Text style={styles.pendingText}>
-            No photo evidence has been attached locally for this report yet.
+            Nenhuma foto foi anexada localmente a este relatorio ainda.
           </Text>
         </View>
       )}
 
-      <Text style={styles.sectionTitle}>Risk and Justification</Text>
+      <Text style={styles.sectionTitle}>Riscos e justificativas</Text>
       {report.riskFlags.length > 0 ? (
         report.riskFlags.map((riskFlag) => (
           <View
@@ -1904,32 +3303,35 @@ function ServiceReportScreen({
             <Text style={styles.pendingText}>{riskFlag.stateLabel}</Text>
             <Text style={styles.pendingText}>{riskFlag.detail}</Text>
             <Text style={styles.pendingText}>
-              Justification: {riskFlag.justificationText.trim() || 'Not captured'}
+              Justificativa: {riskFlag.justificationText.trim() || 'Nao capturada'}
             </Text>
           </View>
         ))
       ) : (
         <View style={styles.pendingCard}>
-          <Text style={styles.pendingText}>No local risk flags are active for this report.</Text>
+          <Text style={styles.pendingText}>Nenhum risco local esta ativo neste relatorio.</Text>
         </View>
       )}
 
-      <Text style={styles.sectionTitle}>Technician Review Notes</Text>
+      <Text style={styles.sectionTitle}>Observacoes do tecnico</Text>
+      {!report.editable && report.editLockReason ? (
+        <InlineMessage text={report.editLockReason} />
+      ) : null}
       <TextInput
         autoCapitalize="sentences"
         autoCorrect
         editable={report.editable}
         multiline
         onChangeText={onReviewNotesChange}
-        placeholder="Add final notes, corrections, or observations for report review..."
+        placeholder="Adicione observacoes, correcoes ou notas finais para revisao..."
         placeholderTextColor={colors.textSubtle}
         style={[styles.justificationInput, !report.editable ? styles.disabledAction : null]}
         value={report.reviewNotes}
       />
 
       <View style={styles.guidanceCard}>
-        <Text style={styles.historySubtitle}>Report intelligence</Text>
-        <Text style={styles.historyTitle}>AI Diagnosis</Text>
+        <Text style={styles.historySubtitle}>Inteligencia do relatorio</Text>
+        <Text style={styles.historyTitle}>Diagnostico de IA</Text>
         <Text style={styles.pendingText}>{report.aiDiagnosis.label}</Text>
         <Text style={styles.pendingText}>{report.aiDiagnosis.detail}</Text>
         {report.aiDiagnosis.summary ? (
@@ -1937,14 +3339,14 @@ function ServiceReportScreen({
         ) : null}
         {report.aiDiagnosis.generatedAtLabel ? (
           <Text style={styles.historySubtitle}>
-            Generated: {report.aiDiagnosis.generatedAtLabel}
+            Gerado em: {report.aiDiagnosis.generatedAtLabel}
           </Text>
         ) : null}
       </View>
 
-      <Text style={styles.sectionTitle}>Sync</Text>
+      <Text style={styles.sectionTitle}>Sincronizacao</Text>
       <View style={styles.pendingCard}>
-        <Text style={styles.pendingTitle}>{report.syncBadge.label}</Text>
+        <Text style={styles.pendingTitle}>{syncLabel(report.syncBadge.state)}</Text>
         {report.syncDetailRows.map((row) => (
           <Text key={row.label} style={styles.pendingText}>
             {row.label}: {row.value}
@@ -1961,7 +3363,7 @@ function ServiceReportScreen({
             !report.canRetrySync || syncBusy ? styles.disabledAction : null,
           ]}
         >
-          <Text style={styles.smallActionLabel}>Retry Sync</Text>
+          <Text style={styles.smallActionLabel}>Tentar sync</Text>
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -1972,7 +3374,7 @@ function ServiceReportScreen({
             !report.canRefreshServerStatus || syncBusy ? styles.disabledAction : null,
           ]}
         >
-          <Text style={styles.smallGhostLabel}>Refresh Status</Text>
+          <Text style={styles.smallGhostLabel}>Atualizar status</Text>
         </Pressable>
       </View>
 
@@ -1982,7 +3384,7 @@ function ServiceReportScreen({
         onPress={onSaveDraft}
         style={[styles.secondaryFullWidth, !report.canSaveDraft ? styles.disabledAction : null]}
       >
-        <Text style={styles.returnLabel}>Save Report Draft</Text>
+        <Text style={styles.returnLabel}>Salvar rascunho</Text>
       </Pressable>
       <Pressable
         accessibilityRole="button"
@@ -1990,10 +3392,16 @@ function ServiceReportScreen({
         onPress={onSubmitReport}
         style={[styles.fullWidthPrimary, !report.canSubmit ? styles.disabledAction : null]}
       >
-        <Text style={styles.fullWidthPrimaryLabel}>Submit to Local Queue</Text>
+        <Text style={styles.fullWidthPrimaryLabel}>Enviar para fila local</Text>
       </Pressable>
       {!report.canSubmit ? (
-        <Text style={styles.qrGuidanceText}>{report.submitReadinessLabel}</Text>
+        <View style={styles.pendingCard}>
+          <Text style={styles.pendingTitle}>Envio ainda bloqueado</Text>
+          <Text style={styles.pendingText}>{report.submitReadinessLabel}</Text>
+          <Text style={styles.pendingText}>
+            Toque em uma pendencia acima para ir direto para a justificativa ou evidencia necessaria.
+          </Text>
+        </View>
       ) : null}
     </>
   );
@@ -2051,13 +3459,13 @@ function ServiceReviewScreen({
     <>
       <ScreenHeader onBack={onBack} />
       {shellMessage ? <InlineMessage text={shellMessage} /> : null}
-      <Text style={styles.screenTitle}>Review</Text>
+      <Text style={styles.screenTitle}>Revisao</Text>
 
       <View style={styles.summaryCard}>
-        <SummaryLine label="Access" value={access.label} pill={access.state === 'available'} />
-        <SummaryLine label="Role" value={access.reviewerRole ?? 'None'} />
-        <SummaryLine label="State" value={access.state} />
-        <SummaryLine label="Authority" value={access.canUseDecisionActions ? 'Connected' : 'Unavailable'} />
+        <SummaryLine label="Acesso" value={access.label} pill={access.state === 'available'} />
+        <SummaryLine label="Perfil" value={access.reviewerRole ?? 'Nenhum'} />
+        <SummaryLine label="Estado" value={reviewAccessStateLabel(access.state)} />
+        <SummaryLine label="Autoridade" value={access.canUseDecisionActions ? 'Conectado' : 'Indisponivel'} />
       </View>
 
       {access.state !== 'available' ? (
@@ -2077,7 +3485,7 @@ function ServiceReviewScreen({
             ]}
           >
             <Text style={styles.fullWidthPrimaryLabel}>
-              {busy ? 'Loading review queue...' : 'Refresh service queue'}
+              {busy ? 'Carregando fila...' : 'Atualizar fila'}
             </Text>
           </Pressable>
 
@@ -2089,7 +3497,7 @@ function ServiceReviewScreen({
             {groups.map((group) => (
               <FilterChip
                 active={group.key === activeGroup.key}
-                count={group.items.length}
+                count={group.count}
                 key={group.key}
                 label={group.label}
                 onPress={() => onGroupChange(group.key)}
@@ -2097,7 +3505,7 @@ function ServiceReviewScreen({
             ))}
           </ScrollView>
 
-          <SectionHeader title={`${activeGroup.label} Queue`} />
+          <SectionHeader title={`Fila: ${activeGroup.label}`} />
           {activeGroup.items.length === 0 ? (
             <View style={styles.pendingCard}>
               <Text style={styles.pendingText}>{activeGroup.emptyLabel}</Text>
@@ -2107,19 +3515,19 @@ function ServiceReviewScreen({
               <View key={item.reportId} style={styles.guidanceCard}>
                 <Text style={styles.historyTitle}>{item.tagId}</Text>
                 <Text style={styles.historySubtitle}>{item.reportId}</Text>
-                <SummaryLine label="Lifecycle" value={item.statusLabel} />
-                <SummaryLine label="Work package" value={item.workPackageId} />
-                <SummaryLine label="Risk flags" value={`${item.riskFlagCount}`} />
-                <SummaryLine label="Pending evidence" value={`${item.pendingEvidenceCount}`} />
+                <SummaryLine label="Ciclo" value={reviewLifecycleLabel(item.statusLabel)} />
+                <SummaryLine label="Pacote" value={item.workPackageId} />
+                <SummaryLine label="Riscos" value={`${item.riskFlagCount}`} />
+                <SummaryLine label="Evidencias pendentes" value={`${item.pendingEvidenceCount}`} />
                 <Text style={styles.pendingText}>{item.executionSummary}</Text>
-                <Text style={styles.pendingText}>Accepted: {item.acceptedAtLabel}</Text>
+                <Text style={styles.pendingText}>Aceito em: {item.acceptedAtLabel}</Text>
                 <Pressable
                   accessibilityRole="button"
                   disabled={busy}
                   onPress={() => onOpenReport(item.reportId)}
                   style={[styles.smallActionButton, busy ? styles.disabledAction : null]}
                 >
-                  <Text style={styles.smallActionLabel}>Open service detail</Text>
+                  <Text style={styles.smallActionLabel}>Abrir detalhe</Text>
                 </Pressable>
               </View>
             ))
@@ -2184,14 +3592,14 @@ function ReviewDetailView({
     <View style={styles.guidanceCard}>
       <Text style={styles.sectionTitle}>{detail.title}</Text>
       <View style={styles.summaryCard}>
-        <SummaryLine label="Lifecycle" value={detail.lifecycleStateLabel} pill />
-        <SummaryLine label="Sync" value={detail.syncStateLabel} />
+        <SummaryLine label="Ciclo" value={reviewLifecycleLabel(detail.lifecycleStateLabel)} pill />
+        <SummaryLine label="Sync" value={syncLabel(detail.syncStateLabel)} />
         {detail.summaryRows.map((row) => (
           <SummaryLine key={row.label} label={row.label} value={row.value} />
         ))}
       </View>
 
-      <Text style={styles.sectionTitle}>Evidence Status</Text>
+      <Text style={styles.sectionTitle}>Estado das evidencias</Text>
       <View style={styles.pendingCard}>
         {detail.evidenceStatusRows.map((row) => (
           <Text key={row.label} style={styles.pendingText}>
@@ -2200,7 +3608,7 @@ function ReviewDetailView({
         ))}
       </View>
 
-      <Text style={styles.sectionTitle}>Evidence References</Text>
+      <Text style={styles.sectionTitle}>Referencias de evidencia</Text>
       {detail.evidenceReferences.length > 0 ? (
         detail.evidenceReferences.map((reference) => (
           <View
@@ -2214,43 +3622,43 @@ function ReviewDetailView({
           >
             <Text style={styles.historyTitle}>{reference.label}</Text>
             <Text style={styles.pendingText}>
-              {reference.requirementLevel.toUpperCase()} - {reference.stateLabel}
+              {requirementLevelLabel(reference.requirementLevel)} - {reference.stateLabel}
             </Text>
             <Text style={styles.pendingText}>{reference.detail}</Text>
           </View>
         ))
       ) : (
-        <Text style={styles.pendingText}>No evidence references were returned by the service.</Text>
+        <Text style={styles.pendingText}>O servico nao retornou referencias de evidencia.</Text>
       )}
 
-      <Text style={styles.sectionTitle}>Photo Evidence</Text>
+      <Text style={styles.sectionTitle}>Fotos</Text>
       {detail.photoAttachments.length > 0 ? (
         detail.photoAttachments.map((photo) => (
           <View key={photo.evidenceId} style={styles.pendingCard}>
             <Text style={styles.pendingTitle}>{photo.evidenceId}</Text>
-            <Text style={styles.pendingText}>Server evidence: {photo.serverEvidenceId ?? 'None'}</Text>
+            <Text style={styles.pendingText}>Evidencia servidor: {photo.serverEvidenceId ?? 'Nenhuma'}</Text>
             <Text style={styles.pendingText}>Sync: {photo.syncState}</Text>
-            <Text style={styles.pendingText}>Finalized: {photo.finalizedLabel}</Text>
+            <Text style={styles.pendingText}>Finalizada: {photo.finalizedLabel}</Text>
           </View>
         ))
       ) : (
-        <Text style={styles.pendingText}>No photo attachments are linked to this review detail.</Text>
+        <Text style={styles.pendingText}>Nenhuma foto esta vinculada a este detalhe de revisao.</Text>
       )}
 
-      <Text style={styles.sectionTitle}>Risk and Justification</Text>
+      <Text style={styles.sectionTitle}>Riscos e justificativas</Text>
       {detail.riskFlags.length > 0 ? (
         detail.riskFlags.map((risk) => (
           <View key={risk.id} style={styles.guidanceCard}>
             <Text style={styles.historyTitle}>{risk.reasonType}</Text>
             <Text style={styles.pendingText}>{risk.stateLabel}</Text>
-            <Text style={styles.pendingText}>Justification: {risk.justificationLabel}</Text>
+            <Text style={styles.pendingText}>Justificativa: {risk.justificationLabel}</Text>
           </View>
         ))
       ) : (
-        <Text style={styles.pendingText}>No risk flags were returned by the service.</Text>
+        <Text style={styles.pendingText}>O servico nao retornou riscos.</Text>
       )}
 
-      <Text style={styles.sectionTitle}>AI Diagnosis</Text>
+      <Text style={styles.sectionTitle}>Diagnostico de IA</Text>
       <View style={styles.pendingCard}>
         <Text style={styles.pendingTitle}>{detail.aiDiagnosis.label}</Text>
         <Text style={styles.pendingText}>{detail.aiDiagnosis.detail}</Text>
@@ -2259,44 +3667,44 @@ function ReviewDetailView({
         ) : null}
       </View>
 
-      <Text style={styles.sectionTitle}>Approval History</Text>
+      <Text style={styles.sectionTitle}>Historico de auditoria</Text>
       {detail.approvalHistory.items.length > 0 ? (
         detail.approvalHistory.items.map((item) => (
           <View key={item.auditEventId} style={styles.pendingCard}>
             <Text style={styles.pendingTitle}>{item.actionType}</Text>
-            <Text style={styles.pendingText}>Actor role: {item.actorRole}</Text>
-            <Text style={styles.pendingText}>At: {item.occurredAtLabel}</Text>
-            <Text style={styles.pendingText}>State: {item.stateTransitionLabel}</Text>
-            <Text style={styles.pendingText}>Correlation: {item.correlationId}</Text>
-            {item.comment ? <Text style={styles.pendingText}>Comment: {item.comment}</Text> : null}
+            <Text style={styles.pendingText}>Perfil: {item.actorRole}</Text>
+            <Text style={styles.pendingText}>Quando: {item.occurredAtLabel}</Text>
+            <Text style={styles.pendingText}>Estado: {item.stateTransitionLabel}</Text>
+            <Text style={styles.pendingText}>Correlacao: {item.correlationId}</Text>
+            {item.comment ? <Text style={styles.pendingText}>Comentario: {item.comment}</Text> : null}
           </View>
         ))
       ) : (
         <Text style={styles.pendingText}>{detail.approvalHistory.placeholder}</Text>
       )}
 
-      <Text style={styles.sectionTitle}>Decision Comment</Text>
+      <Text style={styles.sectionTitle}>Comentario da decisao</Text>
       <TextInput
         autoCapitalize="sentences"
         autoCorrect
         editable={detail.canReturn && !busy}
         multiline
         onChangeText={onReturnCommentChange}
-        placeholder="Required return comment"
+        placeholder="Comentario obrigatorio para devolucao"
         placeholderTextColor={colors.textSubtle}
         style={[styles.justificationInput, !detail.canReturn || busy ? styles.disabledAction : null]}
         value={returnComment}
       />
       {detail.canEscalate ? (
         <>
-          <Text style={styles.sectionTitle}>Escalation Rationale</Text>
+          <Text style={styles.sectionTitle}>Justificativa do escalonamento</Text>
           <TextInput
             autoCapitalize="sentences"
             autoCorrect
             editable={detail.canEscalate && !busy}
             multiline
             onChangeText={onEscalationRationaleChange}
-            placeholder="Required escalation rationale"
+            placeholder="Justificativa obrigatoria para escalonar"
             placeholderTextColor={colors.textSubtle}
             style={[
               styles.justificationInput,
@@ -2317,7 +3725,7 @@ function ReviewDetailView({
           <Text style={styles.pendingTitle}>
             {pendingDecision.state === 'requires-confirmation'
               ? pendingDecision.title
-              : 'Decision blocked'}
+              : 'Decisao bloqueada'}
           </Text>
           <Text style={styles.pendingText}>{pendingDecision.message}</Text>
           {pendingDecision.state === 'requires-confirmation' ? (
@@ -2335,7 +3743,7 @@ function ReviewDetailView({
                 onPress={onCancelDecision}
                 style={styles.smallGhostButton}
               >
-                <Text style={styles.smallGhostLabel}>Cancel</Text>
+                <Text style={styles.smallGhostLabel}>Cancelar</Text>
               </Pressable>
             </View>
           ) : (
@@ -2344,7 +3752,7 @@ function ReviewDetailView({
               onPress={onCancelDecision}
               style={styles.smallGhostButton}
             >
-              <Text style={styles.smallGhostLabel}>Dismiss</Text>
+              <Text style={styles.smallGhostLabel}>Fechar</Text>
             </Pressable>
           )}
         </View>
@@ -2357,7 +3765,7 @@ function ReviewDetailView({
           onPress={onApprove}
           style={[styles.smallActionButton, !detail.canApprove || busy ? styles.disabledAction : null]}
         >
-          <Text style={styles.smallActionLabel}>Approve</Text>
+          <Text style={styles.smallActionLabel}>Aprovar</Text>
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -2368,7 +3776,7 @@ function ReviewDetailView({
             !detail.canReturn || busy || !returnReady ? styles.disabledAction : null,
           ]}
         >
-          <Text style={styles.smallGhostLabel}>Return</Text>
+          <Text style={styles.smallGhostLabel}>Devolver</Text>
         </Pressable>
         {detail.canEscalate ? (
           <Pressable
@@ -2380,13 +3788,13 @@ function ReviewDetailView({
               !detail.canEscalate || busy || !escalationReady ? styles.disabledAction : null,
             ]}
           >
-            <Text style={styles.smallGhostLabel}>Escalate</Text>
+            <Text style={styles.smallGhostLabel}>Escalar</Text>
           </Pressable>
         ) : null}
       </View>
 
       <Pressable accessibilityRole="button" onPress={onCloseReport} style={styles.secondaryFullWidth}>
-        <Text style={styles.returnLabel}>Back to queue</Text>
+        <Text style={styles.returnLabel}>Voltar para fila</Text>
       </Pressable>
     </View>
   );
@@ -2574,7 +3982,7 @@ function ExecutionUnavailableScreen({
         <Text style={styles.connectionTitle}>{title}</Text>
         <Text style={styles.connectionBody}>
           {unavailableReason ??
-            'Local execution data is unavailable. The technician can return to the tag detail and continue from cached context.'}
+            'Os dados locais de execucao nao estao disponiveis. Volte ao contexto da tag e continue com o que estiver em cache.'}
         </Text>
       </View>
     </>
@@ -2587,6 +3995,49 @@ function ExecutionMetric({ label, value }: { label: string; value: string }) {
       <Text style={styles.historySubtitle}>{label}</Text>
       <Text style={styles.executionMetricValue}>{value}</Text>
     </View>
+  );
+}
+
+function ExecutionStageStepper({
+  activeRoute,
+  stages,
+  onOpenStage,
+}: {
+  activeRoute: 'detail' | 'calculation' | 'loop-test' | 'history' | 'diagnosis' | 'report';
+  stages: VisualExecutionStage[];
+  onOpenStage: (route: VisualStageRoute) => void;
+}) {
+  if (stages.length === 0) {
+    return null;
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.stageRail}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+    >
+      {stages.map((stage, index) => {
+        const active = stage.route === activeRoute;
+        const disabled = stage.route === 'detail';
+        return (
+          <Pressable
+            accessibilityRole="button"
+            disabled={disabled}
+            key={`${stage.id}:${stage.route}`}
+            onPress={() => onOpenStage(stage.route)}
+            style={[styles.stageChip, active ? styles.stageChipActive : null, disabled ? styles.disabledAction : null]}
+          >
+            <Text style={[styles.stageChipNumber, active ? styles.stageChipTextActive : null]}>
+              {index + 1}
+            </Text>
+            <Text style={[styles.stageChipText, active ? styles.stageChipTextActive : null]}>
+              {stage.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
   );
 }
 
@@ -2623,33 +4074,34 @@ function GuidanceChecklistCard({
           <Text style={styles.checklistText}>Status: {toChecklistOutcomeLabel(item.outcome)}</Text>
         </View>
       </View>
-      <Text style={styles.pendingText}>Why it matters: {item.whyItMatters}</Text>
-      <Text style={styles.pendingText}>Helps rule out: {item.helpsRuleOut}</Text>
-      <Text style={styles.pendingText}>Source: {item.sourceReference}</Text>
+      <Text style={styles.pendingText}>Por que importa: {item.whyItMatters}</Text>
+      <Text style={styles.pendingText}>Ajuda a descartar: {item.helpsRuleOut}</Text>
+      <Text style={styles.pendingText}>Fonte: {item.sourceReference}</Text>
+      <Text style={styles.historySubtitle}>{describeReferenceSource(item.sourceReference)}</Text>
 
       <View style={styles.outcomeGrid}>
         <GuidanceOutcomeButton
           active={item.outcome === 'completed'}
           disabled={!editable}
-          label="Complete"
+          label="Concluir"
           onPress={() => onChecklistOutcomeChange(item.id, 'completed')}
         />
         <GuidanceOutcomeButton
           active={item.outcome === 'incomplete'}
           disabled={!editable}
-          label="Incomplete"
+          label="Incompleto"
           onPress={() => onChecklistOutcomeChange(item.id, 'incomplete')}
         />
         <GuidanceOutcomeButton
           active={item.outcome === 'skipped'}
           disabled={!editable}
-          label="Skip"
+          label="Ignorar"
           onPress={() => onChecklistOutcomeChange(item.id, 'skipped')}
         />
         <GuidanceOutcomeButton
           active={item.outcome === 'pending'}
           disabled={!editable}
-          label="Reset"
+          label="Pendente"
           onPress={() => onChecklistOutcomeChange(item.id, 'pending')}
         />
       </View>
@@ -2710,7 +4162,7 @@ function GuidanceRiskCard({
       {item.justificationRequired ? (
         <>
           <Text style={styles.pendingText}>
-            {item.justificationPrompt ?? 'Capture a field justification for this visible risk.'}
+            {item.justificationPrompt ?? 'Registre uma justificativa de campo para este risco.'}
           </Text>
           <TextInput
             autoCapitalize="sentences"
@@ -2718,7 +4170,7 @@ function GuidanceRiskCard({
             editable={editable}
             multiline
             onChangeText={onJustificationChange}
-            placeholder="Risk justification"
+            placeholder="Justificativa de risco"
             placeholderTextColor={colors.textSubtle}
             style={[styles.justificationInput, !editable ? styles.disabledAction : null]}
             value={item.justificationText}
@@ -2726,7 +4178,7 @@ function GuidanceRiskCard({
         </>
       ) : (
         <Text style={styles.pendingText}>
-          This risk should be resolved before submission, but it does not block field execution here.
+          Este risco deve ser resolvido antes do envio, mas nao bloqueia a execucao em campo aqui.
         </Text>
       )}
     </View>
@@ -2744,9 +4196,10 @@ function GuidancePromptView({
     <View style={styles.guidanceCard}>
       <Text style={styles.historySubtitle}>{title}</Text>
       <Text style={styles.historyTitle}>{item.prompt}</Text>
-      <Text style={styles.pendingText}>Why it matters: {item.whyItMatters}</Text>
-      <Text style={styles.pendingText}>Helps rule out: {item.helpsRuleOut}</Text>
-      <Text style={styles.pendingText}>Source: {item.sourceReference}</Text>
+      <Text style={styles.pendingText}>Por que importa: {item.whyItMatters}</Text>
+      <Text style={styles.pendingText}>Ajuda a descartar: {item.helpsRuleOut}</Text>
+      <Text style={styles.pendingText}>Fonte: {item.sourceReference}</Text>
+      <Text style={styles.historySubtitle}>{describeReferenceSource(item.sourceReference)}</Text>
     </View>
   );
 }
@@ -2758,20 +4211,12 @@ function LinkedGuidanceView({
 }) {
   return (
     <View style={styles.guidanceCard}>
-      <Text style={styles.historySubtitle}>Local reference</Text>
+      <Text style={styles.historySubtitle}>Referencia local</Text>
       <Text style={styles.historyTitle}>{item.title}</Text>
       <Text style={styles.pendingText}>{item.summary}</Text>
-      <Text style={styles.pendingText}>Why it matters: {item.whyItMatters}</Text>
-      <Text style={styles.pendingText}>Source: {item.sourceReference}</Text>
-    </View>
-  );
-}
-
-function IconBubble({ badge = false, label }: { badge?: boolean; label: string }) {
-  return (
-    <View style={styles.iconBubble}>
-      <Text style={styles.iconBubbleLabel}>{label}</Text>
-      {badge ? <View style={styles.iconBadge} /> : null}
+      <Text style={styles.pendingText}>Por que importa: {item.whyItMatters}</Text>
+      <Text style={styles.pendingText}>Fonte: {item.sourceReference}</Text>
+      <Text style={styles.historySubtitle}>{describeReferenceSource(item.sourceReference)}</Text>
     </View>
   );
 }
@@ -2783,7 +4228,7 @@ function FilterChip({
   onPress,
 }: {
   active: boolean;
-  count: number;
+  count?: number;
   label: string;
   onPress: () => void;
 }) {
@@ -2796,15 +4241,16 @@ function FilterChip({
       <Text style={[styles.filterChipText, active ? styles.filterChipTextActive : null]}>
         {label}
       </Text>
-      <Text style={[styles.filterChipCount, active ? styles.filterChipCountActive : null]}>
-        {count}
-      </Text>
+      {count !== undefined ? (
+        <Text style={[styles.filterChipCount, active ? styles.filterChipCountActive : null]}>
+          {count}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }
 
 function SectionHeader({
-  actionLabel,
   icon,
   title,
 }: {
@@ -2818,7 +4264,6 @@ function SectionHeader({
         {icon ? <Text style={styles.sectionIcon}>{icon}</Text> : null}
         <Text style={styles.sectionTitle}>{title}</Text>
       </View>
-      {actionLabel ? <Text style={styles.sectionAction}>{actionLabel} ›</Text> : null}
     </View>
   );
 }
@@ -2852,14 +4297,14 @@ function RecentTagCard({
 
 function TagSection({
   accentColor,
-  actionLabel,
+  reportStatusByTag,
   tags,
   title,
   totalLabel,
   onOpenDetail,
 }: {
   accentColor: string;
-  actionLabel?: string;
+  reportStatusByTag: Map<string, VisualTagWorkStatus>;
   tags: VisualTagSummary[];
   title: string;
   totalLabel: string;
@@ -2873,9 +4318,14 @@ function TagSection({
     <View style={styles.sectionShell}>
       <View style={[styles.sectionAccent, { backgroundColor: accentColor }]} />
       <View style={styles.sectionContent}>
-        <SectionHeader actionLabel={actionLabel} title={`${title} ${totalLabel}`} />
+        <SectionHeader title={`${title} ${totalLabel}`} />
         {tags.map((tag) => (
-          <TagListItem key={`${tag.workPackageId}:${tag.id}`} tag={tag} onPress={onOpenDetail} />
+          <TagListItem
+            key={`${tag.workPackageId}:${tag.id}`}
+            status={reportStatusByTag.get(`${tag.workPackageId}:${tag.tagId}`)}
+            tag={tag}
+            onPress={onOpenDetail}
+          />
         ))}
       </View>
     </View>
@@ -2883,9 +4333,11 @@ function TagSection({
 }
 
 function TagListItem({
+  status,
   tag,
   onPress,
 }: {
+  status?: VisualTagWorkStatus;
   tag: VisualTagSummary;
   onPress: (tag: VisualTagSummary) => void;
 }) {
@@ -2899,10 +4351,13 @@ function TagListItem({
         <Text style={styles.tagListDescription}>{tag.description}</Text>
       </View>
       <View style={styles.tagListMeta}>
-        <StatusPill label={tag.badgeLabel} severity={tag.severity} />
-        <Text style={styles.tagListArea}>{tag.badgeDetail}</Text>
+        <StatusPill
+          label={status?.label ?? tag.badgeLabel}
+          severity={status ? reportStatusSeverity(status.status) : tag.severity}
+        />
+        <Text style={styles.tagListArea}>{status?.detail ?? tag.badgeDetail}</Text>
       </View>
-      <Text style={styles.chevron}>›</Text>
+      <Text style={styles.chevron}>{'>'}</Text>
     </Pressable>
   );
 }
@@ -3008,6 +4463,15 @@ function SummaryLine({
   );
 }
 
+function ReportSummaryBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.reportSummaryBlock}>
+      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={styles.reportSummaryText}>{value}</Text>
+    </View>
+  );
+}
+
 function filterTags(
   tags: VisualTagSummary[],
   category: VisualTagCategory | 'all',
@@ -3033,13 +4497,77 @@ function formatNumber(value: number) {
 function toChecklistOutcomeLabel(value: SharedExecutionChecklistOutcome) {
   switch (value) {
     case 'completed':
-      return 'Completed';
+      return 'Concluido';
     case 'incomplete':
-      return 'Incomplete';
+      return 'Incompleto';
     case 'skipped':
-      return 'Skipped';
+      return 'Ignorado';
     default:
-      return 'Pending';
+      return 'Pendente';
+  }
+}
+
+function requirementLevelLabel(value: string): string {
+  switch (value) {
+    case 'minimum':
+      return 'Minima';
+    case 'expected':
+      return 'Esperada';
+    default:
+      return value;
+  }
+}
+
+function reviewAccessStateLabel(value: string): string {
+  switch (value) {
+    case 'available':
+      return 'Disponivel';
+    case 'connected-required':
+      return 'Conexao obrigatoria';
+    case 'hidden':
+      return 'Oculto';
+    case 'signed-out-demo':
+      return 'Login obrigatorio';
+    default:
+      return value;
+  }
+}
+
+function reviewLifecycleLabel(value: string): string {
+  switch (value) {
+    case 'Submitted - Pending Supervisor Review':
+      return 'Enviado - aguardando supervisor';
+    case 'Submitted - Pending Sync':
+      return 'Enviado local - pendente sync';
+    case 'Escalated - Pending Manager Review':
+      return 'Escalado - aguardando gerente';
+    case 'Returned by Supervisor':
+      return 'Devolvido pelo supervisor';
+    case 'Returned by Manager':
+      return 'Devolvido pelo gerente';
+    case 'Approved':
+      return 'Aprovado';
+    default:
+      return value;
+  }
+}
+
+function syncLabel(value: string): string {
+  switch (value) {
+    case 'local-only':
+      return 'Somente local';
+    case 'queued':
+      return 'Na fila';
+    case 'syncing':
+      return 'Sincronizando';
+    case 'pending-validation':
+      return 'Validacao pendente';
+    case 'synced':
+      return 'Sincronizado';
+    case 'sync-issue':
+      return 'Falha de sync';
+    default:
+      return value;
   }
 }
 
@@ -3089,9 +4617,135 @@ function signalSymbol(severity: VisualSeverity) {
     return '!';
   }
   if (severity === 'due') {
-    return '◷';
+    return '!';
   }
-  return '✓';
+  return 'OK';
+}
+
+function reportStatusSeverity(status: VisualTechnicianReportSummary['status']): VisualSeverity {
+  switch (status) {
+    case 'approved':
+      return 'ok';
+    case 'returned':
+    case 'sync-issue':
+      return 'high';
+    case 'pending-sync':
+    case 'pending-review':
+    case 'manual-local':
+      return 'due';
+    default:
+      return 'medium';
+  }
+}
+
+function modeLabel(value: string): string {
+  switch (value) {
+    case 'pv-to-ma':
+      return 'PV -> mA';
+    case 'ma-to-pv':
+      return 'mA -> PV';
+    case 'pv-to-percent':
+      return 'PV -> %';
+    case 'ma-to-percent':
+      return 'mA -> %';
+    case 'percent-to-ma':
+      return '% -> mA';
+    case 'error':
+      return 'Erro';
+    case 'pv':
+      return 'PV';
+    case 'ma':
+      return 'mA';
+    default:
+      return value;
+  }
+}
+
+function isFieldCalculatorMode(value: string): value is FieldCalculatorMode {
+  return (
+    value === 'pv-to-ma' ||
+    value === 'ma-to-pv' ||
+    value === 'pv-to-percent' ||
+    value === 'ma-to-percent' ||
+    value === 'percent-to-ma' ||
+    value === 'error'
+  );
+}
+
+function resolveRangePart(value: string | undefined, part: 'min' | 'max'): string | null {
+  const match = value?.match(/(-?\d+(?:[.,]\d+)?)\D+(-?\d+(?:[.,]\d+)?)/);
+  if (!match) {
+    return null;
+  }
+
+  return part === 'min' ? match[1] ?? null : match[2] ?? null;
+}
+
+function resolveRangeUnit(value: string | undefined): string | null {
+  const match = value?.match(/-?\d+(?:[.,]\d+)?\D+-?\d+(?:[.,]\d+)?\s*(.+)$/);
+  return match?.[1]?.trim() || null;
+}
+
+function resolveLoopProcessMin(calculation: VisualExecutionCalculationViewModel): string {
+  return (
+    calculation.conversion.processRange?.min?.toString() ??
+    resolveRangePart(calculation.rangeLabel, 'min') ??
+    ''
+  );
+}
+
+function resolveLoopProcessMax(calculation: VisualExecutionCalculationViewModel): string {
+  return (
+    calculation.conversion.processRange?.max?.toString() ??
+    resolveRangePart(calculation.rangeLabel, 'max') ??
+    ''
+  );
+}
+
+function resolveLoopUnit(calculation: VisualExecutionCalculationViewModel): string {
+  return calculation.conversion.processRange?.unit ?? resolveRangeUnit(calculation.rangeLabel) ?? calculation.unitLabel;
+}
+
+function resolveLoopTolerance(calculation: VisualExecutionCalculationViewModel): string {
+  const match = calculation.toleranceLabel.match(/-?\d+(?:[.,]\d+)?/);
+  return match?.[0] ?? '';
+}
+
+function formatNullableNumber(value: number | null): string {
+  return value === null || Number.isNaN(value) ? '-' : formatNumber(value);
+}
+
+function loopSummaryLabel(state: string, overallLabel: string): string {
+  if (state === 'incomplete') {
+    return 'Pendente';
+  }
+  if (/fail/i.test(overallLabel)) {
+    return 'Fora da tolerancia';
+  }
+  return 'Aprovado';
+}
+
+function loopPointStatusLabel(passed: boolean | null): string {
+  if (passed === true) {
+    return 'OK';
+  }
+  if (passed === false) {
+    return 'Falha';
+  }
+  return 'Pendente';
+}
+
+function describeReferenceSource(sourceReference: string): string {
+  if (!sourceReference) {
+    return 'Referencia local do pacote baixado.';
+  }
+  if (/TAGWISE-BP/i.test(sourceReference)) {
+    return 'Boa pratica TagWise baixada no pacote local.';
+  }
+  if (/IEC|ISA|ABNT|API|NR-/i.test(sourceReference)) {
+    return 'Referencia normativa ou procedimento aplicavel ao teste.';
+  }
+  return 'Fonte de orientacao local vinculada ao template selecionado.';
 }
 
 const styles = StyleSheet.create({
@@ -3101,8 +4755,40 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: spacing.lg,
-    paddingBottom: 48,
+    paddingBottom: 96,
     backgroundColor: colors.background,
+  },
+  stageRail: {
+    gap: spacing.sm,
+    paddingBottom: spacing.md,
+  },
+  stageChip: {
+    minHeight: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  stageChipActive: {
+    backgroundColor: colors.blue,
+    borderColor: colors.blue,
+  },
+  stageChipNumber: {
+    color: colors.textMuted,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  stageChipText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  stageChipTextActive: {
+    color: colors.white,
   },
   dashboardHeader: {
     flexDirection: 'row',
@@ -3369,8 +5055,52 @@ const styles = StyleSheet.create({
   },
   connectionActionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
     marginTop: spacing.md,
+  },
+  quickActionPanel: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    marginBottom: spacing.xl,
+  },
+  quickActionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  quickActionButton: {
+    width: '48%',
+    minHeight: 86,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    justifyContent: 'center',
+  },
+  quickActionTitle: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  quickActionBody: {
+    color: colors.textMuted,
+    fontSize: 14,
+    lineHeight: 19,
+    marginTop: spacing.xs,
+  },
+  nextActionPanel: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+    marginVertical: spacing.md,
+    gap: spacing.sm,
   },
   cameraFrame: {
     height: 220,
@@ -3399,6 +5129,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 1,
   },
   smallActionLabel: {
     color: colors.white,
@@ -3412,6 +5143,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 1,
   },
   smallGhostLabel: {
     color: colors.text,
@@ -3425,6 +5157,18 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.md,
   },
+  packageList: {
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  packageCard: {
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
   darkInput: {
     minHeight: 46,
     color: colors.text,
@@ -3434,6 +5178,82 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     paddingHorizontal: spacing.md,
     fontSize: type.body,
+  },
+  loopPointCard: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  loopPointHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  loopInputGrid: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  pendingActionCard: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    gap: spacing.xs,
+  },
+  reportSummaryBlock: {
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  reportSummaryText: {
+    color: colors.text,
+    fontSize: type.caption,
+    lineHeight: 22,
+  },
+  stickyActionBar: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    marginBottom: spacing.xl,
+  },
+  pickerBlock: {
+    marginBottom: spacing.md,
+  },
+  pickerChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  pickerChip: {
+    minHeight: 40,
+    borderRadius: 20,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  pickerChipActive: {
+    backgroundColor: colors.blue,
+    borderColor: colors.blue,
+  },
+  pickerChipText: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  pickerChipTextActive: {
+    color: colors.white,
   },
   executionMetricGrid: {
     gap: spacing.md,
@@ -3659,20 +5479,26 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   metricLine: {
-    minHeight: 48,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
+    justifyContent: 'space-between',
+    gap: spacing.sm,
   },
   metricLabel: {
     color: colors.textMuted,
-    fontSize: 22,
-    flex: 1,
+    fontSize: 18,
+    flexBasis: 110,
+    flexShrink: 0,
   },
   metricLineValue: {
     color: colors.text,
-    fontSize: 28,
+    fontSize: 22,
+    lineHeight: 27,
     fontWeight: '900',
+    flex: 1,
+    textAlign: 'right',
+    flexShrink: 1,
   },
   metricRightLabel: {
     color: colors.textMuted,
@@ -3776,12 +5602,13 @@ const styles = StyleSheet.create({
   },
   actionGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.md,
     marginBottom: spacing.xl,
   },
   actionTile: {
-    width: 124,
-    minHeight: 112,
+    width: '47%',
+    minHeight: 92,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceRaised,
     borderWidth: 1,
@@ -3796,7 +5623,7 @@ const styles = StyleSheet.create({
   },
   actionIcon: {
     color: colors.textMuted,
-    fontSize: 34,
+    fontSize: 26,
     fontWeight: '900',
   },
   actionIconHighlight: {
@@ -3804,7 +5631,7 @@ const styles = StyleSheet.create({
   },
   actionLabel: {
     color: colors.text,
-    fontSize: 19,
+    fontSize: 17,
     fontWeight: '900',
     marginTop: spacing.sm,
     textAlign: 'center',
@@ -3948,7 +5775,7 @@ const styles = StyleSheet.create({
     maxWidth: 320,
   },
   chartRail: {
-    height: 160,
+    height: 118,
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
@@ -3963,6 +5790,9 @@ const styles = StyleSheet.create({
     width: 8,
     borderRadius: 4,
     backgroundColor: '#e5a657',
+  },
+  chartBarHot: {
+    backgroundColor: colors.red,
   },
   chartDot: {
     width: 14,

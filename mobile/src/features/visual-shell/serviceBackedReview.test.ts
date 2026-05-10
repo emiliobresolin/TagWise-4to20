@@ -4,6 +4,7 @@ import type { ActiveUserSession } from '../auth/model';
 import type { SupervisorReviewQueueItem, SupervisorReviewReportDetail } from '../review/model';
 import {
   buildVisualReviewAccess,
+  buildVisualReviewDecisionFeedback,
   buildVisualReviewDecisionRequest,
   buildVisualReviewDetailProjection,
   buildVisualReviewQueueGroups,
@@ -93,6 +94,7 @@ describe('service-backed visual review adapter', () => {
     ]);
 
     expect(groups.find((group) => group.key === 'pending-review')?.items).toHaveLength(1);
+    expect(groups.find((group) => group.key === 'pending-review')?.count).toBe(1);
     expect(groups.find((group) => group.key === 'escalated')?.items[0]?.reportId).toBe(
       'report-escalated',
     );
@@ -113,7 +115,7 @@ describe('service-backed visual review adapter', () => {
     );
     expect(detail.evidenceReferences[0]).toMatchObject({
       label: 'Structured readings',
-      stateLabel: 'Satisfied',
+      stateLabel: 'Atendida',
     });
     expect(detail.photoAttachments[0]).toMatchObject({
       evidenceId: 'evidence-photo-001',
@@ -121,7 +123,7 @@ describe('service-backed visual review adapter', () => {
     });
     expect(detail.riskFlags[0]).toMatchObject({
       reasonType: 'missing-expected-evidence',
-      stateLabel: 'Visible risk',
+      stateLabel: 'Risco visivel',
       justificationLabel: 'Area access restricted.',
     });
     expect(detail.approvalHistory.items[0]).toMatchObject({
@@ -168,6 +170,13 @@ describe('service-backed visual review adapter', () => {
     await actions.confirmDecision(request);
 
     expect(calls).toEqual(['approve:tag-report:wp-seed-1001:tag-pt-101']);
+    expect(
+      buildVisualReviewDecisionFeedback({
+        kind: 'approve',
+        reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+        tagId: 'PT-101',
+      }),
+    ).toContain('aprovado');
   });
 
   it('blocks return/escalation without required comments and dispatches only confirmed requests', async () => {
@@ -195,7 +204,7 @@ describe('service-backed visual review adapter', () => {
       }),
     ).toMatchObject({
       state: 'blocked',
-      message: 'Return comment is required before returning a report.',
+      message: 'Comentario e obrigatorio antes de devolver o relatorio.',
     });
     expect(
       buildVisualReviewDecisionRequest({
@@ -206,7 +215,7 @@ describe('service-backed visual review adapter', () => {
       }),
     ).toMatchObject({
       state: 'blocked',
-      message: 'Escalation rationale is required before escalating a report.',
+      message: 'Justificativa e obrigatoria antes de escalar o relatorio.',
     });
 
     const returnRequest = buildVisualReviewDecisionRequest({
@@ -245,7 +254,7 @@ describe('service-backed visual review adapter', () => {
       }),
     ).toMatchObject({
       state: 'blocked',
-      message: 'Connected reviewer access is required before approving a report.',
+      message: 'Acesso conectado de revisor e obrigatorio antes de aprovar.',
     });
   });
 });
