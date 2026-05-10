@@ -1,6 +1,6 @@
 # Story 8.4: Reconnect Visual Shell to Real Report, Evidence, Photos, and AI Diagnosis Projection
 
-Status: ready-for-review
+Status: done
 
 ## Metadata
 - Story key: 8-4-reconnect-visual-shell-to-real-report-evidence-photos-ai-diagnosis
@@ -281,3 +281,17 @@ GPT-5 Codex
 - `mobile/src/shell/TagWiseApp.tsx`
 - `mobile/src/shell/VisualProductShell.tsx`
 - `_bmad-output/implementation-artifacts/8-4-reconnect-visual-shell-to-real-report-evidence-photos-ai-diagnosis.md`
+
+## Final Epic 8 QA Update
+
+Final story status: done / pass.
+
+Final Epic 8 verdict: Pass with minor concerns.
+
+Review date: 2026-05-10
+
+QA confirmed Story 8.4 reconnected the authenticated report/evidence/photo/submission/sync area to the existing local-first report lifecycle: report projection reads from `SharedExecutionShell.report` and related sync/evidence state, photo actions route through existing acquisition/evidence services, technician submit calls the report lifecycle instead of supervisor approval, sync retry/refresh remains service-backed, and report-level AI Diagnosis is optional, nonblocking, and does not invent provider content.
+
+Blocking findings for final Epic 8 QA: none.
+
+Residual concern: real APK/backend end-to-end smoke was not physically executed in this environment. Before release/demo confidence, validate offline report draft edits, photo attachment/removal, offline submit to pending sync, reconnect sync/server validation, and AI Diagnosis unavailable/pending/available display behavior where backend/provider state exists.

@@ -2025,29 +2025,44 @@ export function TagWiseApp() {
       qrScanResult={readyState.qrScanResult}
       qrScannerVisible={readyState.qrScannerVisible}
       reportSyncDetail={readyState.reportSyncDetail}
+      reviewBusy={readyState.reviewBusy}
       selectedExecutionTemplateId={readyState.selectedExecutionTemplateId}
       executionShell={readyState.executionShell}
+      selectedSupervisorReviewReport={readyState.selectedSupervisorReviewReport}
       selectedTag={readyState.selectedTag}
       selectedTagContext={readyState.selectedTagContext}
       session={readyState.session}
+      supervisorEscalationRationale={readyState.supervisorEscalationRationale}
+      supervisorReturnComment={readyState.supervisorReturnComment}
+      supervisorReviewQueue={readyState.supervisorReviewQueue}
       syncBusy={readyState.syncBusy}
       visibleTags={readyState.visibleTags}
       workPackages={readyState.workPackages}
+      onApproveSupervisorReviewReport={(reportId) =>
+        handleApproveSupervisorReviewReport(reportId)
+      }
       onAttachReportPhoto={(source) => handleAttachExecutionPhoto(source)}
       onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
       onCancelQrScanner={handleCancelQrScanner}
       onCalculationInputChange={handleExecutionCalculationInputChange}
       onChecklistOutcomeChange={handleChecklistOutcomeChange}
+      onCloseSupervisorReviewReport={handleCloseSupervisorReviewReport}
       onEmailChange={setEmail}
+      onEscalateSupervisorReviewReport={(reportId) =>
+        handleEscalateSupervisorReviewReport(reportId)
+      }
       onOpenTag={(identity) => handleOpenVisualTag(identity)}
+      onOpenSupervisorReviewReport={(reportId) => handleOpenSupervisorReviewReport(reportId)}
       onPasswordChange={setPassword}
       onProceedToExecutionShell={() => handleProceedToExecutionShell()}
       onQrManualPayloadChange={handleQrPayloadChange}
       onRefreshPackages={() => void handleRefreshAssignedPackages()}
       onRefreshReportServerStatus={() => handleRefreshExecutionReportServerStatus()}
+      onRefreshSupervisorReviewQueue={() => handleRefreshSupervisorReviewQueue()}
       onRemoveReportPhoto={(evidenceId) => handleRemoveExecutionPhoto(evidenceId)}
       onReportReviewNotesChange={handleReportReviewNotesChange}
       onResolveQrManualPayload={() => handleResolveManualQrPayload()}
+      onReturnSupervisorReviewReport={(reportId) => handleReturnSupervisorReviewReport(reportId)}
       onObservationNotesChange={handleObservationNotesChange}
       onRiskJustificationChange={handleRiskJustificationChange}
       onSaveCalculation={() => handleSaveExecutionCalculation()}
@@ -2056,6 +2071,8 @@ export function TagWiseApp() {
       onSelectExecutionTemplate={handleSelectExecutionTemplate}
       onSignIn={() => void handleSignIn()}
       onStartQrScanner={() => void handleStartQrScanner()}
+      onSupervisorEscalationRationaleChange={handleSupervisorEscalationRationaleChange}
+      onSupervisorReturnCommentChange={handleSupervisorReturnCommentChange}
       onSubmitReport={() => handleSubmitExecutionReport()}
       onRetryReportSync={() => handleRetryExecutionReportSync()}
       onSwitchUser={() => void handleSwitchUser()}

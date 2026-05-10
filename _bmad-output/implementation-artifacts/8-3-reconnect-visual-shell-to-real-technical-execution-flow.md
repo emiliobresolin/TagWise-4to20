@@ -1,6 +1,6 @@
 # Story 8.3: Reconnect Visual Shell to Real Technical Execution Flow
 
-Status: ready-for-review
+Status: done
 
 ## Metadata
 - Story key: 8-3-reconnect-visual-shell-to-real-technical-execution-flow
@@ -261,3 +261,17 @@ GPT-5 Codex
 - `mobile/src/shell/TagWiseApp.tsx`
 - `mobile/src/shell/VisualProductShell.tsx`
 - `_bmad-output/implementation-artifacts/8-3-reconnect-visual-shell-to-real-technical-execution-flow.md`
+
+## Final Epic 8 QA Update
+
+Final story status: done / pass.
+
+Final Epic 8 verdict: Pass with minor concerns.
+
+Review date: 2026-05-10
+
+QA confirmed Story 8.3 reconnected the authenticated dark-shell technical execution screens to the selected `SharedExecutionShell`: calculation inputs/save use the deterministic execution path, PV/mA/percent conversions use local template metadata where available, unsupported conversions remain explicit and nonblocking, history/checklist/guidance/reference/risk state is service-backed, and AI-style probable-cause copy is not presented as deterministic local guidance.
+
+Blocking findings for final Epic 8 QA: none.
+
+Residual concern: real APK/backend end-to-end smoke was not physically executed in this environment. Before release/demo confidence, validate offline calculation, conversions, history, checklist/guidance, observation notes, and risk justifications on a device after package download.

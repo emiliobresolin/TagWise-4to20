@@ -1,6 +1,6 @@
 # Story 8.5: Reconnect Role-Aware Supervisor Approval Queue and Decisions
 
-Status: ready-for-dev
+Status: done
 
 ## Metadata
 - Story key: 8-5-reconnect-role-aware-supervisor-approval-queue-and-decisions
@@ -122,42 +122,42 @@ In scope:
     - Technician role cannot see supervisor queue/actions.
 
 ## Tasks / Subtasks
-- [ ] Confirm existing review service boundary (AC: 2-4, 9)
-  - [ ] Inspect `SupervisorReviewService`, API client, model types, and current `TagWiseApp` review handlers.
-  - [ ] Confirm backend review APIs already cover queue/detail/approve/return/escalate.
-  - [ ] Do not add backend work unless a tiny existing-contract adapter is unavoidable.
+- [x] Confirm existing review service boundary (AC: 2-4, 9)
+  - [x] Inspect `SupervisorReviewService`, API client, model types, and current `TagWiseApp` review handlers.
+  - [x] Confirm backend review APIs already cover queue/detail/approve/return/escalate.
+  - [x] Do not add backend work unless a tiny existing-contract adapter is unavoidable.
 
-- [ ] Add role-aware visual review routing (AC: 1, 2, 10)
-  - [ ] Gate review entry by `session.role` and `session.connectionMode`.
-  - [ ] Hide reviewer-only UI from technician sessions.
-  - [ ] Prevent visual route state from exposing approval controls to technicians.
+- [x] Add role-aware visual review routing (AC: 1, 2, 10)
+  - [x] Gate review entry by `session.role` and `session.connectionMode`.
+  - [x] Hide reviewer-only UI from technician sessions.
+  - [x] Prevent visual route state from exposing approval controls to technicians.
 
-- [ ] Wire queue tabs/lists (AC: 3, 9)
-  - [ ] Pass supervisor review queue state and refresh handler into `VisualProductShell`.
-  - [ ] Group items by service-provided status/lifecycle.
-  - [ ] Render empty/unavailable states without mock approval data.
+- [x] Wire queue tabs/lists (AC: 3, 9)
+  - [x] Pass supervisor review queue state and refresh handler into `VisualProductShell`.
+  - [x] Group items by service-provided status/lifecycle.
+  - [x] Render empty/unavailable states without mock approval data.
 
-- [ ] Wire service-backed report detail (AC: 4, 8)
-  - [ ] Pass selected review detail state and open/close handlers into visual shell.
-  - [ ] Render execution/evidence/risk/justification/approval-history data from `SupervisorReviewReportDetail`.
-  - [ ] Keep reviewer detail read-only for field evidence/calculations.
+- [x] Wire service-backed report detail (AC: 4, 8)
+  - [x] Pass selected review detail state and open/close handlers into visual shell.
+  - [x] Render execution/evidence/risk/justification/approval-history data from `SupervisorReviewReportDetail`.
+  - [x] Keep reviewer detail read-only for field evidence/calculations.
 
-- [ ] Add confirmations and decision actions (AC: 5-7, 9)
-  - [ ] Use React Native primitives or existing visual modal patterns for confirmation.
-  - [ ] Confirm before approve, return, and escalate.
-  - [ ] Require return comment and escalation rationale before dispatch.
-  - [ ] Reuse existing `TagWiseApp` decision handlers or thin adapted callbacks.
+- [x] Add confirmations and decision actions (AC: 5-7, 9)
+  - [x] Use React Native primitives or existing visual modal patterns for confirmation.
+  - [x] Confirm before approve, return, and escalate.
+  - [x] Require return comment and escalation rationale before dispatch.
+  - [x] Reuse existing `TagWiseApp` decision handlers or thin adapted callbacks.
 
-- [ ] Add focused tests (AC: 1-10)
-  - [ ] Role-gating tests for technician, supervisor, manager if preserved, and offline reviewer sessions.
-  - [ ] Queue/detail adapter tests proving service data is displayed.
-  - [ ] Confirmation/comment/rationale tests for decision actions.
-  - [ ] Regression tests that authenticated review UI cannot use demo approval data.
+- [x] Add focused tests (AC: 1-10)
+  - [x] Role-gating tests for technician, supervisor, manager if preserved, and offline reviewer sessions.
+  - [x] Queue/detail adapter tests proving service data is displayed.
+  - [x] Confirmation/comment/rationale tests for decision actions.
+  - [x] Regression tests that authenticated review UI cannot use demo approval data.
 
-- [ ] Validate and update Dev Agent Record (AC: 11, 12)
-  - [ ] Run required validation commands.
-  - [ ] Document backend-connected APK smoke path and whether physically executed.
-  - [ ] Confirm no technician report/evidence implementation was added.
+- [x] Validate and update Dev Agent Record (AC: 11, 12)
+  - [x] Run required validation commands.
+  - [x] Document backend-connected APK smoke path and whether physically executed.
+  - [x] Confirm no technician report/evidence implementation was added.
 
 ## Dev Notes
 
@@ -246,9 +246,54 @@ In scope:
 ## Dev Agent Record
 
 ### Agent Model Used
+GPT-5 Codex
 
 ### Debug Log References
+- `cd mobile; npm test -- --run src/features/visual-shell/serviceBackedReview.test.ts` - passed, 1 file / 8 tests.
+- `cd mobile; npm test -- --run src/features/visual-shell/serviceBackedReview.test.ts src/features/review/supervisorReviewService.test.ts src/features/visual-shell/serviceBackedReport.test.ts` - passed, 3 files / 23 tests.
+- `cd mobile; npm run typecheck` - passed.
+- `cd mobile; npm test` - passed, 27 files / 155 tests.
+- `cd mobile; npx expo-doctor` - passed, 17/17 checks.
+- `git diff --check` - passed with existing CRLF normalization warnings for `mobile/src/shell/TagWiseApp.tsx` and `mobile/src/shell/VisualProductShell.tsx`.
 
 ### Completion Notes List
+- Confirmed the existing `SupervisorReviewService`, API client, and review model already cover connected supervisor queue/detail/approve/return/escalate and manager queue/detail/approve/return. No backend contracts were changed.
+- Added `serviceBackedReview` as a thin, side-effect-free visual review adapter for role access, connected-required state, queue grouping, report detail projection, AI Diagnosis unavailable projection, and confirmation-gated decision dispatch.
+- Authenticated dark-shell dashboard now shows a review entry only for connected supervisor/manager sessions. Offline reviewer sessions show connected-required state; technician sessions do not see reviewer entry points.
+- Added an authenticated `review` route that does not depend on selected tag identity and renders service-backed queue tabs/lists from `supervisorReviewQueue`.
+- Wired review detail rendering to `SupervisorReviewReportDetail`, including execution/history/deterministic guidance summaries, evidence references/status, photo state, risk justifications, lifecycle/sync state, AI Diagnosis unavailable state, and approval history audit fields.
+- Review detail remains read-only for technician report content; only reviewer decision comment/rationale inputs are editable where role/session state allows.
+- Approve, return, and escalate now create confirmation prompts before dispatch. Return requires non-empty comment; escalation requires non-empty rationale. Confirmed actions call existing `TagWiseApp` handlers and therefore existing `SupervisorReviewService` methods.
+- Authenticated/stale `approval` visual route no longer exposes demo approval controls. Signed-out demo approval remains explicit demo-only.
+- No technician report/evidence/photo/AI lifecycle work was added; Story 8.4 boundaries were preserved.
+- Manual APK/backend smoke path documented but not physically executed in this environment:
+  - Backend reachable for technician login, package download, report sync/acceptance, supervisor login, review queue/detail, and review decisions.
+  - Technician submits/syncs a report through the Story 8.4 path until server-accepted/pending review.
+  - Connected supervisor signs in and opens the visual review queue.
+  - Supervisor opens report detail and verifies evidence/risk/history/AI Diagnosis/approval history where available.
+  - Approve requires confirmation.
+  - Return requires comment and confirmation.
+  - Escalate requires rationale and confirmation.
+  - Decision appears in audit/history or queue/detail after backend acceptance.
+  - Technician role cannot see supervisor queue/actions.
 
 ### File List
+- `mobile/src/features/visual-shell/serviceBackedReview.ts`
+- `mobile/src/features/visual-shell/serviceBackedReview.test.ts`
+- `mobile/src/shell/VisualProductShell.tsx`
+- `mobile/src/shell/TagWiseApp.tsx`
+- `_bmad-output/implementation-artifacts/8-5-reconnect-role-aware-supervisor-approval-queue-and-decisions.md`
+
+## Final Epic 8 QA Update
+
+Final story status: done / pass.
+
+Final Epic 8 verdict: Pass with minor concerns.
+
+Review date: 2026-05-10
+
+QA confirmed Story 8.5 reconnected the authenticated dark-shell supervisor review area to the existing role-aware, backend-connected review services: technician sessions do not see queue/actions, stale authenticated approval routes do not expose demo controls, connected supervisor/manager review loads through existing handlers and `SupervisorReviewService`, offline reviewers see connected-required state, approve/return/escalate require confirmation and required comments/rationales, and approval history/audit fields render from service-backed detail state.
+
+Blocking findings for final Epic 8 QA: none.
+
+Residual concern: real APK/backend end-to-end smoke was not physically executed in this environment. Before release/demo confidence, validate connected supervisor login, queue/detail loading, approve/return/escalate decisions, backend acceptance, audit/history refresh, and technician RBAC denial on a real device/APK path.

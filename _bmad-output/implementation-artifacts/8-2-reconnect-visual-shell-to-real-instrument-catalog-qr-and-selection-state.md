@@ -1,6 +1,6 @@
 # Story 8.2: Reconnect Visual Shell to Real Instrument Catalog, QR, and Selection State
 
-Status: review
+Status: done
 
 ## Metadata
 - Story key: 8-2-reconnect-visual-shell-to-real-instrument-catalog-qr-and-selection-state
@@ -337,3 +337,17 @@ GPT-5 Codex
 
 - 2026-05-09: Implemented Story 8.2 service-backed visual catalog, QR, selected tag identity, tag context, and template identity handoff repair.
 - 2026-05-09: Addressed QA findings by preserving cached catalog state on QR miss/invalid and adding local tolerance display to visual detail context.
+
+## Final Epic 8 QA Update
+
+Final story status: done / pass.
+
+Final Epic 8 verdict: Pass with minor concerns.
+
+Review date: 2026-05-10
+
+QA confirmed Story 8.2 repaired the authenticated visual-shell identity regression introduced by the initial dark shell: downloaded/local tag catalog data is production truth, selected `workPackageId` and `tagId` are preserved through visual navigation, QR/manual payload resolution uses the local QR resolver, and QR miss/invalid paths do not open PT-204 or demo fallback data.
+
+Blocking findings for final Epic 8 QA: none.
+
+Residual concern: real APK/backend end-to-end smoke was not physically executed in this environment. Before release/demo confidence, validate package download, cached list/search/QR entry, offline cached tag access, and QR miss/invalid recovery on device.

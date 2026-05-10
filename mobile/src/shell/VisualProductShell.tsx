@@ -51,7 +51,23 @@ import {
   createVisualReportActions,
   type VisualReportProjection,
 } from '../features/visual-shell/serviceBackedReport';
+import {
+  buildVisualReviewAccess,
+  buildVisualReviewDecisionRequest,
+  buildVisualReviewDetailProjection,
+  buildVisualReviewQueueGroups,
+  createVisualReviewDecisionActions,
+  type VisualReviewDecisionKind,
+  type VisualReviewDecisionRequest,
+  type VisualReviewDetailProjection,
+  type VisualReviewQueueGroup,
+  type VisualReviewQueueGroupKey,
+} from '../features/visual-shell/serviceBackedReview';
 import type { ReportSyncDetail } from '../features/sync/syncStateService';
+import type {
+  SupervisorReviewQueueItem,
+  SupervisorReviewReportDetail,
+} from '../features/review/model';
 import type {
   LocalAssignedTagEntry,
   LocalAssignedWorkPackageSummary,
@@ -59,7 +75,15 @@ import type {
 } from '../features/work-packages/model';
 import type { LocalQrScanResult } from '../features/work-packages/localQrScanService';
 
-type VisualRoute = 'dashboard' | 'detail' | 'calculation' | 'history' | 'diagnosis' | 'report' | 'approval';
+type VisualRoute =
+  | 'dashboard'
+  | 'detail'
+  | 'calculation'
+  | 'history'
+  | 'diagnosis'
+  | 'report'
+  | 'review'
+  | 'approval';
 
 export interface VisualProductShellProps {
   session: ActiveUserSession | null;
@@ -77,6 +101,11 @@ export interface VisualProductShellProps {
   executionShell: SharedExecutionShell | null;
   reportSyncDetail: ReportSyncDetail | null;
   syncBusy: boolean;
+  reviewBusy: boolean;
+  supervisorReviewQueue: SupervisorReviewQueueItem[];
+  selectedSupervisorReviewReport: SupervisorReviewReportDetail | null;
+  supervisorReturnComment: string;
+  supervisorEscalationRationale: string;
   qrScannerVisible: boolean;
   qrManualPayload: string;
   qrScanResult: LocalQrScanResult | null;
@@ -112,6 +141,14 @@ export interface VisualProductShellProps {
   onSubmitReport: () => Promise<void>;
   onRetryReportSync: () => Promise<void>;
   onRefreshReportServerStatus: () => Promise<void>;
+  onRefreshSupervisorReviewQueue: () => Promise<void>;
+  onOpenSupervisorReviewReport: (reportId: string) => Promise<void>;
+  onCloseSupervisorReviewReport: () => void;
+  onApproveSupervisorReviewReport: (reportId: string) => Promise<void>;
+  onReturnSupervisorReviewReport: (reportId: string) => Promise<void>;
+  onEscalateSupervisorReviewReport: (reportId: string) => Promise<void>;
+  onSupervisorReturnCommentChange: (value: string) => void;
+  onSupervisorEscalationRationaleChange: (value: string) => void;
 }
 
 export function VisualProductShell({
@@ -130,6 +167,11 @@ export function VisualProductShell({
   executionShell,
   reportSyncDetail,
   syncBusy,
+  reviewBusy,
+  supervisorReviewQueue,
+  selectedSupervisorReviewReport,
+  supervisorReturnComment,
+  supervisorEscalationRationale,
   qrScannerVisible,
   qrManualPayload,
   qrScanResult,
@@ -159,6 +201,14 @@ export function VisualProductShell({
   onSubmitReport,
   onRetryReportSync,
   onRefreshReportServerStatus,
+  onRefreshSupervisorReviewQueue,
+  onOpenSupervisorReviewReport,
+  onCloseSupervisorReviewReport,
+  onApproveSupervisorReviewReport,
+  onReturnSupervisorReviewReport,
+  onEscalateSupervisorReviewReport,
+  onSupervisorReturnCommentChange,
+  onSupervisorEscalationRationaleChange,
 }: VisualProductShellProps) {
   const [route, setRoute] = useState<VisualRoute>('dashboard');
   const [activeFilter, setActiveFilter] = useState<VisualTagCategory | 'all'>('all');
@@ -166,6 +216,10 @@ export function VisualProductShell({
   const [selectedDemoTag, setSelectedDemoTag] = useState<VisualTagSummary | null>(null);
   const [selectedSymptom, setSelectedSymptom] = useState('Sem Resposta');
   const [justification, setJustification] = useState('');
+  const [activeReviewGroupKey, setActiveReviewGroupKey] =
+    useState<VisualReviewQueueGroupKey>('pending-review');
+  const [pendingReviewDecision, setPendingReviewDecision] =
+    useState<VisualReviewDecisionRequest | null>(null);
   const [shellMessage, setShellMessage] = useState<string | null>(null);
   const model = useMemo(
     () =>
@@ -209,6 +263,28 @@ export function VisualProductShell({
       onRetryReportSync,
       onSaveReportDraft,
       onSubmitReport,
+    ],
+  );
+  const reviewAccess = useMemo(() => buildVisualReviewAccess(session), [session]);
+  const reviewQueueGroups = useMemo(
+    () => buildVisualReviewQueueGroups(supervisorReviewQueue),
+    [supervisorReviewQueue],
+  );
+  const reviewDetail = useMemo(
+    () => buildVisualReviewDetailProjection(selectedSupervisorReviewReport, reviewAccess),
+    [reviewAccess, selectedSupervisorReviewReport],
+  );
+  const reviewDecisionActions = useMemo(
+    () =>
+      createVisualReviewDecisionActions({
+        onApproveReport: onApproveSupervisorReviewReport,
+        onReturnReport: onReturnSupervisorReviewReport,
+        onEscalateReport: onEscalateSupervisorReviewReport,
+      }),
+    [
+      onApproveSupervisorReviewReport,
+      onEscalateSupervisorReviewReport,
+      onReturnSupervisorReviewReport,
     ],
   );
   const selectedTag = session ? model.selectedTag : selectedDemoTag ?? model.selectedTag;
@@ -279,6 +355,46 @@ export function VisualProductShell({
     setRoute(nextRoute);
   }
 
+  async function handleOpenReviewRoute() {
+    setShellMessage(null);
+    setPendingReviewDecision(null);
+
+    if (reviewAccess.state !== 'available') {
+      setShellMessage(reviewAccess.detail);
+      setRoute('review');
+      return;
+    }
+
+    await onRefreshSupervisorReviewQueue();
+    setRoute('review');
+  }
+
+  function handleRequestReviewDecision(kind: VisualReviewDecisionKind) {
+    const request = buildVisualReviewDecisionRequest({
+      kind,
+      detail: reviewDetail,
+      returnComment: supervisorReturnComment,
+      escalationRationale: supervisorEscalationRationale,
+    });
+
+    setPendingReviewDecision(request);
+    if (request.state === 'blocked') {
+      setShellMessage(request.message);
+    } else {
+      setShellMessage(null);
+    }
+  }
+
+  async function handleConfirmReviewDecision() {
+    const request = pendingReviewDecision;
+    if (!request || request.state !== 'requires-confirmation') {
+      return;
+    }
+
+    setPendingReviewDecision(null);
+    await reviewDecisionActions.confirmDecision(request);
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
@@ -293,6 +409,9 @@ export function VisualProductShell({
             model={model}
             packageBusy={packageBusy}
             password={password}
+            reviewAccess={reviewAccess}
+            reviewBusy={reviewBusy}
+            reviewQueueCount={supervisorReviewQueue.length}
             searchQuery={searchQuery}
             session={session}
             shellMessage={shellMessage}
@@ -304,6 +423,7 @@ export function VisualProductShell({
             onBarcodeScanned={onBarcodeScanned}
             onCancelQrScanner={onCancelQrScanner}
             onRefreshPackages={onRefreshPackages}
+            onOpenReview={() => void handleOpenReviewRoute()}
             onResolveQrManualPayload={() => void handleResolveQrManualPayload()}
             onQrManualPayloadChange={onQrManualPayloadChange}
             onSearchChange={setSearchQuery}
@@ -330,6 +450,30 @@ export function VisualProductShell({
           />
         ) : route === 'detail' ? (
           <NoSelectedTagScreen onBack={() => openRoute('dashboard')} />
+        ) : route === 'review' ? (
+          <ServiceReviewScreen
+            access={reviewAccess}
+            activeGroupKey={activeReviewGroupKey}
+            busy={reviewBusy}
+            detail={reviewDetail}
+            groups={reviewQueueGroups}
+            pendingDecision={pendingReviewDecision}
+            returnComment={supervisorReturnComment}
+            escalationRationale={supervisorEscalationRationale}
+            shellMessage={shellMessage ?? authMessage}
+            onApprove={() => handleRequestReviewDecision('approve')}
+            onBack={() => openRoute('dashboard')}
+            onCancelDecision={() => setPendingReviewDecision(null)}
+            onCloseReport={onCloseSupervisorReviewReport}
+            onConfirmDecision={() => void handleConfirmReviewDecision()}
+            onEscalate={() => handleRequestReviewDecision('escalate')}
+            onEscalationRationaleChange={onSupervisorEscalationRationaleChange}
+            onGroupChange={setActiveReviewGroupKey}
+            onOpenReport={(reportId) => void onOpenSupervisorReviewReport(reportId)}
+            onRefresh={() => void onRefreshSupervisorReviewQueue()}
+            onReturn={() => handleRequestReviewDecision('return')}
+            onReturnCommentChange={onSupervisorReturnCommentChange}
+          />
         ) : !selectedTag ? (
           <NoSelectedTagScreen onBack={() => openRoute('dashboard')} />
         ) : route === 'calculation' ? (
@@ -415,7 +559,7 @@ export function VisualProductShell({
               onOpenApproval={() => openRoute('approval')}
             />
           )
-        ) : (
+        ) : route === 'approval' && !session ? (
           <ApprovalScreen
             justification={justification}
             report={model.report}
@@ -429,6 +573,8 @@ export function VisualProductShell({
               setRoute('dashboard');
             }}
           />
+        ) : (
+          <NoSelectedTagScreen onBack={() => openRoute('dashboard')} />
         )}
       </ScrollView>
     </SafeAreaView>
@@ -444,6 +590,9 @@ function DashboardScreen({
   model,
   packageBusy,
   password,
+  reviewAccess,
+  reviewBusy,
+  reviewQueueCount,
   searchQuery,
   session,
   shellMessage,
@@ -455,6 +604,7 @@ function DashboardScreen({
   onBarcodeScanned,
   onCancelQrScanner,
   onQrManualPayloadChange,
+  onOpenReview,
   onResolveQrManualPayload,
   onRefreshPackages,
   onSearchChange,
@@ -473,6 +623,9 @@ function DashboardScreen({
   model: ReturnType<typeof buildTechnicianVisualWorkflow>;
   packageBusy: boolean;
   password: string;
+  reviewAccess: ReturnType<typeof buildVisualReviewAccess>;
+  reviewBusy: boolean;
+  reviewQueueCount: number;
   searchQuery: string;
   session: ActiveUserSession | null;
   shellMessage: string | null;
@@ -484,6 +637,7 @@ function DashboardScreen({
   onBarcodeScanned: (event: BarcodeScanningResult) => void;
   onCancelQrScanner: () => void;
   onQrManualPayloadChange: (value: string) => void;
+  onOpenReview: () => void;
   onResolveQrManualPayload: () => void;
   onRefreshPackages: () => void;
   onSearchChange: (value: string) => void;
@@ -597,6 +751,15 @@ function DashboardScreen({
         onSignIn={onSignIn}
         onSwitchUser={onSwitchUser}
       />
+
+      {reviewAccess.state === 'available' || reviewAccess.state === 'connected-required' ? (
+        <ReviewAccessCard
+          access={reviewAccess}
+          busy={reviewBusy}
+          queueCount={reviewQueueCount}
+          onOpenReview={onOpenReview}
+        />
+      ) : null}
 
       {session && model.source === 'local-empty' ? (
         <EmptyCatalogState onRefreshPackages={onRefreshPackages} packageBusy={packageBusy} />
@@ -839,6 +1002,47 @@ function ConnectionCard({
             <Text style={styles.smallActionLabel}>{authBusy ? 'Entrando...' : 'Entrar'}</Text>
           </Pressable>
         </View>
+      )}
+    </View>
+  );
+}
+
+function ReviewAccessCard({
+  access,
+  busy,
+  queueCount,
+  onOpenReview,
+}: {
+  access: ReturnType<typeof buildVisualReviewAccess>;
+  busy: boolean;
+  queueCount: number;
+  onOpenReview: () => void;
+}) {
+  return (
+    <View style={styles.connectionCard}>
+      <View style={styles.connectionHeader}>
+        <View>
+          <Text style={styles.connectionTitle}>{access.label}</Text>
+          <Text style={styles.connectionBody}>{access.detail}</Text>
+        </View>
+        <StatusPill
+          label={access.state === 'available' ? `${queueCount}` : 'Online'}
+          severity={access.state === 'available' ? 'ok' : 'due'}
+        />
+      </View>
+      {access.state === 'available' ? (
+        <Pressable
+          accessibilityRole="button"
+          disabled={busy}
+          onPress={onOpenReview}
+          style={[styles.smallActionButton, busy ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallActionLabel}>
+            {busy ? 'Loading review...' : 'Open review queue'}
+          </Text>
+        </Pressable>
+      ) : (
+        <Text style={styles.connectionMessage}>{access.detail}</Text>
       )}
     </View>
   );
@@ -1792,6 +1996,399 @@ function ServiceReportScreen({
         <Text style={styles.qrGuidanceText}>{report.submitReadinessLabel}</Text>
       ) : null}
     </>
+  );
+}
+
+function ServiceReviewScreen({
+  access,
+  activeGroupKey,
+  busy,
+  detail,
+  escalationRationale,
+  groups,
+  pendingDecision,
+  returnComment,
+  shellMessage,
+  onApprove,
+  onBack,
+  onCancelDecision,
+  onCloseReport,
+  onConfirmDecision,
+  onEscalate,
+  onEscalationRationaleChange,
+  onGroupChange,
+  onOpenReport,
+  onRefresh,
+  onReturn,
+  onReturnCommentChange,
+}: {
+  access: ReturnType<typeof buildVisualReviewAccess>;
+  activeGroupKey: VisualReviewQueueGroupKey;
+  busy: boolean;
+  detail: VisualReviewDetailProjection;
+  escalationRationale: string;
+  groups: VisualReviewQueueGroup[];
+  pendingDecision: VisualReviewDecisionRequest | null;
+  returnComment: string;
+  shellMessage: string | null;
+  onApprove: () => void;
+  onBack: () => void;
+  onCancelDecision: () => void;
+  onCloseReport: () => void;
+  onConfirmDecision: () => void;
+  onEscalate: () => void;
+  onEscalationRationaleChange: (value: string) => void;
+  onGroupChange: (groupKey: VisualReviewQueueGroupKey) => void;
+  onOpenReport: (reportId: string) => void;
+  onRefresh: () => void;
+  onReturn: () => void;
+  onReturnCommentChange: (value: string) => void;
+}) {
+  const activeGroup =
+    groups.find((group) => group.key === activeGroupKey) ?? groups[0];
+
+  return (
+    <>
+      <ScreenHeader onBack={onBack} />
+      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
+      <Text style={styles.screenTitle}>Review</Text>
+
+      <View style={styles.summaryCard}>
+        <SummaryLine label="Access" value={access.label} pill={access.state === 'available'} />
+        <SummaryLine label="Role" value={access.reviewerRole ?? 'None'} />
+        <SummaryLine label="State" value={access.state} />
+        <SummaryLine label="Authority" value={access.canUseDecisionActions ? 'Connected' : 'Unavailable'} />
+      </View>
+
+      {access.state !== 'available' ? (
+        <View style={styles.connectionCard}>
+          <Text style={styles.connectionTitle}>{access.label}</Text>
+          <Text style={styles.connectionBody}>{access.detail}</Text>
+        </View>
+      ) : (
+        <>
+          <Pressable
+            accessibilityRole="button"
+            disabled={busy || !access.canLoadQueue}
+            onPress={onRefresh}
+            style={[
+              styles.fullWidthPrimary,
+              busy || !access.canLoadQueue ? styles.disabledAction : null,
+            ]}
+          >
+            <Text style={styles.fullWidthPrimaryLabel}>
+              {busy ? 'Loading review queue...' : 'Refresh service queue'}
+            </Text>
+          </Pressable>
+
+          <ScrollView
+            contentContainerStyle={styles.chipRow}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+          >
+            {groups.map((group) => (
+              <FilterChip
+                active={group.key === activeGroup.key}
+                count={group.items.length}
+                key={group.key}
+                label={group.label}
+                onPress={() => onGroupChange(group.key)}
+              />
+            ))}
+          </ScrollView>
+
+          <SectionHeader title={`${activeGroup.label} Queue`} />
+          {activeGroup.items.length === 0 ? (
+            <View style={styles.pendingCard}>
+              <Text style={styles.pendingText}>{activeGroup.emptyLabel}</Text>
+            </View>
+          ) : (
+            activeGroup.items.map((item) => (
+              <View key={item.reportId} style={styles.guidanceCard}>
+                <Text style={styles.historyTitle}>{item.tagId}</Text>
+                <Text style={styles.historySubtitle}>{item.reportId}</Text>
+                <SummaryLine label="Lifecycle" value={item.statusLabel} />
+                <SummaryLine label="Work package" value={item.workPackageId} />
+                <SummaryLine label="Risk flags" value={`${item.riskFlagCount}`} />
+                <SummaryLine label="Pending evidence" value={`${item.pendingEvidenceCount}`} />
+                <Text style={styles.pendingText}>{item.executionSummary}</Text>
+                <Text style={styles.pendingText}>Accepted: {item.acceptedAtLabel}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => onOpenReport(item.reportId)}
+                  style={[styles.smallActionButton, busy ? styles.disabledAction : null]}
+                >
+                  <Text style={styles.smallActionLabel}>Open service detail</Text>
+                </Pressable>
+              </View>
+            ))
+          )}
+
+          {detail.state === 'available' ? (
+            <ReviewDetailView
+              busy={busy}
+              detail={detail}
+              escalationRationale={escalationRationale}
+              pendingDecision={pendingDecision}
+              returnComment={returnComment}
+              onApprove={onApprove}
+              onCancelDecision={onCancelDecision}
+              onCloseReport={onCloseReport}
+              onConfirmDecision={onConfirmDecision}
+              onEscalate={onEscalate}
+              onEscalationRationaleChange={onEscalationRationaleChange}
+              onReturn={onReturn}
+              onReturnCommentChange={onReturnCommentChange}
+            />
+          ) : null}
+        </>
+      )}
+    </>
+  );
+}
+
+function ReviewDetailView({
+  busy,
+  detail,
+  escalationRationale,
+  pendingDecision,
+  returnComment,
+  onApprove,
+  onCancelDecision,
+  onCloseReport,
+  onConfirmDecision,
+  onEscalate,
+  onEscalationRationaleChange,
+  onReturn,
+  onReturnCommentChange,
+}: {
+  busy: boolean;
+  detail: VisualReviewDetailProjection;
+  escalationRationale: string;
+  pendingDecision: VisualReviewDecisionRequest | null;
+  returnComment: string;
+  onApprove: () => void;
+  onCancelDecision: () => void;
+  onCloseReport: () => void;
+  onConfirmDecision: () => void;
+  onEscalate: () => void;
+  onEscalationRationaleChange: (value: string) => void;
+  onReturn: () => void;
+  onReturnCommentChange: (value: string) => void;
+}) {
+  const returnReady = returnComment.trim().length > 0;
+  const escalationReady = escalationRationale.trim().length > 0;
+
+  return (
+    <View style={styles.guidanceCard}>
+      <Text style={styles.sectionTitle}>{detail.title}</Text>
+      <View style={styles.summaryCard}>
+        <SummaryLine label="Lifecycle" value={detail.lifecycleStateLabel} pill />
+        <SummaryLine label="Sync" value={detail.syncStateLabel} />
+        {detail.summaryRows.map((row) => (
+          <SummaryLine key={row.label} label={row.label} value={row.value} />
+        ))}
+      </View>
+
+      <Text style={styles.sectionTitle}>Evidence Status</Text>
+      <View style={styles.pendingCard}>
+        {detail.evidenceStatusRows.map((row) => (
+          <Text key={row.label} style={styles.pendingText}>
+            {row.label}: {row.value}
+          </Text>
+        ))}
+      </View>
+
+      <Text style={styles.sectionTitle}>Evidence References</Text>
+      {detail.evidenceReferences.length > 0 ? (
+        detail.evidenceReferences.map((reference) => (
+          <View
+            key={`${reference.requirementLevel}:${reference.label}`}
+            style={[
+              styles.guidanceCard,
+              !reference.satisfied && reference.requirementLevel === 'minimum'
+                ? styles.guidanceCardWarning
+                : null,
+            ]}
+          >
+            <Text style={styles.historyTitle}>{reference.label}</Text>
+            <Text style={styles.pendingText}>
+              {reference.requirementLevel.toUpperCase()} - {reference.stateLabel}
+            </Text>
+            <Text style={styles.pendingText}>{reference.detail}</Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.pendingText}>No evidence references were returned by the service.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Photo Evidence</Text>
+      {detail.photoAttachments.length > 0 ? (
+        detail.photoAttachments.map((photo) => (
+          <View key={photo.evidenceId} style={styles.pendingCard}>
+            <Text style={styles.pendingTitle}>{photo.evidenceId}</Text>
+            <Text style={styles.pendingText}>Server evidence: {photo.serverEvidenceId ?? 'None'}</Text>
+            <Text style={styles.pendingText}>Sync: {photo.syncState}</Text>
+            <Text style={styles.pendingText}>Finalized: {photo.finalizedLabel}</Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.pendingText}>No photo attachments are linked to this review detail.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Risk and Justification</Text>
+      {detail.riskFlags.length > 0 ? (
+        detail.riskFlags.map((risk) => (
+          <View key={risk.id} style={styles.guidanceCard}>
+            <Text style={styles.historyTitle}>{risk.reasonType}</Text>
+            <Text style={styles.pendingText}>{risk.stateLabel}</Text>
+            <Text style={styles.pendingText}>Justification: {risk.justificationLabel}</Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.pendingText}>No risk flags were returned by the service.</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>AI Diagnosis</Text>
+      <View style={styles.pendingCard}>
+        <Text style={styles.pendingTitle}>{detail.aiDiagnosis.label}</Text>
+        <Text style={styles.pendingText}>{detail.aiDiagnosis.detail}</Text>
+        {detail.aiDiagnosis.summary ? (
+          <Text style={styles.pendingText}>{detail.aiDiagnosis.summary}</Text>
+        ) : null}
+      </View>
+
+      <Text style={styles.sectionTitle}>Approval History</Text>
+      {detail.approvalHistory.items.length > 0 ? (
+        detail.approvalHistory.items.map((item) => (
+          <View key={item.auditEventId} style={styles.pendingCard}>
+            <Text style={styles.pendingTitle}>{item.actionType}</Text>
+            <Text style={styles.pendingText}>Actor role: {item.actorRole}</Text>
+            <Text style={styles.pendingText}>At: {item.occurredAtLabel}</Text>
+            <Text style={styles.pendingText}>State: {item.stateTransitionLabel}</Text>
+            <Text style={styles.pendingText}>Correlation: {item.correlationId}</Text>
+            {item.comment ? <Text style={styles.pendingText}>Comment: {item.comment}</Text> : null}
+          </View>
+        ))
+      ) : (
+        <Text style={styles.pendingText}>{detail.approvalHistory.placeholder}</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Decision Comment</Text>
+      <TextInput
+        autoCapitalize="sentences"
+        autoCorrect
+        editable={detail.canReturn && !busy}
+        multiline
+        onChangeText={onReturnCommentChange}
+        placeholder="Required return comment"
+        placeholderTextColor={colors.textSubtle}
+        style={[styles.justificationInput, !detail.canReturn || busy ? styles.disabledAction : null]}
+        value={returnComment}
+      />
+      {detail.canEscalate ? (
+        <>
+          <Text style={styles.sectionTitle}>Escalation Rationale</Text>
+          <TextInput
+            autoCapitalize="sentences"
+            autoCorrect
+            editable={detail.canEscalate && !busy}
+            multiline
+            onChangeText={onEscalationRationaleChange}
+            placeholder="Required escalation rationale"
+            placeholderTextColor={colors.textSubtle}
+            style={[
+              styles.justificationInput,
+              !detail.canEscalate || busy ? styles.disabledAction : null,
+            ]}
+            value={escalationRationale}
+          />
+        </>
+      ) : null}
+
+      {pendingDecision ? (
+        <View
+          style={[
+            styles.pendingCard,
+            pendingDecision.state === 'blocked' ? styles.guidanceCardWarning : null,
+          ]}
+        >
+          <Text style={styles.pendingTitle}>
+            {pendingDecision.state === 'requires-confirmation'
+              ? pendingDecision.title
+              : 'Decision blocked'}
+          </Text>
+          <Text style={styles.pendingText}>{pendingDecision.message}</Text>
+          {pendingDecision.state === 'requires-confirmation' ? (
+            <View style={styles.reportActionGrid}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={onConfirmDecision}
+                style={[styles.smallActionButton, busy ? styles.disabledAction : null]}
+              >
+                <Text style={styles.smallActionLabel}>{pendingDecision.confirmLabel}</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={onCancelDecision}
+                style={styles.smallGhostButton}
+              >
+                <Text style={styles.smallGhostLabel}>Cancel</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={onCancelDecision}
+              style={styles.smallGhostButton}
+            >
+              <Text style={styles.smallGhostLabel}>Dismiss</Text>
+            </Pressable>
+          )}
+        </View>
+      ) : null}
+
+      <View style={styles.reportActionGrid}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!detail.canApprove || busy}
+          onPress={onApprove}
+          style={[styles.smallActionButton, !detail.canApprove || busy ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallActionLabel}>Approve</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!detail.canReturn || busy || !returnReady}
+          onPress={onReturn}
+          style={[
+            styles.smallGhostButton,
+            !detail.canReturn || busy || !returnReady ? styles.disabledAction : null,
+          ]}
+        >
+          <Text style={styles.smallGhostLabel}>Return</Text>
+        </Pressable>
+        {detail.canEscalate ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={!detail.canEscalate || busy || !escalationReady}
+            onPress={onEscalate}
+            style={[
+              styles.smallGhostButton,
+              !detail.canEscalate || busy || !escalationReady ? styles.disabledAction : null,
+            ]}
+          >
+            <Text style={styles.smallGhostLabel}>Escalate</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      <Pressable accessibilityRole="button" onPress={onCloseReport} style={styles.secondaryFullWidth}>
+        <Text style={styles.returnLabel}>Back to queue</Text>
+      </Pressable>
+    </View>
   );
 }
 

@@ -1,6 +1,6 @@
 # Story 8.1: Mobile Visual Product Shell And Technician Demo Flow
 
-Status: review
+Status: done
 
 ## Story
 
@@ -226,3 +226,20 @@ Blocking defects:
 - The seeded visual data is too image-copy-like and not sufficiently tied to realistic TagWise package/tag/template/history data.
 - The previous functional technical shell is commented out and unreachable. This confirms the visual shell replaced working behavior instead of skinning/integrating it.
 - Automated coverage validates only model-level fallback behavior and does not catch the broken APK workflow. Manual APK smoke is required until a native mobile E2E harness exists.
+
+## Final Epic 8 QA Update
+
+Final Epic 8 verdict: Pass with minor concerns.
+
+Review date: 2026-05-10
+
+Story 8.1 originally delivered the dark mobile visual shell but was functionally insufficient as a production workflow, as recorded in the 2026-05-07 QA results above. The functional regressions were repaired by the follow-on service-backed repair stories:
+
+- Story 8.2 restored authenticated catalog, QR, selected tag, work package, and template identity.
+- Story 8.3 restored service-backed calculation, conversions, history, checklist, guidance, references, and risk state.
+- Story 8.4 restored service-backed report, evidence, photos, submit/sync, and report-level AI Diagnosis projection.
+- Story 8.5 restored role-aware connected supervisor approval, decisions, and audit projection.
+
+Blocking findings for final Epic 8 QA: none.
+
+Residual concern: real APK/backend end-to-end smoke was not physically executed in this environment. Before release/demo confidence, validate the full device path with backend reachable, offline execution/report creation, reconnect sync, supervisor decisions, and audit/history refresh.
