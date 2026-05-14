@@ -214,6 +214,13 @@ export interface SharedExecutionPhotoAttachmentInput {
 export interface SharedExecutionPhotoAttachment {
   evidenceId: string;
   executionStepId: SharedExecutionStepKind;
+  /**
+   * Optional human-readable sub-step context for this photo. Used to
+   * disambiguate photos taken at different points of a multi-point execution
+   * (e.g., "Ponto de loop 50%"). Mobile-only; the backend ignores unknown fields.
+   * Set per-call via `attachPhotoEvidence(..., { contextNote })`.
+   */
+  contextNote: string | null;
   fileName: string;
   mimeType: string | null;
   previewUri: string;
@@ -400,6 +407,12 @@ export interface StoredExecutionPhotoAttachmentPayload {
   templateVersion: string;
   draftReportId: string;
   executionStepId: SharedExecutionStepKind;
+  /**
+   * Persisted form of `SharedExecutionPhotoAttachment.contextNote`. Optional and
+   * backwards-compatible: existing rows pre-Story-8.7 do not have this field; the
+   * parser falls back to `null`.
+   */
+  contextNote?: string | null;
   source: SharedExecutionPhotoAttachmentSource;
   width: number | null;
   height: number | null;

@@ -1506,11 +1506,13 @@ describe('SharedExecutionShellService', () => {
             reasonType: 'missing-minimum-evidence',
           }),
         ]),
+        // Story 8.7 AC 5: only items whose severity is explicitly
+        // 'submit-block' contribute to submitBlockingHooks. Warning-severity
+        // items (missing context, missing history, missing expected evidence)
+        // remain visible as risk items but no longer hard-block submission.
         submitBlockingHooks: expect.arrayContaining([
           'Evidencia minima ausente: readings.',
           'Evidencia minima ausente: observations.',
-          'Justificativa obrigatoria: Contexto ausente.',
-          'Justificativa obrigatoria: Historico indisponivel.',
         ]),
       },
     });
@@ -1615,9 +1617,12 @@ describe('SharedExecutionShellService', () => {
     expect(shellWithNotes.guidance.riskItems.map((item) => item.id)).not.toContain(
       'minimum-evidence:readings',
     );
-    expect(shellWithNotes.guidance.submitBlockingHooks).toEqual([
-      'Justificativa obrigatoria: Evidencia esperada ausente: supporting photo.',
-    ]);
+    // Story 8.7 AC 5: 'expected-evidence:supporting-photo' is severity 'warning',
+    // so a missing justification on it no longer hard-blocks submission. The
+    // item still surfaces as a visible risk and a pending action on the report;
+    // it just no longer flips submitReadiness to 'blocked'.
+    expect(shellWithNotes.guidance.submitBlockingHooks).toEqual([]);
+    expect(shellWithNotes.guidance.submitReadiness).toBe('ready');
 
     await runtime.database.closeAsync?.();
   });
@@ -1663,9 +1668,14 @@ describe('SharedExecutionShellService', () => {
       observedValue: '5.02',
     });
 
+    // Story 8.7 AC 5: warning-severity risk items no longer hard-block submission
+    // even when their required justification is missing. The risk is still
+    // visible as a flagged risk item (so the report surfaces a pending action
+    // for it), but submitReadiness stays 'ready'. Only severity 'submit-block'
+    // items and minimum-evidence gaps continue to block.
     expect(shellWithCalculation.guidance).toMatchObject({
       riskState: 'flagged',
-      submitReadiness: 'blocked',
+      submitReadiness: 'ready',
       riskItems: expect.arrayContaining([
         expect.objectContaining({
           id: 'expected-evidence:supporting-photo',
@@ -1673,9 +1683,7 @@ describe('SharedExecutionShellService', () => {
           severity: 'warning',
         }),
       ]),
-      submitBlockingHooks: [
-        'Justificativa obrigatoria: Evidencia esperada ausente: supporting photo.',
-      ],
+      submitBlockingHooks: [],
     });
 
     const justifiedShell = firstService.updateRiskJustification(
@@ -2006,6 +2014,113 @@ describe('SharedExecutionShellService', () => {
     });
 
     await secondRuntime.database.closeAsync?.();
+  });
+
+  it('round-trips an optional photo contextNote (e.g. "Ponto de loop 50%") through storage and reload', async () => {
+    // Story 8.7 AC 24/25: SharedExecutionPhotoAttachment.contextNote is an
+    // optional sub-step disambiguator (e.g., "Ponto de loop 50%"). It must
+    // round-trip through the local payload JSON without widening the canonical
+    // SharedExecutionStepKind union.
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-photo-contextnote-'));
+    createdDirectories.push(tempDirectory);
+    const sourcePhotoPath = join(tempDirectory, 'loop-50pct.jpg');
+    writeFileSync(sourcePhotoPath, 'fake-jpeg-binary');
+    const draftReportId = `tag-report:${baseSnapshot.summary.id}:tag-001`;
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const initialShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const calculationShell = await service.selectStep(session, initialShell!, 'calculation');
+
+    // Photo with a loop-point contextNote.
+    const withLoopPhoto = await service.attachPhotoEvidence(
+      session,
+      calculationShell,
+      {
+        source: 'camera',
+        uri: sourcePhotoPath,
+        fileName: 'loop-50pct.jpg',
+        mimeType: 'image/jpeg',
+        width: 1024,
+        height: 768,
+        fileSize: 2048,
+      },
+      { contextNote: 'Ponto de loop 50%' },
+    );
+
+    expect(withLoopPhoto.evidence.photoAttachments).toEqual([
+      expect.objectContaining({
+        executionStepId: 'calculation',
+        contextNote: 'Ponto de loop 50%',
+      }),
+    ]);
+
+    // Photo with no contextNote (default null) — verifies the option is optional.
+    const writtenSecondPath = join(tempDirectory, 'general-photo.jpg');
+    writeFileSync(writtenSecondPath, 'fake-jpeg-binary-2');
+    const withTwoPhotos = await service.attachPhotoEvidence(session, withLoopPhoto, {
+      source: 'library',
+      uri: writtenSecondPath,
+      fileName: 'general-photo.jpg',
+      mimeType: 'image/jpeg',
+      width: 800,
+      height: 600,
+      fileSize: 1024,
+    });
+
+    const attachmentContexts = withTwoPhotos.evidence.photoAttachments.map(
+      (attachment) => attachment.contextNote,
+    );
+    expect(attachmentContexts).toEqual(expect.arrayContaining(['Ponto de loop 50%', null]));
+
+    // Verify the persisted payload JSON contains the contextNote field.
+    const persistedRecords = await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .evidenceMetadata.listEvidenceByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: draftReportId,
+      });
+    const persistedPayloads = persistedRecords.map(
+      (record) => JSON.parse(record.payloadJson) as { contextNote?: string | null },
+    );
+    expect(persistedPayloads.map((payload) => payload.contextNote ?? null)).toEqual(
+      expect.arrayContaining(['Ponto de loop 50%', null]),
+    );
+
+    // Reload from disk and confirm contextNote survives.
+    const reloadedShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const reloadedContexts = reloadedShell!.evidence.photoAttachments.map(
+      (attachment) => attachment.contextNote,
+    );
+    expect(reloadedContexts).toEqual(expect.arrayContaining(['Ponto de loop 50%', null]));
+
+    await runtime.database.closeAsync?.();
   });
 
   it('removes a draft photo attachment from metadata and local file storage consistently', async () => {

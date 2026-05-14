@@ -376,6 +376,67 @@ function sanitizeAiSummary(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// Story 8.7 AC 12: classify sync / network / token errors into 4 PT-BR classes
+// with a recommended action chip. The caller can render the copy directly and
+// hand the action key to the appropriate handler (retry sync, reauth, open
+// local queue). The classifier is intentionally minimal — string-pattern and
+// HTTP-status mapping — to avoid introducing a new view-model layer.
+
+export type SyncErrorActionKind = 'retry' | 'reauth' | 'open-queue';
+
+export interface SyncErrorClassification {
+  copy: string;
+  action: SyncErrorActionKind;
+}
+
+export interface SyncErrorInput {
+  httpStatus?: number;
+  errorMessage?: string;
+}
+
+const SYNC_ERROR_NO_INTERNET: SyncErrorClassification = {
+  copy: 'Sem internet. Seu trabalho esta salvo localmente.',
+  action: 'retry',
+};
+
+const SYNC_ERROR_SESSION_EXPIRED: SyncErrorClassification = {
+  copy: 'Sessao expirada. Faca login novamente.',
+  action: 'reauth',
+};
+
+const SYNC_ERROR_BACKEND_DEGRADED: SyncErrorClassification = {
+  copy: 'Servidor indisponivel ou sobrecarregado. Tentando novamente.',
+  action: 'retry',
+};
+
+const SYNC_ERROR_UNKNOWN: SyncErrorClassification = {
+  copy: 'Falha de sincronizacao. Veja a fila local.',
+  action: 'open-queue',
+};
+
+export function classifySyncError(input: SyncErrorInput): SyncErrorClassification {
+  const { httpStatus, errorMessage } = input;
+  const normalizedMessage = errorMessage ?? '';
+
+  if (/network request failed/i.test(normalizedMessage)) {
+    return SYNC_ERROR_NO_INTERNET;
+  }
+
+  if (
+    httpStatus === 401 ||
+    httpStatus === 403 ||
+    /access token expired|unauthor/i.test(normalizedMessage)
+  ) {
+    return SYNC_ERROR_SESSION_EXPIRED;
+  }
+
+  if (typeof httpStatus === 'number' && httpStatus >= 500 && httpStatus < 600) {
+    return SYNC_ERROR_BACKEND_DEGRADED;
+  }
+
+  return SYNC_ERROR_UNKNOWN;
+}
+
 export function translateOperationalMessage(value: string | null | undefined): string {
   const translated = translateVisibleText(value);
   if (translated === null) {

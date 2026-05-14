@@ -5,6 +5,7 @@ import type { ReportSyncDetail } from '../sync/syncStateService';
 import {
   buildVisualAiDiagnosisProjection,
   buildVisualReportProjection,
+  classifySyncError,
   createVisualReportActions,
   TECHNICIAN_REPORT_SUBMIT_ROUTE,
 } from './serviceBackedReport';
@@ -216,6 +217,53 @@ describe('service-backed visual report adapter', () => {
     expect(report.unavailableReason).toContain('Carregue um teste local');
     expect(report.routeAfterSubmit).toBe('report');
   });
+
+  // Story 8.7 AC 12: classifySyncError maps the raw error/status into one of
+  // four PT-BR classes with a recommended action chip so the UI does not have
+  // to render the underlying Error.message verbatim.
+  describe('classifySyncError', () => {
+    it('maps network failures to the no-internet class with a retry chip', () => {
+      expect(classifySyncError({ errorMessage: 'Network request failed' })).toEqual({
+        copy: 'Sem internet. Seu trabalho esta salvo localmente.',
+        action: 'retry',
+      });
+    });
+
+    it('maps 401/403 and access-token messages to the session-expired class with a reauth chip', () => {
+      expect(classifySyncError({ httpStatus: 401 })).toEqual({
+        copy: 'Sessao expirada. Faca login novamente.',
+        action: 'reauth',
+      });
+      expect(
+        classifySyncError({ errorMessage: 'Access token expired during request' }),
+      ).toEqual({
+        copy: 'Sessao expirada. Faca login novamente.',
+        action: 'reauth',
+      });
+    });
+
+    it('maps 5xx server errors to the backend-degraded class with a retry chip', () => {
+      expect(classifySyncError({ httpStatus: 503 })).toEqual({
+        copy: 'Servidor indisponivel ou sobrecarregado. Tentando novamente.',
+        action: 'retry',
+      });
+      expect(classifySyncError({ httpStatus: 500 })).toEqual({
+        copy: 'Servidor indisponivel ou sobrecarregado. Tentando novamente.',
+        action: 'retry',
+      });
+    });
+
+    it('falls back to the unknown class with an open-queue chip for unmapped errors', () => {
+      expect(classifySyncError({ errorMessage: 'Some unexpected error' })).toEqual({
+        copy: 'Falha de sincronizacao. Veja a fila local.',
+        action: 'open-queue',
+      });
+      expect(classifySyncError({})).toEqual({
+        copy: 'Falha de sincronizacao. Veja a fila local.',
+        action: 'open-queue',
+      });
+    });
+  });
 });
 
 function buildShell(
@@ -332,6 +380,7 @@ function buildShell(
         {
           evidenceId: 'evidence-photo-001',
           executionStepId: 'guidance',
+          contextNote: null,
           fileName: 'real-photo-ft-888.jpg',
           mimeType: 'image/jpeg',
           previewUri: 'file:///sandbox/real-photo-ft-888.jpg',

@@ -62,11 +62,34 @@ export class EvidenceUploadOrchestrator {
 
     const store = this.dependencies.userPartitions.forUser(session.userId);
 
+    // Per-attachment failures must not block the report submission. The backend
+    // accepts a report with photos whose binaries arrive later; per-photo errors
+    // already surface on the photo's own `syncState` / `syncIssue` so the user
+    // can retry photos independently. Without this guard, a single failing
+    // attachment (transient network blip, mid-upload disconnect, MinIO
+    // credential rotation) would throw out of this loop and the report would
+    // never reach the server. See Story 8.7 Finding #11.
+    const attachmentFailures: unknown[] = [];
     for (const attachment of shell.evidence.photoAttachments) {
-      await this.processAttachment(store, shell, attachment);
+      try {
+        await this.processAttachment(store, shell, attachment);
+      } catch (attachmentError) {
+        attachmentFailures.push(attachmentError);
+      }
     }
 
     await this.submitReportForServerValidation(store, shell);
+
+    // If the report submission succeeded but one or more photos failed, propagate
+    // the first photo failure so the caller's catch path still surfaces a
+    // message to the user that some evidence needs retry. The report itself is
+    // already in the server queue at this point.
+    if (attachmentFailures.length > 0) {
+      const firstFailure = attachmentFailures[0];
+      throw firstFailure instanceof Error
+        ? firstFailure
+        : new Error('Evidence upload failed for one or more photos.');
+    }
   }
 
   async refreshReportServerStatus(
@@ -650,6 +673,10 @@ function parsePhotoAttachmentPayload(
       templateVersion: parsed.templateVersion,
       draftReportId: parsed.draftReportId,
       executionStepId: parsed.executionStepId ?? 'guidance',
+      contextNote:
+        typeof parsed.contextNote === 'string' || parsed.contextNote === null
+          ? parsed.contextNote
+          : null,
       source: parsed.source,
       width: typeof parsed.width === 'number' ? parsed.width : null,
       height: typeof parsed.height === 'number' ? parsed.height : null,

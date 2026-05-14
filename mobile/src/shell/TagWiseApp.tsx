@@ -1380,7 +1380,10 @@ export function TagWiseApp() {
     );
   }
 
-  async function handleAttachExecutionPhoto(source: 'camera' | 'library') {
+  async function handleAttachExecutionPhoto(
+    source: 'camera' | 'library',
+    contextNote?: string | null,
+  ) {
     if (
       status.type !== 'ready' ||
       !readyState.session ||
@@ -1404,6 +1407,7 @@ export function TagWiseApp() {
         readyState.session,
         readyState.executionShell,
         photo,
+        contextNote !== undefined ? { contextNote } : undefined,
       );
       const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
         readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
@@ -2407,7 +2411,9 @@ export function TagWiseApp() {
       onApproveSupervisorReviewReport={(reportId) =>
         handleApproveSupervisorReviewReport(reportId)
       }
-      onAttachReportPhoto={(source) => handleAttachExecutionPhoto(source)}
+      onAttachReportPhoto={(source, contextNote) =>
+        handleAttachExecutionPhoto(source, contextNote)
+      }
       onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
       onBrowsePackageTags={(workPackageId) => handleBrowsePackageTags(workPackageId)}
       onCancelQrScanner={handleCancelQrScanner}

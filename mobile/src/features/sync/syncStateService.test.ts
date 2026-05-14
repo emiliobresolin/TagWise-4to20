@@ -579,6 +579,7 @@ function buildSubmittedShell(input: {
         {
           evidenceId: 'evidence-1',
           executionStepId: 'guidance',
+          contextNote: null,
           fileName: 'evidence-1.jpg',
           mimeType: 'image/jpeg',
           previewUri: 'file:///local/evidence-1.jpg',

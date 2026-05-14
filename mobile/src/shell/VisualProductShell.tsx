@@ -1,7 +1,8 @@
 import { CameraView, type BarcodeScanningResult } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BackHandler,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -53,6 +54,7 @@ import {
 } from '../features/visual-shell/serviceBackedExecution';
 import {
   buildVisualReportProjection,
+  classifySyncError,
   createVisualReportActions,
   type VisualReportProjection,
   type VisualReportPendingActionRoute,
@@ -218,7 +220,13 @@ export interface VisualProductShellProps {
   onSaveLoopTestNote: (note: string) => Promise<void>;
   onReportReviewNotesChange: (value: string) => void;
   onSaveReportDraft: () => Promise<void>;
-  onAttachReportPhoto: (source: 'camera' | 'library') => Promise<void>;
+  // Story 8.7 AC 7: the optional `contextNote` carries sub-step context (e.g.
+  // "Ponto de loop 50%") so a photo taken during a loop test point can be
+  // labeled correctly in the report evidence area.
+  onAttachReportPhoto: (
+    source: 'camera' | 'library',
+    contextNote?: string | null,
+  ) => Promise<void>;
   onRemoveReportPhoto: (evidenceId: string) => Promise<void>;
   onSubmitReport: () => Promise<void>;
   onRetryReportSync: () => Promise<void>;
@@ -301,6 +309,10 @@ export function VisualProductShell({
 }: VisualProductShellProps) {
   const scrollRef = useRef<ScrollView>(null);
   const [route, setRoute] = useState<VisualRoute>('dashboard');
+  // Story 8.7 AC 8: maintain an in-app route history stack so the Android
+  // hardware back button and the visible Voltar affordance can navigate back
+  // through the user's screen history before falling through to the OS minimize.
+  const routeHistoryRef = useRef<VisualRoute[]>([]);
   const [activeFilter, setActiveFilter] = useState<VisualTagCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDemoTag, setSelectedDemoTag] = useState<VisualTagSummary | null>(null);
@@ -469,8 +481,61 @@ export function VisualProductShell({
     if (shouldScrollRouteToTop(route, nextRoute)) {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
     }
+    if (route !== nextRoute) {
+      // Push the route we're leaving onto the history stack so hardware-back
+      // and the in-app Voltar affordance can return to it.
+      routeHistoryRef.current.push(route);
+    }
     setRoute(nextRoute);
   }
+
+  // Story 8.7 AC 8/9: in-app back returns to the previously-pushed route. When
+  // the history stack is empty we return `false` so Android falls through to
+  // its default minimize/exit behavior.
+  function popRoute(): boolean {
+    if (routeHistoryRef.current.length === 0) {
+      return false;
+    }
+    const previousRoute = routeHistoryRef.current.pop();
+    if (!previousRoute) {
+      return false;
+    }
+    setShellMessage(null);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    setRoute(previousRoute);
+    return true;
+  }
+
+  // Story 8.7 AC 1/9: tapping the TagWise logo or the Inicio affordance returns
+  // the user to the dashboard while clearing the in-app history.
+  function goHome() {
+    routeHistoryRef.current = [];
+    setShellMessage(null);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    setRoute('dashboard');
+  }
+
+  // Story 8.7 AC 8: register the Android hardware-back listener. When the
+  // QR scanner modal is open we close it first; otherwise we attempt an in-app
+  // pop. Returning `false` lets the OS handle the back press (minimize) when
+  // we have no history to pop.
+  useEffect(() => {
+    const handleHardwareBack = (): boolean => {
+      if (qrScannerVisible) {
+        onCancelQrScanner();
+        return true;
+      }
+      return popRoute();
+    };
+    const subscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      handleHardwareBack,
+    );
+    return () => {
+      subscription.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrScannerVisible, onCancelQrScanner]);
 
   function openCalculator(returnRoute: VisualRoute = route) {
     setCalculatorReturnRoute(returnRoute);
@@ -727,6 +792,7 @@ export function VisualProductShell({
   }
 
   return (
+    <ShellNavigationContext.Provider value={{ goHome, popRoute }}>
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <KeyboardAvoidingView
@@ -825,6 +891,7 @@ export function VisualProductShell({
             variableRangeLabel={model.variableRangeLabel}
             onBack={() => openRoute('dashboard')}
             onOpenCalculation={() => void handleOpenExecutionRoute('calculation')}
+            onOpenCalculator={() => openCalculator('detail')}
             onOpenDiagnosis={() => void handleOpenExecutionRoute('diagnosis')}
             onOpenHistory={() => void handleOpenExecutionRoute('history')}
             onOpenReport={() => void handleOpenExecutionRoute('report')}
@@ -865,6 +932,9 @@ export function VisualProductShell({
               stages={executionStages}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
+              onAttachExecutionPhoto={(source, contextNote) =>
+                void onAttachReportPhoto(source, contextNote)
+              }
               onBack={() => openRoute('detail')}
               onOpenCalculator={() => openCalculator('calculation')}
               onOpenStage={handleOpenStageRoute}
@@ -890,6 +960,9 @@ export function VisualProductShell({
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
               stages={executionStages}
+              onAttachExecutionPhoto={(source, contextNote) =>
+                void onAttachReportPhoto(source, contextNote)
+              }
               onBack={() => openRoute('detail')}
               onInputModeChange={setLoopInputMode}
               onOpenCalculator={() => openCalculator('loop-test')}
@@ -936,6 +1009,9 @@ export function VisualProductShell({
               stages={executionStages}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
+              onAttachExecutionPhoto={(source, contextNote) =>
+                void onAttachReportPhoto(source, contextNote)
+              }
               onBack={() => openRoute('detail')}
               onChecklistOutcomeChange={onChecklistOutcomeChange}
               onObservationNotesChange={onObservationNotesChange}
@@ -1012,6 +1088,7 @@ export function VisualProductShell({
       </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
+    </ShellNavigationContext.Provider>
   );
 }
 
@@ -1099,11 +1176,12 @@ function DashboardScreen({
   qrScanResult: LocalQrScanResult | null;
   qrScannerVisible: boolean;
 }) {
+  const navigation = useShellNavigation();
   return (
     <>
       <View style={styles.dashboardHeader}>
         <View>
-          <TagWiseLogo large />
+          <TagWiseLogo large onPress={navigation?.goHome} />
           <Text style={styles.headerSubtitle}>Campo, calculo e relatorio por tag</Text>
         </View>
       </View>
@@ -1683,7 +1761,62 @@ function FieldCalculatorScreen({
   onChange: (key: keyof FieldCalculatorInput, value: string) => void;
   onPrefillFromSelectedTag: () => void;
 }) {
+  // Story 8.7 AC 3:
+  //   (a) explicit Calcular button + visible Resultado panel (no auto-update).
+  //   (b) Conversao / Loop mode toggle. Loop mode restores the 5/10-point
+  //       helper that Story 8.6 moved out of the calculator. It is a helper
+  //       only — does not persist to any instrument execution.
+  const [helperMode, setHelperMode] = useState<'conversion' | 'loop'>('conversion');
+  const [showResult, setShowResult] = useState(false);
+  const [needsRecalculate, setNeedsRecalculate] = useState(false);
+  const [loopHelperPoints, setLoopHelperPoints] = useState<LoopTestPoint[]>(() =>
+    createDefaultLoopPoints(5),
+  );
+  const [loopHelperInputMode, setLoopHelperInputMode] = useState<LoopPointInputMode>('pv');
+  const [loopShowResult, setLoopShowResult] = useState(false);
+
   const result = calculateFieldValue(draft);
+
+  // Reset visibility when the user changes inputs after a result is shown so
+  // the panel does not silently lie about a stale value.
+  function handleInputChange(key: keyof FieldCalculatorInput, value: string) {
+    onChange(key, value);
+    if (showResult) {
+      setNeedsRecalculate(true);
+    }
+  }
+  function handleCalculate() {
+    setShowResult(true);
+    setNeedsRecalculate(false);
+  }
+
+  function handleLoopPointChange(pointId: string, key: 'expected' | 'measured', value: string) {
+    setLoopHelperPoints((current) => updateLoopPoint(current, pointId, key, value));
+    if (loopShowResult) {
+      setLoopShowResult(false);
+    }
+  }
+  function handleLoopPointCountChange(rawValue: string) {
+    const parsed = Number(rawValue.replace(',', '.'));
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    setLoopHelperPoints((current) => normalizeLoopPointCount(current, parsed));
+    if (loopShowResult) {
+      setLoopShowResult(false);
+    }
+  }
+
+  const loopResult =
+    helperMode === 'loop'
+      ? calculateLoopTest({
+          points: loopHelperPoints,
+          inputMode: loopHelperInputMode,
+          processMin: draft.processMin,
+          processMax: draft.processMax,
+          tolerance: draft.tolerance,
+        })
+      : null;
 
   return (
     <>
@@ -1697,90 +1830,300 @@ function FieldCalculatorScreen({
         </Pressable>
       ) : null}
 
-      <View style={styles.connectionCard}>
-        <Text style={styles.sectionTitle}>Conversor rapido</Text>
-        <PickerChips
-          label="Modo"
-          options={['pv-to-ma', 'ma-to-pv', 'pv-to-percent', 'ma-to-percent', 'percent-to-ma', 'error']}
-          value={draft.mode}
-          onChange={(value) => onChange('mode', value)}
-        />
-        <View style={styles.twoColumnRow}>
+      <View style={styles.pickerChipRow}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setHelperMode('conversion')}
+          style={[
+            styles.pickerChip,
+            helperMode === 'conversion' ? styles.pickerChipActive : null,
+          ]}
+        >
+          <Text
+            style={[
+              styles.pickerChipText,
+              helperMode === 'conversion' ? styles.pickerChipTextActive : null,
+            ]}
+          >
+            Modo: Conversao
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setHelperMode('loop')}
+          style={[
+            styles.pickerChip,
+            helperMode === 'loop' ? styles.pickerChipActive : null,
+          ]}
+        >
+          <Text
+            style={[
+              styles.pickerChipText,
+              helperMode === 'loop' ? styles.pickerChipTextActive : null,
+            ]}
+          >
+            Modo: Loop
+          </Text>
+        </Pressable>
+      </View>
+
+      {helperMode === 'conversion' ? (
+        <>
+          <View style={styles.connectionCard}>
+            <Text style={styles.sectionTitle}>Conversor rapido</Text>
+            <PickerChips
+              label="Modo"
+              options={['pv-to-ma', 'ma-to-pv', 'pv-to-percent', 'ma-to-percent', 'percent-to-ma', 'error']}
+              value={draft.mode}
+              onChange={(value) => handleInputChange('mode', value)}
+            />
+            <View style={styles.twoColumnRow}>
+              <TextInput
+                autoCorrect={false}
+                keyboardType="numeric"
+                onChangeText={(value) => handleInputChange('processMin', value)}
+                placeholder="PV min"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, styles.flexOne]}
+                value={draft.processMin}
+              />
+              <TextInput
+                autoCorrect={false}
+                keyboardType="numeric"
+                onChangeText={(value) => handleInputChange('processMax', value)}
+                placeholder="PV max"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, styles.flexOne]}
+                value={draft.processMax}
+              />
+            </View>
+            <View style={styles.twoColumnRow}>
+              <TextInput
+                autoCorrect={false}
+                onChangeText={(value) => handleInputChange('unit', value)}
+                placeholder="Unidade"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, styles.flexOne]}
+                value={draft.unit}
+              />
+              <TextInput
+                autoCorrect={false}
+                keyboardType="numeric"
+                onChangeText={(value) => handleInputChange('value', value)}
+                placeholder="Valor"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, styles.flexOne]}
+                value={draft.value}
+              />
+            </View>
+            <View style={styles.twoColumnRow}>
+              <TextInput
+                autoCorrect={false}
+                keyboardType="numeric"
+                onChangeText={(value) => handleInputChange('expected', value)}
+                placeholder="Esperado"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, styles.flexOne]}
+                value={draft.expected}
+              />
+              <TextInput
+                autoCorrect={false}
+                keyboardType="numeric"
+                onChangeText={(value) => handleInputChange('measured', value)}
+                placeholder="Medido"
+                placeholderTextColor={colors.textSubtle}
+                style={[styles.darkInput, styles.flexOne]}
+                value={draft.measured}
+              />
+            </View>
+            <TextInput
+              autoCorrect={false}
+              keyboardType="numeric"
+              onChangeText={(value) => handleInputChange('tolerance', value)}
+              placeholder="Tolerancia"
+              placeholderTextColor={colors.textSubtle}
+              style={styles.darkInput}
+              value={draft.tolerance}
+            />
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleCalculate}
+              style={styles.fullWidthPrimary}
+              testID="tagwise/calculator/calcular"
+            >
+              <Text style={styles.fullWidthPrimaryLabel}>Calcular</Text>
+            </Pressable>
+            {needsRecalculate ? (
+              <Text style={styles.smallGhostLabel}>
+                Voce mudou um valor. Toque em Calcular novamente para atualizar o resultado.
+              </Text>
+            ) : null}
+          </View>
+
+          {showResult ? (
+            <View style={styles.resultPanel}>
+              <Text style={styles.kicker}>RESULTADO</Text>
+              <Text style={styles.resultPanelTitle}>{result.label}</Text>
+              <Text style={styles.resultPanelDetail}>{result.detail}</Text>
+              {result.errorPercent !== null ? (
+                <Text style={styles.resultPanelDetail}>
+                  Erro percentual: {result.errorPercent.toLocaleString('pt-BR')}%
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <View style={styles.connectionCard}>
+          <Text style={styles.sectionTitle}>Helper de loop</Text>
+          <Text style={styles.pendingText}>
+            Modo helper. Nao salva resultado em teste — use o teste de loop dentro do
+            instrumento para isso.
+          </Text>
+          <View style={styles.reportActionGrid}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setLoopHelperInputMode('pv')}
+              style={[
+                styles.smallGhostButton,
+                loopHelperInputMode === 'pv' ? styles.smallActionButton : null,
+              ]}
+            >
+              <Text
+                style={
+                  loopHelperInputMode === 'pv'
+                    ? styles.smallActionLabel
+                    : styles.smallGhostLabel
+                }
+              >
+                Modo PV
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setLoopHelperInputMode('ma')}
+              style={[
+                styles.smallGhostButton,
+                loopHelperInputMode === 'ma' ? styles.smallActionButton : null,
+              ]}
+            >
+              <Text
+                style={
+                  loopHelperInputMode === 'ma'
+                    ? styles.smallActionLabel
+                    : styles.smallGhostLabel
+                }
+              >
+                Modo mA
+              </Text>
+            </Pressable>
+          </View>
+          <View style={styles.twoColumnRow}>
+            <TextInput
+              autoCorrect={false}
+              keyboardType="numeric"
+              onChangeText={(value) => handleInputChange('processMin', value)}
+              placeholder="PV min"
+              placeholderTextColor={colors.textSubtle}
+              style={[styles.darkInput, styles.flexOne]}
+              value={draft.processMin}
+            />
+            <TextInput
+              autoCorrect={false}
+              keyboardType="numeric"
+              onChangeText={(value) => handleInputChange('processMax', value)}
+              placeholder="PV max"
+              placeholderTextColor={colors.textSubtle}
+              style={[styles.darkInput, styles.flexOne]}
+              value={draft.processMax}
+            />
+          </View>
+          <View style={styles.twoColumnRow}>
+            <TextInput
+              autoCorrect={false}
+              onChangeText={(value) => handleInputChange('unit', value)}
+              placeholder="Unidade"
+              placeholderTextColor={colors.textSubtle}
+              style={[styles.darkInput, styles.flexOne]}
+              value={draft.unit}
+            />
+            <TextInput
+              autoCorrect={false}
+              keyboardType="numeric"
+              onChangeText={(value) => handleInputChange('tolerance', value)}
+              placeholder="Tolerancia"
+              placeholderTextColor={colors.textSubtle}
+              style={[styles.darkInput, styles.flexOne]}
+              value={draft.tolerance}
+            />
+          </View>
+          <Text style={styles.formLabel}>Quantidade de pontos (1 a 10)</Text>
           <TextInput
-            autoCorrect={false}
             keyboardType="numeric"
-            onChangeText={(value) => onChange('processMin', value)}
-            placeholder="PV min"
+            onChangeText={handleLoopPointCountChange}
+            placeholder="5"
             placeholderTextColor={colors.textSubtle}
-            style={[styles.darkInput, styles.flexOne]}
-            value={draft.processMin}
+            style={styles.darkInput}
+            value={`${loopHelperPoints.length}`}
           />
-          <TextInput
-            autoCorrect={false}
-            keyboardType="numeric"
-            onChangeText={(value) => onChange('processMax', value)}
-            placeholder="PV max"
-            placeholderTextColor={colors.textSubtle}
-            style={[styles.darkInput, styles.flexOne]}
-            value={draft.processMax}
-          />
-        </View>
-        <View style={styles.twoColumnRow}>
-          <TextInput
-            autoCorrect={false}
-            onChangeText={(value) => onChange('unit', value)}
-            placeholder="Unidade"
-            placeholderTextColor={colors.textSubtle}
-            style={[styles.darkInput, styles.flexOne]}
-            value={draft.unit}
-          />
-          <TextInput
-            autoCorrect={false}
-            keyboardType="numeric"
-            onChangeText={(value) => onChange('value', value)}
-            placeholder="Valor"
-            placeholderTextColor={colors.textSubtle}
-            style={[styles.darkInput, styles.flexOne]}
-            value={draft.value}
-          />
-        </View>
-        <View style={styles.twoColumnRow}>
-          <TextInput
-            autoCorrect={false}
-            keyboardType="numeric"
-            onChangeText={(value) => onChange('expected', value)}
-            placeholder="Esperado"
-            placeholderTextColor={colors.textSubtle}
-            style={[styles.darkInput, styles.flexOne]}
-            value={draft.expected}
-          />
-          <TextInput
-            autoCorrect={false}
-            keyboardType="numeric"
-            onChangeText={(value) => onChange('measured', value)}
-            placeholder="Medido"
-            placeholderTextColor={colors.textSubtle}
-            style={[styles.darkInput, styles.flexOne]}
-            value={draft.measured}
-          />
-        </View>
-        <TextInput
-          autoCorrect={false}
-          keyboardType="numeric"
-          onChangeText={(value) => onChange('tolerance', value)}
-          placeholder="Tolerancia"
-          placeholderTextColor={colors.textSubtle}
-          style={styles.darkInput}
-          value={draft.tolerance}
-        />
-        <View style={styles.pendingCard}>
-          <Text style={styles.pendingTitle}>{result.label}</Text>
-          <Text style={styles.pendingText}>{result.detail}</Text>
-          {result.errorPercent !== null ? (
-            <Text style={styles.pendingText}>Erro percentual: {result.errorPercent.toLocaleString('pt-BR')}%</Text>
+          {loopHelperPoints.map((point) => (
+            <View key={point.id} style={styles.loopPointCard}>
+              <View style={styles.loopPointHeader}>
+                <Text style={styles.historyTitle}>Ponto {point.setpointPercent}%</Text>
+              </View>
+              <View style={styles.loopInputGrid}>
+                <View style={styles.flexOne}>
+                  <Text style={styles.formLabel}>Esperado ({loopHelperInputMode})</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    onChangeText={(value) => handleLoopPointChange(point.id, 'expected', value)}
+                    placeholder="Esperado"
+                    placeholderTextColor={colors.textSubtle}
+                    style={styles.darkInput}
+                    value={point.expected}
+                  />
+                </View>
+                <View style={styles.flexOne}>
+                  <Text style={styles.formLabel}>Medido ({loopHelperInputMode})</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    onChangeText={(value) => handleLoopPointChange(point.id, 'measured', value)}
+                    placeholder="Medido"
+                    placeholderTextColor={colors.textSubtle}
+                    style={styles.darkInput}
+                    value={point.measured}
+                  />
+                </View>
+              </View>
+            </View>
+          ))}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setLoopShowResult(true)}
+            style={styles.fullWidthPrimary}
+            testID="tagwise/calculator/calcular-loop"
+          >
+            <Text style={styles.fullWidthPrimaryLabel}>Calcular loop</Text>
+          </Pressable>
+          {loopShowResult && loopResult ? (
+            <View style={styles.resultPanel}>
+              <Text style={styles.kicker}>RESULTADO DO LOOP</Text>
+              <Text style={styles.resultPanelTitle}>{loopResult.summary.overallLabel}</Text>
+              <Text style={styles.resultPanelDetail}>
+                {loopResult.summary.passedCount} aprovados, {loopResult.summary.failedCount}{' '}
+                fora da tolerancia, {loopResult.summary.pendingCount} pendentes.
+              </Text>
+              {loopResult.rows.map((row) => (
+                <Text key={row.id} style={styles.resultPanelDetail}>
+                  Ponto {row.setpointPercent}%: erro {row.error === null ? 'pendente' : row.error}
+                  {row.errorPercent !== null ? ` (${row.errorPercent}%)` : ''} —{' '}
+                  {row.passed === null ? 'pendente' : row.passed ? 'OK' : 'falha'}
+                </Text>
+              ))}
+            </View>
           ) : null}
         </View>
-      </View>
+      )}
 
       {canApplyToTest ? (
         <View style={styles.connectionCard}>
@@ -2150,6 +2493,7 @@ function TagDetailScreen({
   variableRangeLabel,
   onBack,
   onOpenCalculation,
+  onOpenCalculator,
   onOpenDiagnosis,
   onOpenHistory,
   onOpenReport,
@@ -2162,6 +2506,7 @@ function TagDetailScreen({
   variableRangeLabel: string;
   onBack: () => void;
   onOpenCalculation: () => void;
+  onOpenCalculator: () => void;
   onOpenDiagnosis: () => void;
   onOpenHistory: () => void;
   onOpenReport: () => void;
@@ -2254,21 +2599,31 @@ function TagDetailScreen({
         <View style={styles.resultGrid}>
           <Pressable accessibilityRole="button" onPress={onOpenCalculation} style={styles.resultTile}>
             <Text style={styles.resultIcon}>✓</Text>
-            <Text style={styles.resultTitle}>{selectedExecutionTemplateId ? 'Pronto' : 'Template'}</Text>
+            {/* Story 8.7 AC 8: replace the raw "Template / necessario" tile with
+                technician-facing PT-BR copy that depends on selection state. */}
+            <Text style={styles.resultTitle}>
+              {selectedExecutionTemplateId ? 'Pronto para medir' : 'Selecione um teste'}
+            </Text>
             <Text style={styles.resultSubtitle}>
-              {selectedExecutionTemplateId ? 'selecionado' : 'necessario'}
+              {selectedExecutionTemplateId ? 'toque para abrir' : 'lista abaixo'}
             </Text>
           </Pressable>
           <Pressable accessibilityRole="button" onPress={onOpenHistory} style={styles.resultTile}>
             <Text style={styles.resultIcon}>▥</Text>
-            <Text style={styles.resultTitle}>{selectedTagContext?.historyPreview.lastResult ?? 'Historico'}</Text>
+            <Text style={styles.resultTitle}>
+              {toHistoryResultLabel(selectedTagContext?.historyPreview.lastResult)}
+            </Text>
             <Text style={styles.resultSubtitle}>{selectedTagContext?.historyPreview.state ?? 'demo'}</Text>
           </Pressable>
         </View>
       </View>
 
       <View style={styles.actionGrid}>
-        <ActionTile active icon="▦" label="Calcular" onPress={onOpenCalculation} />
+        {/* Story 8.7 AC 2: the bottom "Calcular" action opens the standalone
+            calculator helper, not the measurement screen. The measurement
+            screen is reachable via the template row "Iniciar" and the
+            result tile above. */}
+        <ActionTile active icon="▦" label="Calcular" onPress={onOpenCalculator} />
         <ActionTile icon="⇄" label="Comparar" onPress={onOpenHistory} />
         <ActionTile highlight icon="⌁" label="Diagnosticar" onPress={onOpenDiagnosis} />
         <ActionTile icon="▤" label="Registrar" onPress={onOpenReport} />
@@ -2282,6 +2637,7 @@ function ServiceCalculationScreen({
   stages,
   selectedTag,
   shellMessage,
+  onAttachExecutionPhoto,
   onBack,
   onOpenCalculator,
   onOpenStage,
@@ -2292,6 +2648,7 @@ function ServiceCalculationScreen({
   stages: VisualExecutionStage[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
+  onAttachExecutionPhoto: (source: 'camera' | 'library', contextNote: string | null) => void;
   onBack: () => void;
   onOpenCalculator: () => void;
   onOpenStage: (route: VisualStageRoute) => void;
@@ -2404,6 +2761,11 @@ function ServiceCalculationScreen({
       >
         <Text style={styles.fullWidthPrimaryLabel}>Salvar calculo local</Text>
       </Pressable>
+      <ExecutionPhotoActions
+        contextNote={null}
+        editable={calculation.editable}
+        onAttach={onAttachExecutionPhoto}
+      />
       <View style={styles.nextActionPanel}>
         <Text style={styles.pendingTitle}>Proximo passo</Text>
         <Text style={styles.pendingText}>
@@ -2445,6 +2807,10 @@ function ServiceCalculationScreen({
           <Text style={styles.pendingText}>{conversionResult.detail}</Text>
         </View>
       ) : null}
+      <NavigationAffordanceRow
+        onProximo={() => onOpenStage('history')}
+        proximoLabel="Proximo: Comparar"
+      />
     </>
   );
 }
@@ -2456,6 +2822,7 @@ function LoopExecutionScreen({
   selectedTag,
   shellMessage,
   stages,
+  onAttachExecutionPhoto,
   onBack,
   onInputModeChange,
   onOpenCalculator,
@@ -2470,6 +2837,7 @@ function LoopExecutionScreen({
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
   stages: VisualExecutionStage[];
+  onAttachExecutionPhoto: (source: 'camera' | 'library', contextNote: string | null) => void;
   onBack: () => void;
   onInputModeChange: (mode: LoopPointInputMode) => void;
   onOpenCalculator: () => void;
@@ -2592,6 +2960,37 @@ function LoopExecutionScreen({
           <Text style={styles.pendingText}>
             Percentual medido {formatNullableNumber(row.measuredPercent)}% | Erro {formatNullableNumber(row.error)} {inputMode} ({formatNullableNumber(row.errorPercent)}%)
           </Text>
+          {/* Story 8.7 AC 7: per-loop-point camera/gallery so a photo taken
+              when an instrument misbehaves at e.g. 50% carries that context
+              through to the report evidence area. */}
+          <View style={styles.reportActionGrid}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!calculation.editable}
+              onPress={() =>
+                onAttachExecutionPhoto('camera', `Ponto de loop ${row.setpointPercent}%`)
+              }
+              style={[
+                styles.smallActionButton,
+                !calculation.editable ? styles.disabledAction : null,
+              ]}
+            >
+              <Text style={styles.smallActionLabel}>Foto ponto {row.setpointPercent}%</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!calculation.editable}
+              onPress={() =>
+                onAttachExecutionPhoto('library', `Ponto de loop ${row.setpointPercent}%`)
+              }
+              style={[
+                styles.smallGhostButton,
+                !calculation.editable ? styles.disabledAction : null,
+              ]}
+            >
+              <Text style={styles.smallGhostLabel}>Galeria</Text>
+            </Pressable>
+          </View>
         </View>
       ))}
 
@@ -2617,6 +3016,10 @@ function LoopExecutionScreen({
           </Pressable>
         </View>
       </View>
+      <NavigationAffordanceRow
+        onProximo={() => onOpenStage('history')}
+        proximoLabel="Proximo: Comparar"
+      />
     </>
   );
 }
@@ -2778,7 +3181,19 @@ function ServiceHistoryScreen({
             ))}
           </View>
         ) : (
-          <InlineMessage text={selectedPoint?.emptyLabel ?? 'Sem dados suficientes para grafico.'} />
+          // Story 8.7 AC 6/10: insufficient-history is no longer a dead text
+          // card. Tapping it routes to diagnosis so the technician can add the
+          // risk justification that explains the missing history.
+          <Pressable
+            accessibilityRole="button"
+            onPress={onOpenDiagnosis}
+            style={styles.pendingCard}
+          >
+            <Text style={styles.pendingTitle}>
+              {selectedPoint?.emptyLabel ?? 'Sem dados suficientes para grafico.'}
+            </Text>
+            <Text style={styles.smallGhostLabel}>Tocar para justificar no checklist</Text>
+          </Pressable>
         )}
         <Text style={styles.pendingText}>{history.summary}</Text>
         <Text style={styles.pendingText}>{history.detail}</Text>
@@ -2797,13 +3212,28 @@ function ServiceHistoryScreen({
           </View>
         ))
       ) : (
-        <InlineMessage text={selectedPoint?.emptyLabel ?? 'Nenhum campo de historico local esta em cache para esta tag.'} />
+        // Story 8.7 AC 6/10: empty timeline is Pressable to route into diagnosis
+        // for the risk justification step.
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenDiagnosis}
+          style={styles.pendingCard}
+        >
+          <Text style={styles.pendingTitle}>
+            {selectedPoint?.emptyLabel ?? 'Nenhum campo de historico local esta em cache para esta tag.'}
+          </Text>
+          <Text style={styles.smallGhostLabel}>Tocar para justificar no checklist</Text>
+        </Pressable>
       )}
 
       <Pressable accessibilityRole="button" onPress={onOpenDiagnosis} style={styles.fullWidthPrimary}>
         <Text style={styles.fullWidthPrimaryIcon}>G</Text>
         <Text style={styles.fullWidthPrimaryLabel}>Abrir orientacao local</Text>
       </Pressable>
+      <NavigationAffordanceRow
+        onProximo={onOpenDiagnosis}
+        proximoLabel="Proximo: Checklist"
+      />
     </>
   );
 }
@@ -2880,6 +3310,7 @@ function ServiceGuidanceScreen({
   stages,
   selectedTag,
   shellMessage,
+  onAttachExecutionPhoto,
   onBack,
   onChecklistOutcomeChange,
   onObservationNotesChange,
@@ -2892,6 +3323,7 @@ function ServiceGuidanceScreen({
   stages: VisualExecutionStage[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
+  onAttachExecutionPhoto: (source: 'camera' | 'library', contextNote: string | null) => void;
   onBack: () => void;
   onChecklistOutcomeChange: (
     checklistItemId: string,
@@ -3015,9 +3447,20 @@ function ServiceGuidanceScreen({
         <Text style={styles.fullWidthPrimaryLabel}>Salvar checklist e observacoes</Text>
       </Pressable>
 
+      <ExecutionPhotoActions
+        contextNote="Checklist"
+        editable={guidance.editable}
+        label="Adicione foto do equipamento, da medicao ou do contexto local do checklist."
+        onAttach={onAttachExecutionPhoto}
+      />
+
       <Pressable accessibilityRole="button" onPress={onOpenReport} style={styles.secondaryFullWidth}>
         <Text style={styles.returnLabel}>Continuar para relatorio</Text>
       </Pressable>
+      <NavigationAffordanceRow
+        onProximo={onOpenReport}
+        proximoLabel="Proximo: Relatorio"
+      />
     </>
   );
 }
@@ -3264,7 +3707,12 @@ function ServiceReportScreen({
                 {attachment.source} - {attachment.syncState}
               </Text>
               {attachment.syncIssue ? (
-                <Text style={styles.pendingText}>{attachment.syncIssue}</Text>
+                <Text style={styles.pendingText}>
+                  {/* Story 8.7 AC 12: classify per-attachment errors so the
+                      technician sees an actionable PT-BR message rather than
+                      raw fetch failure text. */}
+                  {classifySyncError({ errorMessage: attachment.syncIssue }).copy}
+                </Text>
               ) : null}
               <Pressable
                 accessibilityRole="button"
@@ -3347,6 +3795,15 @@ function ServiceReportScreen({
       <Text style={styles.sectionTitle}>Sincronizacao</Text>
       <View style={styles.pendingCard}>
         <Text style={styles.pendingTitle}>{syncLabel(report.syncBadge.state)}</Text>
+        {/* Story 8.7 AC 12: when the badge state is sync-issue, surface a clear
+            PT-BR classification line above the raw detail rows so the user
+            understands whether the failure is offline, session-expired,
+            backend-degraded, or unknown. */}
+        {report.syncBadge.state === 'sync-issue' ? (
+          <Text style={styles.pendingText}>
+            {classifySyncError({ errorMessage: report.syncBadge.detail }).copy}
+          </Text>
+        ) : null}
         {report.syncDetailRows.map((row) => (
           <Text key={row.label} style={styles.pendingText}>
             {row.label}: {row.value}
@@ -3403,6 +3860,7 @@ function ServiceReportScreen({
           </Text>
         </View>
       ) : null}
+      <NavigationAffordanceRow />
     </>
   );
 }
@@ -3944,21 +4402,152 @@ function NoSelectedTagScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-function TagWiseLogo({ large = false }: { large?: boolean }) {
-  return (
+// Story 8.7 AC 1/8/9: shell-wide navigation context so any sub-component
+// (ScreenHeader, footer affordances, pending-action cards) can reach the
+// shell's goHome / popRoute without prop-drilling. The context defaults to
+// no-ops so signed-out screens render the plain logo and do nothing on press.
+interface ShellNavigation {
+  goHome: () => void;
+  popRoute: () => boolean;
+}
+const ShellNavigationContext = createContext<ShellNavigation | null>(null);
+function useShellNavigation(): ShellNavigation | null {
+  return useContext(ShellNavigationContext);
+}
+
+function TagWiseLogo({
+  large = false,
+  onPress,
+}: {
+  large?: boolean;
+  onPress?: () => void;
+}) {
+  const label = (
     <Text style={[styles.logo, large ? styles.logoLarge : null]}>
       Tag<Text style={styles.logoAccent}>Wise</Text><Text style={styles.logoMark}>⌜</Text>
     </Text>
   );
+  // Story 8.7 AC 1: when an onPress (typically goHome) is supplied, the logo
+  // becomes a Pressable that returns the user to the dashboard. Authenticated
+  // screens supply this; the signed-out login screen renders the plain text.
+  if (!onPress) {
+    return label;
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Voltar para o painel"
+      hitSlop={8}
+      onPress={onPress}
+      testID="tagwise/header/logo-home"
+    >
+      {label}
+    </Pressable>
+  );
 }
 
-function ScreenHeader({ onBack }: { onBack: () => void }) {
+// Story 8.7 AC 9: every execution-phase screen renders this row near the bottom
+// so Voltar / Inicio / Proximo are visibly discoverable. The component consumes
+// the shell navigation context so individual screens don't need to thread
+// goHome/popRoute through their props. `onProximo` is optional — pass it when
+// the screen knows the next stage; omit it to render only Voltar + Inicio.
+function NavigationAffordanceRow({
+  onProximo,
+  proximoLabel = 'Proximo',
+}: {
+  onProximo?: () => void;
+  proximoLabel?: string;
+}) {
+  const navigation = useShellNavigation();
+  if (!navigation) {
+    return null;
+  }
+  return (
+    <View style={styles.reportActionGrid}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={navigation.popRoute}
+        style={styles.smallGhostButton}
+      >
+        <Text style={styles.smallGhostLabel}>Voltar</Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        onPress={navigation.goHome}
+        style={styles.smallGhostButton}
+      >
+        <Text style={styles.smallGhostLabel}>Inicio</Text>
+      </Pressable>
+      {onProximo ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={onProximo}
+          style={styles.smallActionButton}
+        >
+          <Text style={styles.smallActionLabel}>{proximoLabel}</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+// Story 8.7 AC 7: small inline camera/gallery row reusable across loop test,
+// single-point calculation, and checklist/guidance screens. The contextNote
+// (e.g. "Ponto de loop 50%") is carried on the photo so the report evidence
+// area can render which sub-step the photo came from. Kept inline in this
+// file per the story's "no new shared component files" guardrail.
+function ExecutionPhotoActions({
+  contextNote,
+  editable = true,
+  label,
+  onAttach,
+}: {
+  contextNote: string | null;
+  editable?: boolean;
+  label?: string;
+  onAttach: (source: 'camera' | 'library', contextNote: string | null) => void;
+}) {
+  return (
+    <View style={styles.nextActionPanel}>
+      <Text style={styles.pendingTitle}>Foto da execucao</Text>
+      <Text style={styles.pendingText}>
+        {label ??
+          'Anexe uma foto desta etapa quando o instrumento se comportar de forma diferente ou para registrar evidencia.'}
+      </Text>
+      <View style={styles.reportActionGrid}>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!editable}
+          onPress={() => onAttach('camera', contextNote)}
+          style={[styles.smallActionButton, !editable ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallActionLabel}>Tirar foto</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={!editable}
+          onPress={() => onAttach('library', contextNote)}
+          style={[styles.smallGhostButton, !editable ? styles.disabledAction : null]}
+        >
+          <Text style={styles.smallGhostLabel}>Da galeria</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function ScreenHeader({ onBack, onPressLogo }: { onBack: () => void; onPressLogo?: () => void }) {
+  // Story 8.7 AC 1: when no explicit onPressLogo is provided, fall back to the
+  // shell's goHome via context. Signed-out screens that render ScreenHeader
+  // (none today) would simply not be wrapped in the provider.
+  const navigation = useShellNavigation();
+  const resolvedOnPressLogo = onPressLogo ?? navigation?.goHome;
   return (
     <View style={styles.screenHeader}>
       <Pressable accessibilityRole="button" onPress={onBack} style={styles.backButton}>
         <Text style={styles.backButtonLabel}>‹</Text>
       </Pressable>
-      <TagWiseLogo />
+      <TagWiseLogo onPress={resolvedOnPressLogo} />
     </View>
   );
 }
@@ -4501,9 +5090,39 @@ function toChecklistOutcomeLabel(value: SharedExecutionChecklistOutcome) {
     case 'incomplete':
       return 'Incompleto';
     case 'skipped':
-      return 'Ignorado';
+      return 'Pulado';
     default:
       return 'Pendente';
+  }
+}
+
+// Story 8.7 AC 4/9: translate raw history-result enums (e.g. backend seed values
+// like 'pass-with-note', 'pass', 'fail') into technician-facing PT-BR copy so
+// they never leak into the instrument detail screen as raw kebab-case strings.
+function toHistoryResultLabel(value: string | null | undefined): string {
+  if (!value) {
+    return 'Historico';
+  }
+  const normalized = value.toString().trim().toLowerCase();
+  switch (normalized) {
+    case 'pass':
+    case 'passed':
+    case 'ok':
+      return 'Aprovado';
+    case 'pass-with-note':
+      return 'Aprovado com observacao';
+    case 'fail':
+    case 'failed':
+      return 'Falha';
+    case 'incomplete':
+      return 'Incompleto';
+    case 'skipped':
+      return 'Pulado';
+    case 'unavailable':
+    case 'unknown':
+      return 'Indisponivel';
+    default:
+      return value;
   }
 }
 
@@ -5206,6 +5825,28 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     marginBottom: spacing.sm,
     gap: spacing.xs,
+  },
+  // Story 8.7 AC 3: dedicated calculator Resultado panel — accent dark-blue,
+  // NOT pendingCard's warning styling. The user must read "result" not
+  // "warning" when they look at this.
+  resultPanel: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: '#1F4D7A',
+    backgroundColor: '#10243A',
+    padding: spacing.md,
+    marginVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  resultPanelTitle: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  resultPanelDetail: {
+    color: colors.text,
+    fontSize: 16,
+    lineHeight: 22,
   },
   reportSummaryBlock: {
     borderBottomWidth: 1,

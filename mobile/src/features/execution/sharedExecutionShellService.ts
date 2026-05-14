@@ -397,6 +397,7 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
     photo: SharedExecutionPhotoAttachmentInput,
+    options?: { contextNote?: string | null },
   ): Promise<SharedExecutionShell> {
     if (isReportLockedForTechnician(shell.report)) {
       return shell;
@@ -411,6 +412,14 @@ export class SharedExecutionShellService {
       fileName: buildPhotoAttachmentFileName(shell, photo, updatedAt),
       sourceUri: photo.uri,
     });
+
+    // Story 8.7 AC 24: per-photo `contextNote` carries sub-step context (e.g.
+    // "Ponto de loop 50%"). Trim and treat empty strings as null. The canonical
+    // executionStepId union remains the 5 fixed values; this field is a
+    // disambiguator, not a step kind.
+    const trimmedContextNote = options?.contextNote?.trim() ?? null;
+    const contextNote: string | null =
+      trimmedContextNote && trimmedContextNote.length > 0 ? trimmedContextNote : null;
 
     await store.evidenceMetadata.saveEvidenceMetadata({
       evidenceId: buildPhotoEvidenceId(updatedAt),
@@ -427,6 +436,7 @@ export class SharedExecutionShellService {
         templateVersion: shell.template.version,
         draftReportId,
         executionStepId: toExecutionStepKind(shell.progress.currentStepId),
+        contextNote,
         source: photo.source,
         width: photo.width,
         height: photo.height,
@@ -1286,12 +1296,22 @@ function formatRiskHook(item: SharedExecutionRiskItem): string {
 }
 
 function buildSubmitBlockingHooks(riskItems: SharedExecutionRiskItem[]): string[] {
+  // Story 8.7 Finding #5: noncritical pending items (missing justifications on
+  // warning-severity risks, missing checklist outcomes, etc.) must NOT hard-block
+  // local submission. They continue to surface as pending notes on the report
+  // (handled by the report projection), but they no longer flip submitReadiness
+  // to 'blocked'. Only items whose severity is explicitly 'submit-block' — and
+  // minimum-evidence gaps elsewhere in the pipeline — are true blockers.
   const hooks = riskItems
     .filter((item) => item.severity === 'submit-block')
     .map((item) => `${item.title}.`);
 
   for (const item of riskItems) {
-    if (item.justificationRequired && item.justificationText.trim().length === 0) {
+    if (
+      item.severity === 'submit-block' &&
+      item.justificationRequired &&
+      item.justificationText.trim().length === 0
+    ) {
       hooks.push(`Justificativa obrigatoria: ${item.title}.`);
     }
   }
@@ -2448,6 +2468,7 @@ async function buildPhotoAttachments(
       return {
         evidenceId: record.evidenceId,
         executionStepId: payload.executionStepId,
+        contextNote: payload.contextNote ?? null,
         fileName: record.fileName,
         mimeType: record.mimeType,
         previewUri: await store.mediaSandbox.resolveFileUri(record.mediaRelativePath),
@@ -2501,6 +2522,10 @@ function parsePhotoAttachmentPayload(
       templateVersion: parsed.templateVersion,
       draftReportId: parsed.draftReportId,
       executionStepId: parsed.executionStepId,
+        contextNote:
+          typeof parsed.contextNote === 'string' || parsed.contextNote === null
+            ? parsed.contextNote
+            : null,
         source: parsed.source,
         width: typeof parsed.width === 'number' ? parsed.width : null,
         height: typeof parsed.height === 'number' ? parsed.height : null,

@@ -393,6 +393,72 @@ describe('EvidenceUploadOrchestrator', () => {
     await expect(runtime.repositories.localWorkState.getUnsyncedWorkCount()).resolves.toBe(0);
   });
 
+  it('submits the report for server validation even when a per-attachment sync fails', async () => {
+    // Story 8.7 Finding #11: photo failures must not block the report itself
+    // from reaching the supervisor. Per-photo state continues to mark sync-issue
+    // (existing behavior); the orchestrator still invokes submitReportForValidation
+    // and re-throws the first attachment error afterward so the caller's catch
+    // path can surface the photo issue.
+    const { runtime, store, shell, attachment, localFile } = await createFixture();
+    await seedReportDraftAndSubmitQueue(store, shell);
+    await seedEvidenceQueueItems(store, shell, attachment);
+    const syncEvidenceMetadata = vi.fn(async () => {
+      throw new Error('metadata service unavailable');
+    });
+    const submitReportForValidation = vi.fn(
+      async (
+        request: Parameters<EvidenceUploadApiClient['submitReportForValidation']>[0],
+      ) => ({
+        contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+        reportId: request.reportId,
+        serverReportVersion: 'server-report-version-finding-11',
+        reportState: 'submitted-pending-review' as const,
+        lifecycleState: 'Submitted - Pending Supervisor Review' as const,
+        syncState: 'synced' as const,
+        acceptedAt: '2026-04-23T14:30:00.000Z',
+      }),
+    );
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata,
+        authorizeEvidenceBinaryUpload: vi.fn(),
+        finalizeEvidenceBinaryUpload: vi.fn(),
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      localWorkState: runtime.repositories.localWorkState,
+      now: () => new Date('2026-04-23T14:20:00.000Z'),
+    });
+
+    await expect(
+      orchestrator.syncSubmittedReportEvidence(connectedSession, shell),
+    ).rejects.toThrow('metadata service unavailable');
+
+    // The report submission ran despite the photo failure.
+    expect(submitReportForValidation).toHaveBeenCalledTimes(1);
+    expect(submitReportForValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: shell.report.reportId,
+      }),
+    );
+    // Local report state advanced to submitted-pending-review.
+    const draftPayload = await loadReportDraftPayload(store, shell.report.reportId);
+    expect(draftPayload).toMatchObject({
+      state: 'submitted-pending-review',
+      syncState: 'synced',
+    });
+    // The submit queue item is cleared because the report was accepted.
+    await expect(loadSubmitQueuePayload(store, shell.report.reportId)).resolves.toBeNull();
+    // The photo remains in sync-issue for the user to retry.
+    const photoPayload = await loadPhotoPayload(store, attachment.evidenceId);
+    expect(photoPayload).toMatchObject({
+      syncState: 'sync-issue',
+      syncIssue: 'metadata service unavailable',
+    });
+    expect(existsSync(localFile)).toBe(true);
+  });
+
   it('cleans no-op evidence queue items when returned report resubmission is accepted with finalized photo evidence', async () => {
     const syncedAttachment = buildPhotoAttachment({
       metadataSyncedAt: '2026-04-23T14:10:00.000Z',
@@ -655,6 +721,7 @@ function buildPhotoAttachment(
   return {
     evidenceId: 'photo:20260423140500:orchestrator',
     executionStepId: 'guidance',
+    contextNote: null,
     fileName: 'field-photo.jpg',
     mimeType: 'image/jpeg',
     previewUri: 'field-photo.jpg',
