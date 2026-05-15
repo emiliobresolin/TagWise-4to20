@@ -100,6 +100,19 @@ export class UserPartitionedExecutionEvidenceRepository {
     return rows.map(mapExecutionEvidenceRow);
   }
 
+  async deleteForWorkPackage(workPackageId: string): Promise<void> {
+    // Story 8.13: drop all execution evidence rows for this work
+    // package so re-download starts fresh.
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_execution_evidence
+        WHERE owner_user_id = ?
+          AND work_package_id = ?;
+      `,
+      [this.ownerUserId, workPackageId],
+    );
+  }
+
   async saveEvidence(record: StoredExecutionEvidenceRecord): Promise<void> {
     await this.database.runAsync(
       `

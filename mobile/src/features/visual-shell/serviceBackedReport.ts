@@ -22,6 +22,11 @@ export interface VisualAiDiagnosisProjectionInput {
   detail?: string | null;
   generatedAt?: string | null;
   providerLabel?: string | null;
+  // Story 8.12 finding #5: backend already stores a provider failure
+  // reason (HTTP 401 "OpenAI diagnosis request failed", timeout, etc.).
+  // Mobile previously dropped it; now it threads through so the
+  // technician/supervisor card can show why the AI run failed.
+  failureReason?: string | null;
 }
 
 export interface VisualAiDiagnosisProjection {
@@ -31,6 +36,7 @@ export interface VisualAiDiagnosisProjection {
   summary: string | null;
   generatedAtLabel: string | null;
   providerLabel: string | null;
+  failureReason: string | null;
   blocking: false;
 }
 
@@ -83,6 +89,13 @@ export interface VisualReportProjection {
   canSubmit: boolean;
   canRetrySync: boolean;
   canRefreshServerStatus: boolean;
+  // Story 8.12 finding #2: visible "Devolvido pelo supervisor - relatorio
+  // invalidado" banner driven by the persisted invalidated flag. When
+  // truthy, the report screen renders a prominent block with the
+  // supervisor's return comment and the technician knows a new visit
+  // must be started.
+  invalidated: boolean;
+  invalidationReason: string | null;
   routeAfterSubmit: 'report';
   unavailableReason: string | null;
 }
@@ -128,6 +141,8 @@ export function buildVisualReportProjection(
       canSubmit: false,
       canRetrySync: false,
       canRefreshServerStatus: false,
+      invalidated: false,
+      invalidationReason: null,
       routeAfterSubmit: TECHNICIAN_REPORT_SUBMIT_ROUTE,
       unavailableReason:
         'Carregue um teste local da tag antes de revisar o rascunho do relatorio.',
@@ -135,8 +150,13 @@ export function buildVisualReportProjection(
   }
 
   const report = shell.report;
+  // Story 8.12 finding #2: invalidated drafts (supervisor returned the
+  // report) are never editable even if the underlying state would
+  // otherwise allow it. The technician must start a new visit instead.
+  const invalidated = Boolean(report.invalidated);
   const editable =
-    report.state === 'technician-owned-draft' || report.state === 'submitted-pending-sync';
+    !invalidated &&
+    (report.state === 'technician-owned-draft' || report.state === 'submitted-pending-sync');
   const manualInstrument = isManualInstrumentWorkPackageId(shell.workPackageId);
   const aggregateSyncState = syncDetail?.syncState ?? report.syncState;
   const syncIssueDetail =
@@ -199,13 +219,21 @@ export function buildVisualReportProjection(
     photoAttachments: shell.evidence.photoAttachments,
     aiDiagnosis: buildVisualAiDiagnosisProjection(aiDiagnosis),
     editable,
-    editLockReason: editable ? null : buildReportEditLockReason(report),
+    editLockReason: editable
+      ? null
+      : invalidated
+        ? `Relatorio devolvido pelo supervisor e marcado como invalido. Inicie uma nova visita para registrar correcoes.${
+            report.invalidationReason ? ` Motivo: ${report.invalidationReason}` : ''
+          }`
+        : buildReportEditLockReason(report),
     canSaveDraft: editable,
     canSubmit: editable && shell.guidance.submitReadiness === 'ready' && !manualInstrument,
     canRetrySync: Boolean(syncDetail?.canRetry),
     canRefreshServerStatus:
       report.state !== 'technician-owned-draft' &&
       (report.syncState === 'synced' || report.syncState === 'pending-validation'),
+    invalidated,
+    invalidationReason: report.invalidationReason ?? null,
     routeAfterSubmit: TECHNICIAN_REPORT_SUBMIT_ROUTE,
     unavailableReason: null,
   };
@@ -223,6 +251,7 @@ export function buildVisualAiDiagnosisProjection(
       summary: null,
       generatedAtLabel: null,
       providerLabel: null,
+      failureReason: null,
       blocking: false,
     };
   }
@@ -238,6 +267,7 @@ export function buildVisualAiDiagnosisProjection(
         summary: sanitizeAiSummary(input.summary),
         generatedAtLabel: formatTimestamp(input.generatedAt ?? null),
         providerLabel: input.providerLabel ?? null,
+        failureReason: null,
         blocking: false,
       };
     case 'pending':
@@ -250,18 +280,26 @@ export function buildVisualAiDiagnosisProjection(
         summary: null,
         generatedAtLabel: formatTimestamp(input.generatedAt ?? null),
         providerLabel: input.providerLabel ?? null,
+        failureReason: null,
         blocking: false,
       };
     case 'failed-nonblocking':
+      // Story 8.12 finding #5: when the provider call failed, the
+      // backend has the actual reason (e.g. "OpenAI diagnosis request
+      // failed with status 401" or a timeout message). Prefer that in
+      // the visible detail so the user understands what went wrong;
+      // also expose it as a discrete field for explicit rendering.
       return {
         state: 'failed-nonblocking',
         label: 'Diagnostico de IA falhou sem bloquear',
         detail:
+          input.failureReason ??
           input.detail ??
           'Nao foi possivel gerar o diagnostico de IA agora. O relatorio local continua salvo e pode seguir sem bloqueio.',
         summary: null,
         generatedAtLabel: formatTimestamp(input.generatedAt ?? null),
         providerLabel: input.providerLabel ?? null,
+        failureReason: input.failureReason ?? null,
         blocking: false,
       };
     default:
@@ -274,6 +312,7 @@ export function buildVisualAiDiagnosisProjection(
         summary: null,
         generatedAtLabel: formatTimestamp(input.generatedAt ?? null),
         providerLabel: input.providerLabel ?? null,
+        failureReason: null,
         blocking: false,
       };
   }
@@ -435,6 +474,58 @@ export function classifySyncError(input: SyncErrorInput): SyncErrorClassificatio
   }
 
   return SYNC_ERROR_UNKNOWN;
+}
+
+/**
+ * Story 8.8 D-02: map a per-photo `executionStepId` (the canonical step kind
+ * that produced the photo) into PT-BR short label. Used as the photo
+ * sub-step badge on both the technician report screen and the supervisor
+ * review screen. `null`/`undefined` indicates a pre-8.8 row or an unknown
+ * step kind — falls back to an explicit "Sem etapa" so the supervisor still
+ * gets a stable label.
+ */
+export function formatPhotoExecutionStepLabel(
+  stepId: string | null | undefined,
+): string {
+  switch (stepId) {
+    case 'instrument':
+      return 'Instrumento';
+    case 'calculation':
+      return 'Calculo';
+    case 'history':
+      return 'Comparativo';
+    case 'guidance':
+      return 'Checklist';
+    case 'report':
+      return 'Relatorio';
+    case 'context':
+      return 'Contexto da tag';
+    default:
+      return 'Sem etapa';
+  }
+}
+
+/**
+ * Story 8.8 D-02: combine the system-set sub-step badge (`contextNote`) with
+ * the canonical step label. Used as the subtitle under a photo card. Returns
+ * empty string when neither is meaningful.
+ */
+export function formatPhotoContextSubtitle(input: {
+  contextNote?: string | null;
+  executionStepId?: string | null;
+}): string {
+  const stepLabel = formatPhotoExecutionStepLabel(input.executionStepId);
+  const trimmedContextNote = input.contextNote?.trim() ?? '';
+
+  if (trimmedContextNote.length === 0) {
+    return stepLabel;
+  }
+
+  if (stepLabel === 'Sem etapa') {
+    return trimmedContextNote;
+  }
+
+  return `${stepLabel} - ${trimmedContextNote}`;
 }
 
 export function translateOperationalMessage(value: string | null | undefined): string {

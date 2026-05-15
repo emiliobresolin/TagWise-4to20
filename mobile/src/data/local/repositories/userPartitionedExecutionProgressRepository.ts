@@ -48,6 +48,20 @@ export class UserPartitionedExecutionProgressRepository {
     return row ? mapExecutionProgressRow(row) : null;
   }
 
+  async deleteForWorkPackage(workPackageId: string): Promise<void> {
+    // Story 8.13: drop every per-template execution progress row for
+    // this work package so a fresh re-download starts the technician
+    // back at the context step on each tag.
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_execution_progress
+        WHERE owner_user_id = ?
+          AND work_package_id = ?;
+      `,
+      [this.ownerUserId, workPackageId],
+    );
+  }
+
   async saveProgress(record: StoredExecutionProgressRecord): Promise<void> {
     await this.database.runAsync(
       `

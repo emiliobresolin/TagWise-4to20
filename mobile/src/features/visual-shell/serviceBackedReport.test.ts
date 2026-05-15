@@ -7,6 +7,8 @@ import {
   buildVisualReportProjection,
   classifySyncError,
   createVisualReportActions,
+  formatPhotoContextSubtitle,
+  formatPhotoExecutionStepLabel,
   TECHNICIAN_REPORT_SUBMIT_ROUTE,
 } from './serviceBackedReport';
 
@@ -209,6 +211,56 @@ describe('service-backed visual report adapter', () => {
     });
   });
 
+  // Story 8.12 finding #2: when the supervisor returns a report, the
+  // mobile draft is stamped `invalidated: true` plus the supervisor's
+  // return comment. The visual projection must reflect this as
+  // non-editable, non-submittable, with a clear edit-lock reason that
+  // includes the supervisor's "Motivo:" so the technician knows what to
+  // correct in a fresh visit.
+  it('marks supervisor-returned reports as invalidated and forces a new visit', () => {
+    const shell = buildShell({
+      reportState: 'technician-owned-draft',
+      invalidated: true,
+      invalidationReason: 'Loop test points fora da tolerancia em 75%.',
+    });
+    const projection = buildVisualReportProjection(shell, buildSyncDetail());
+
+    expect(projection.invalidated).toBe(true);
+    expect(projection.invalidationReason).toBe(
+      'Loop test points fora da tolerancia em 75%.',
+    );
+    expect(projection.editable).toBe(false);
+    expect(projection.canSaveDraft).toBe(false);
+    expect(projection.canSubmit).toBe(false);
+    expect(projection.editLockReason).toContain('invalido');
+    expect(projection.editLockReason).toContain('nova visita');
+    expect(projection.editLockReason).toContain(
+      'Loop test points fora da tolerancia em 75%.',
+    );
+  });
+
+  // Story 8.12 finding #5: when the provider failed (e.g. OpenAI 401 from
+  // a bad/missing API key) the backend stores the actual error string in
+  // `failureReason`. The visual projection must surface that as the
+  // visible `detail` and expose it as a discrete field so the technician
+  // and the supervisor cards can show why AI failed instead of the
+  // generic "Nao foi possivel..." line.
+  it('surfaces the backend failureReason when the AI provider failed', () => {
+    const projection = buildVisualAiDiagnosisProjection({
+      state: 'failed-nonblocking',
+      failureReason: 'OpenAI diagnosis request failed with status 401.',
+      providerLabel: 'openai',
+    });
+    expect(projection).toMatchObject({
+      state: 'failed-nonblocking',
+      detail: 'OpenAI diagnosis request failed with status 401.',
+      failureReason: 'OpenAI diagnosis request failed with status 401.',
+      providerLabel: 'openai',
+      blocking: false,
+    });
+  });
+
+
   it('keeps missing report shell nonblocking', () => {
     const report = buildVisualReportProjection(null, null);
 
@@ -264,6 +316,50 @@ describe('service-backed visual report adapter', () => {
       });
     });
   });
+
+  // Story 8.8 D-02 / D-04 / PT-BR sweep: helpers that translate per-photo
+  // sub-step kind and contextNote into a PT-BR subtitle. Critical because they
+  // are rendered on both technician report and supervisor review screens.
+  describe('formatPhotoExecutionStepLabel', () => {
+    it('maps each canonical step kind into a short PT-BR label', () => {
+      expect(formatPhotoExecutionStepLabel('instrument')).toBe('Instrumento');
+      expect(formatPhotoExecutionStepLabel('calculation')).toBe('Calculo');
+      expect(formatPhotoExecutionStepLabel('history')).toBe('Comparativo');
+      expect(formatPhotoExecutionStepLabel('guidance')).toBe('Checklist');
+      expect(formatPhotoExecutionStepLabel('report')).toBe('Relatorio');
+      expect(formatPhotoExecutionStepLabel('context')).toBe('Contexto da tag');
+    });
+
+    it('falls back to a stable PT-BR placeholder for unknown / null step kind', () => {
+      expect(formatPhotoExecutionStepLabel(null)).toBe('Sem etapa');
+      expect(formatPhotoExecutionStepLabel(undefined)).toBe('Sem etapa');
+      expect(formatPhotoExecutionStepLabel('bogus')).toBe('Sem etapa');
+    });
+  });
+
+  describe('formatPhotoContextSubtitle', () => {
+    it('joins step label and free-form contextNote with a separator', () => {
+      expect(
+        formatPhotoContextSubtitle({
+          executionStepId: 'instrument',
+          contextNote: 'Placa de identificacao',
+        }),
+      ).toBe('Instrumento - Placa de identificacao');
+    });
+
+    it('returns just the step label when no contextNote is present', () => {
+      expect(formatPhotoContextSubtitle({ executionStepId: 'calculation' })).toBe('Calculo');
+      expect(
+        formatPhotoContextSubtitle({ executionStepId: 'guidance', contextNote: '   ' }),
+      ).toBe('Checklist');
+    });
+
+    it('returns just the contextNote when the step label is unknown', () => {
+      expect(
+        formatPhotoContextSubtitle({ contextNote: 'Ponto de loop 50%' }),
+      ).toBe('Ponto de loop 50%');
+    });
+  });
 });
 
 function buildShell(
@@ -273,6 +369,8 @@ function buildShell(
     syncState: SharedExecutionShell['report']['syncState'];
     submitReadiness: SharedExecutionShell['guidance']['submitReadiness'];
     workPackageId: string;
+    invalidated: boolean;
+    invalidationReason: string | null;
   }> = {},
 ): SharedExecutionShell {
   const reportState = overrides.reportState ?? 'technician-owned-draft';
@@ -381,6 +479,7 @@ function buildShell(
           evidenceId: 'evidence-photo-001',
           executionStepId: 'guidance',
           contextNote: null,
+          technicianNote: null,
           fileName: 'real-photo-ft-888.jpg',
           mimeType: 'image/jpeg',
           previewUri: 'file:///sandbox/real-photo-ft-888.jpg',
@@ -402,6 +501,9 @@ function buildShell(
         },
       ],
       photoEvidenceUpdatedAt: '2026-05-09T10:15:00.000Z',
+      loopReadings: [],
+      loopInputMode: null,
+      loopUpdatedAt: null,
     },
     report: {
       reportId: 'report-ft-888',
@@ -453,6 +555,8 @@ function buildShell(
       reviewNotes: 'Technician-owned review note.',
       savedAt: '2026-05-09T10:20:00.000Z',
       submittedAt: reportState === 'technician-owned-draft' ? null : '2026-05-09T10:30:00.000Z',
+      invalidated: overrides.invalidated ?? false,
+      invalidationReason: overrides.invalidationReason ?? null,
     },
   };
 }

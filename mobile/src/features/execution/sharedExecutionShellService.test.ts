@@ -727,10 +727,13 @@ describe('SharedExecutionShellService', () => {
       'tpl-pressure-as-found',
     );
 
+    // Story 8.10 finding #6: per user product rule, the mobile shell must
+    // NEVER hard-block submission. Minimum-evidence gaps now surface as
+    // warnings (still visible to the user); submitReadiness stays 'ready'.
     expect(shell).toMatchObject({
       guidance: {
         riskState: 'flagged',
-        submitReadiness: 'blocked',
+        submitReadiness: 'ready',
         checklistItems: [
           expect.objectContaining({
             id: 'pressure-path-check',
@@ -764,7 +767,7 @@ describe('SharedExecutionShellService', () => {
           expect.objectContaining({
             id: 'minimum-evidence:readings',
             title: 'Evidencia minima ausente: readings',
-            severity: 'submit-block',
+            severity: 'warning',
           }),
         ]),
       },
@@ -783,9 +786,11 @@ describe('SharedExecutionShellService', () => {
           label: 'Linked guidance',
           value: 'Pressure verification guidance',
         }),
+        // Story 8.10 finding #6: submit readiness now stays 'Ready' even when
+        // risk items are flagged — nothing hard-blocks anymore.
         expect.objectContaining({
           label: 'Submit readiness',
-          value: 'Blocked by rule hooks',
+          value: 'Ready',
         }),
       ]),
     );
@@ -1484,10 +1489,14 @@ describe('SharedExecutionShellService', () => {
       'tpl-pressure-as-found',
     );
 
+    // Story 8.10 finding #6: per user product rule, ALL risk items (including
+    // missing minimum evidence) are severity 'warning' now — none hard-block
+    // submission. The risk items still surface so the user sees what's
+    // missing; submitBlockingHooks is empty and submitReadiness stays 'ready'.
     expect(shell).toMatchObject({
       guidance: {
         riskState: 'flagged',
-        submitReadiness: 'blocked',
+        submitReadiness: 'ready',
         riskItems: expect.arrayContaining([
           expect.objectContaining({
             id: 'missing-context',
@@ -1504,16 +1513,10 @@ describe('SharedExecutionShellService', () => {
           expect.objectContaining({
             id: 'minimum-evidence:readings',
             reasonType: 'missing-minimum-evidence',
+            severity: 'warning',
           }),
         ]),
-        // Story 8.7 AC 5: only items whose severity is explicitly
-        // 'submit-block' contribute to submitBlockingHooks. Warning-severity
-        // items (missing context, missing history, missing expected evidence)
-        // remain visible as risk items but no longer hard-block submission.
-        submitBlockingHooks: expect.arrayContaining([
-          'Evidencia minima ausente: readings.',
-          'Evidencia minima ausente: observations.',
-        ]),
+        submitBlockingHooks: [],
       },
     });
 
@@ -1554,21 +1557,21 @@ describe('SharedExecutionShellService', () => {
       observedValue: '5.02',
     });
 
+    // Story 8.10 finding #6: minimum-evidence is now severity 'warning' and
+    // never appears in submitBlockingHooks.
     expect(calculatedShell.guidance.riskItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: 'minimum-evidence:observations',
           reasonType: 'missing-minimum-evidence',
-          severity: 'submit-block',
+          severity: 'warning',
         }),
       ]),
     );
     expect(calculatedShell.guidance.riskItems.map((item) => item.id)).not.toContain(
       'minimum-evidence:readings',
     );
-    expect(calculatedShell.guidance.submitBlockingHooks).toEqual(
-      expect.arrayContaining(['Evidencia minima ausente: observations.']),
-    );
+    expect(calculatedShell.guidance.submitBlockingHooks).toEqual([]);
 
     await runtime.database.closeAsync?.();
   });
@@ -1802,18 +1805,18 @@ describe('SharedExecutionShellService', () => {
       observedValue: '5.02',
     });
 
+    // Story 8.10 finding #6: minimum-evidence is severity 'warning' now;
+    // submitBlockingHooks is empty.
     expect(calculatedShell.guidance.riskItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: 'minimum-evidence:field-sketch',
           reasonType: 'missing-minimum-evidence',
-          severity: 'submit-block',
+          severity: 'warning',
         }),
       ]),
     );
-    expect(calculatedShell.guidance.submitBlockingHooks).toEqual(
-      expect.arrayContaining(['Evidencia minima ausente: field sketch.']),
-    );
+    expect(calculatedShell.guidance.submitBlockingHooks).toEqual([]);
 
     await runtime.database.closeAsync?.();
   });
@@ -2306,9 +2309,12 @@ describe('SharedExecutionShellService', () => {
       'incomplete',
     );
 
+    // Story 8.10 finding #6: even with skipped+incomplete checklist + missing
+    // minimum evidence, submitReadiness stays 'ready' because nothing
+    // hard-blocks anymore.
     expect(riskFlaggedShell.guidance).toMatchObject({
       riskState: 'flagged',
-      submitReadiness: 'blocked',
+      submitReadiness: 'ready',
       checklistItems: [
         expect.objectContaining({
           id: 'pressure-path-check',
@@ -2336,10 +2342,11 @@ describe('SharedExecutionShellService', () => {
           value: expect.stringContaining('Checklist ignorado: Confirm impulse path'),
           state: 'missing',
         }),
+        // Story 8.10 finding #6: submit readiness no longer flips to blocked.
         expect.objectContaining({
           label: 'Submit readiness',
-          value: 'Blocked by rule hooks',
-          state: 'missing',
+          value: 'Ready',
+          state: 'available',
         }),
       ]),
     );
@@ -2828,8 +2835,11 @@ describe('SharedExecutionShellService', () => {
     );
     const savedShell = await service.saveGuidanceEvidence(session, shellWithJustification);
 
+    // Story 8.10 finding #6: lifecycle moves to 'Ready to Submit' once
+    // submitReadiness becomes 'ready' (which is now always, since nothing
+    // hard-blocks). Risk flags still surface; they're warnings, not blocks.
     expect(savedShell.report).toMatchObject({
-      lifecycleState: 'In Progress',
+      lifecycleState: 'Ready to Submit',
       riskFlags: expect.arrayContaining([
         expect.objectContaining({
           id: 'history-unavailable',
@@ -2838,12 +2848,14 @@ describe('SharedExecutionShellService', () => {
         }),
       ]),
     });
+    // Story 8.10 finding #6: lifecycle is now 'Ready to Submit' / state
+    // 'available' because submitReadiness no longer flips to 'blocked'.
     expect(savedShell.steps.find((step) => step.id === 'report')?.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           label: 'Report lifecycle',
-          value: 'In Progress',
-          state: 'missing',
+          value: 'Ready to Submit',
+          state: 'available',
         }),
         expect.objectContaining({
           label: 'Risk flags',
@@ -3370,5 +3382,282 @@ describe('SharedExecutionShellService', () => {
     });
 
     await firstRuntime.database.closeAsync?.();
+  });
+
+  it('aggregates per-template runs into a single visit view ordered oldest-first by save time', async () => {
+    // Story 8.11 finding #10: the visit view is consumed by the Report
+    // screen so the technician sees ONE relatorio that lists every test
+    // run on the tag. It must include each template's acceptance and
+    // measurement, deduplicate risk items, and pick the first-saved
+    // template as the canonical submission anchor.
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-visit-aggregate-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    let nowCursor = new Date('2026-04-19T11:00:00.000Z').getTime();
+    const advancingNow = () => {
+      const value = new Date(nowCursor);
+      nowCursor += 1_000;
+      return value;
+    };
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: advancingNow,
+      }),
+      now: advancingNow,
+    });
+
+    const emptyVisit = await service.loadVisitForTag(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+    );
+    expect(emptyVisit?.templates).toEqual([]);
+    expect(emptyVisit?.canonicalTemplateId).toBeNull();
+
+    const passingShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    await service.saveCalculation(session, passingShell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    const failingShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-left',
+    );
+    await service.saveCalculation(session, failingShell!, {
+      expectedValue: '5',
+      observedValue: '8',
+    });
+
+    const visit = await service.loadVisitForTag(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+    );
+
+    expect(visit).not.toBeNull();
+    expect(visit?.tagCode).toBe('PT-101');
+    expect(visit?.templates.map((entry) => entry.templateId)).toEqual([
+      'tpl-pressure-as-found',
+      'tpl-pressure-as-left',
+    ]);
+    expect(visit?.canonicalTemplateId).toBe('tpl-pressure-as-found');
+    expect(visit?.templates[0]?.acceptance).toBe('pass');
+    expect(visit?.templates[1]?.acceptance).toBe('fail');
+    // Each shell carries its own risk items; the aggregate should
+    // dedupe by id so identical risk items from different templates
+    // appear once.
+    const riskIds = visit?.riskItems.map((item) => item.id) ?? [];
+    const uniqueRiskIds = new Set(riskIds);
+    expect(uniqueRiskIds.size).toBe(riskIds.length);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('lists saved per-template statuses for the tag detail screen badges', async () => {
+    // Story 8.11: after a technician runs and saves a few of a tag's
+    // templates, the detail screen badge row should reflect each saved
+    // acceptance (pass/fail/unavailable) without having to reopen each
+    // shell. The status list is sourced from the calculation repository.
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-template-statuses-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    expect(
+      await service.listTemplateStatusesForTag(
+        session,
+        baseSnapshot.summary.id,
+        'tag-001',
+      ),
+    ).toEqual([]);
+
+    const passingShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    await service.saveCalculation(session, passingShell!, {
+      expectedValue: '5',
+      observedValue: '5.02',
+    });
+
+    const failingShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-left',
+    );
+    await service.saveCalculation(session, failingShell!, {
+      expectedValue: '5',
+      observedValue: '7',
+    });
+
+    const statuses = await service.listTemplateStatusesForTag(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+    );
+
+    expect(statuses).toHaveLength(2);
+    const pressureAsFound = statuses.find(
+      (entry) => entry.templateId === 'tpl-pressure-as-found',
+    );
+    const pressureAsLeft = statuses.find(
+      (entry) => entry.templateId === 'tpl-pressure-as-left',
+    );
+    expect(pressureAsFound?.acceptance).toBe('pass');
+    expect(pressureAsLeft?.acceptance).toBe('fail');
+
+    await runtime.database.closeAsync?.();
+  });
+
+  // Story 8.15: per-point loop persistence. The loop screen used to
+  // throw away its per-point detail when the technician navigated
+  // away; this test locks in the round-trip so the data survives a
+  // reload and surfaces on the visit aggregate for the Report screen.
+  it('persists per-point loop test detail and surfaces it on the visit aggregate', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-loop-readings-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    const shell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    expect(shell).not.toBeNull();
+    expect(shell?.evidence.loopReadings).toEqual([]);
+
+    const points = [
+      {
+        setpointPercent: 0,
+        expected: '0',
+        measured: '0.01',
+        expectedPv: 0,
+        expectedMa: 4,
+        measuredPv: 0.01,
+        measuredMa: 4.01,
+        error: 0.01,
+        errorPercent: 0.1,
+        passed: true,
+      },
+      {
+        setpointPercent: 50,
+        expected: '5',
+        measured: '5.5',
+        expectedPv: 5,
+        expectedMa: 12,
+        measuredPv: 5.5,
+        measuredMa: 12.5,
+        error: 0.5,
+        errorPercent: 5,
+        passed: false,
+      },
+      {
+        setpointPercent: 100,
+        expected: '10',
+        measured: '10.02',
+        expectedPv: 10,
+        expectedMa: 20,
+        measuredPv: 10.02,
+        measuredMa: 20.02,
+        error: 0.02,
+        errorPercent: 0.2,
+        passed: true,
+      },
+    ];
+
+    const savedShell = await service.saveLoopTestEvidence(session, shell!, {
+      points,
+      inputMode: 'pv',
+      worstCase: { rawInputs: { expectedValue: '5', observedValue: '5.5' } },
+    });
+
+    expect(savedShell.evidence.loopReadings).toHaveLength(3);
+    expect(savedShell.evidence.loopInputMode).toBe('pv');
+    expect(savedShell.evidence.loopReadings[0]?.passed).toBe(true);
+    expect(savedShell.evidence.loopReadings[1]?.passed).toBe(false);
+
+    // Reload to confirm the data survives a fresh shell build.
+    const reloaded = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    expect(reloaded?.evidence.loopReadings).toHaveLength(3);
+    expect(reloaded?.evidence.loopInputMode).toBe('pv');
+    // Worst-case raw inputs flowed into the calculation row so the
+    // visit aggregator sees a meaningful acceptance instead of
+    // 'unavailable'.
+    expect(reloaded?.calculation?.rawInputs.expectedValue).toBe('5');
+    expect(reloaded?.calculation?.rawInputs.observedValue).toBe('5.5');
+
+    const visit = await service.loadVisitForTag(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+    );
+    const loopEntry = visit?.templates.find(
+      (entry) => entry.templateId === 'tpl-pressure-as-found',
+    );
+    expect(loopEntry?.loopReadings).toHaveLength(3);
+    expect(loopEntry?.loopInputMode).toBe('pv');
+
+    await runtime.database.closeAsync?.();
   });
 });

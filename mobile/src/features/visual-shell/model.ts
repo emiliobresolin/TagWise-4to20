@@ -254,12 +254,26 @@ export function buildTechnicianVisualWorkflow(
     : demoEnabled
       ? defaultDemoTag
       : null;
-  const calculation = calculateVisualError({
-    expectedValue: 8,
-    observedValue: 9.45,
-    tolerance: 0.5,
-    unit: 'bar',
-  });
+  // Story 8.8 D-07: only build the demo calculation/history/report literals
+  // when the signed-out demo shell is rendering. Authenticated paths consume
+  // service-backed projections (`serviceCalculation`, `serviceHistory`,
+  // `serviceReport`) and never look at these fields; constructing them
+  // unconditionally created a future-bug risk that an authenticated screen
+  // would accidentally pick up the seeded numbers.
+  const isDemoShell = !authenticated && demoEnabled;
+  const calculation = isDemoShell
+    ? calculateVisualError({
+        expectedValue: 8,
+        observedValue: 9.45,
+        tolerance: 0.5,
+        unit: 'bar',
+      })
+    : calculateVisualError({
+        expectedValue: 0,
+        observedValue: 0,
+        tolerance: 0,
+        unit: '',
+      });
   const workPackages = input.workPackages ?? [];
 
   return {
@@ -295,35 +309,58 @@ export function buildTechnicianVisualWorkflow(
       input.selectedTagContext?.historyPreview.lastResult ??
       (authenticated ? 'Historico local indisponivel' : '9,45 bar'),
     calculation,
-    history: [
-      { label: '8 dias atras', value: 0.75, statusLabel: 'REINCIDENTE' },
-      { label: '3 dias atras', value: 1.1, statusLabel: 'REINCIDENTE' },
-      { label: 'Hoje', value: 1.45, statusLabel: 'FALHA' },
-    ],
-    diagnosis: {
-      selectedSymptom: 'Sem Resposta',
-      symptoms: ['Sem Resposta', 'Intermitente', 'Leitura Instavel', 'Desvio Recorrente'],
-      hypothesis: 'Alimentacao eletrica ou loop de corrente interrompido',
-      nextStep: 'Verifique alimentacao (24 V) e continuidade do loop',
-      why:
-        'Problema na alimentacao ou loop interrompido pode interromper a comunicacao com o transmissor e simular falha eletrica.',
-      checklist: [
-        'Verificar se alimentacao 24 VDC esta presente',
-        'Checar continuidade do loop de corrente 4-20 mA',
-        'Conferir polaridade da alimentacao',
-      ],
-    },
-    report: {
-      tagCode: selectedTag?.code ?? 'Sem tag selecionada',
-      symptom: 'Sem Resposta',
-      lastValueLabel: '9,45 bar',
-      expectedValueLabel: '8,00 bar',
-      errorLabel: '+ 1,45 bar',
-      diagnosis: 'Alimentacao eletrica ou loop interrompido',
-      action: 'Verificacao da alimentacao (24 V) e continuidade do loop',
-      pending: 'Nenhuma',
-      attachments: ['foto-transmissor', 'foto-multimetro', 'foto-loop'],
-    },
+    history: isDemoShell
+      ? [
+          { label: '8 dias atras', value: 0.75, statusLabel: 'REINCIDENTE' },
+          { label: '3 dias atras', value: 1.1, statusLabel: 'REINCIDENTE' },
+          { label: 'Hoje', value: 1.45, statusLabel: 'FALHA' },
+        ]
+      : [],
+    diagnosis: isDemoShell
+      ? {
+          selectedSymptom: 'Sem Resposta',
+          symptoms: ['Sem Resposta', 'Intermitente', 'Leitura Instavel', 'Desvio Recorrente'],
+          hypothesis: 'Alimentacao eletrica ou loop de corrente interrompido',
+          nextStep: 'Verifique alimentacao (24 V) e continuidade do loop',
+          why:
+            'Problema na alimentacao ou loop interrompido pode interromper a comunicacao com o transmissor e simular falha eletrica.',
+          checklist: [
+            'Verificar se alimentacao 24 VDC esta presente',
+            'Checar continuidade do loop de corrente 4-20 mA',
+            'Conferir polaridade da alimentacao',
+          ],
+        }
+      : {
+          selectedSymptom: '',
+          symptoms: [],
+          hypothesis: '',
+          nextStep: '',
+          why: '',
+          checklist: [],
+        },
+    report: isDemoShell
+      ? {
+          tagCode: selectedTag?.code ?? 'Sem tag selecionada',
+          symptom: 'Sem Resposta',
+          lastValueLabel: '9,45 bar',
+          expectedValueLabel: '8,00 bar',
+          errorLabel: '+ 1,45 bar',
+          diagnosis: 'Alimentacao eletrica ou loop interrompido',
+          action: 'Verificacao da alimentacao (24 V) e continuidade do loop',
+          pending: 'Nenhuma',
+          attachments: ['foto-transmissor', 'foto-multimetro', 'foto-loop'],
+        }
+      : {
+          tagCode: selectedTag?.code ?? 'Sem tag selecionada',
+          symptom: '',
+          lastValueLabel: '',
+          expectedValueLabel: '',
+          errorLabel: '',
+          diagnosis: '',
+          action: '',
+          pending: '',
+          attachments: [],
+        },
   };
 }
 

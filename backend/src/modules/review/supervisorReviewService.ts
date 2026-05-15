@@ -1,5 +1,8 @@
 import type { AuthenticatedUser } from '../auth/model';
+import type { AiDiagnosisService } from '../ai-diagnosis/aiDiagnosisService';
+import { toAiDiagnosisProjection } from '../report-submissions/reportSubmissionService';
 import type {
+  ReportSubmissionAiDiagnosisProjection,
   ReportSubmissionEvidenceReference,
   ReportSubmissionPhotoAttachment,
   ReportSubmissionRequest,
@@ -27,11 +30,19 @@ import {
 import type { SupervisorReviewRepository } from './supervisorReviewRepository';
 
 export class SupervisorReviewService {
+  // Story 8.9 D-01: optional AI diagnosis service. When wired (api/main.ts),
+  // the supervisor detail/queue read paths include the per-report AI state.
+  // When not wired (legacy tests), aiDiagnosis defaults to 'unavailable'.
+  private readonly aiDiagnosisService: AiDiagnosisService | null;
+
   constructor(
     private readonly repository: SupervisorReviewRepository,
     private readonly now: () => Date = () => new Date(),
     private readonly managerReviewerUserId: string | null = null,
-  ) {}
+    aiDiagnosisService: AiDiagnosisService | null = null,
+  ) {
+    this.aiDiagnosisService = aiDiagnosisService;
+  }
 
   async ensureSeedRoutes(supervisorUserId: string, workPackageIds: string[]): Promise<void> {
     const routedAt = this.now().toISOString();
@@ -66,10 +77,17 @@ export class SupervisorReviewService {
       throw new SupervisorReviewError('Reviewable report was not found in supervisor scope.', 404);
     }
     const approvalHistoryItems = await this.repository.listReportApprovalHistory(record.reportId);
+    const aiDiagnosisRecord = this.aiDiagnosisService
+      ? await this.aiDiagnosisService.getByReportId(record.ownerUserId, record.reportId)
+      : null;
 
     return {
       contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
-      report: toReportDetail(record, approvalHistoryItems),
+      report: toReportDetail(
+        record,
+        approvalHistoryItems,
+        toAiDiagnosisProjection(aiDiagnosisRecord),
+      ),
     };
   }
 
@@ -246,10 +264,15 @@ export class SupervisorReviewService {
 }
 
 export class ManagerReviewService {
+  private readonly aiDiagnosisService: AiDiagnosisService | null;
+
   constructor(
     private readonly repository: SupervisorReviewRepository,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+    aiDiagnosisService: AiDiagnosisService | null = null,
+  ) {
+    this.aiDiagnosisService = aiDiagnosisService;
+  }
 
   async listManagerQueue(user: AuthenticatedUser): Promise<ManagerReviewQueueResponse> {
     assertManagerCanReview(user);
@@ -272,10 +295,17 @@ export class ManagerReviewService {
       throw new ManagerReviewError('Escalated report was not found in manager scope.', 404);
     }
     const approvalHistoryItems = await this.repository.listReportApprovalHistory(record.reportId);
+    const aiDiagnosisRecord = this.aiDiagnosisService
+      ? await this.aiDiagnosisService.getByReportId(record.ownerUserId, record.reportId)
+      : null;
 
     return {
       contractVersion: MANAGER_REVIEW_API_CONTRACT_VERSION,
-      report: toReportDetail(record, approvalHistoryItems),
+      report: toReportDetail(
+        record,
+        approvalHistoryItems,
+        toAiDiagnosisProjection(aiDiagnosisRecord),
+      ),
     };
   }
 
@@ -383,6 +413,7 @@ export class ManagerReviewService {
 function toReportDetail(
   record: ReviewableReportRecord,
   approvalHistoryItems: SupervisorReviewReportDetail['approvalHistory']['items'],
+  aiDiagnosis: ReportSubmissionAiDiagnosisProjection,
 ): SupervisorReviewReportDetail {
   const payload = parseStoredReportPayload(record.payloadJson);
   const photoAttachments = getPhotoAttachments(payload);
@@ -403,6 +434,7 @@ function toReportDetail(
           ? 'No approval decisions have been recorded for this report yet.'
           : '',
     },
+    aiDiagnosis,
   };
 }
 

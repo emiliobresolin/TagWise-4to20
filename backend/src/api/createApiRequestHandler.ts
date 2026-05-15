@@ -21,6 +21,9 @@ import {
   parseReportSubmissionRequestPayload,
 } from '../modules/report-submissions/reportSubmissionPayloadValidation';
 import type { ReportSubmissionService } from '../modules/report-submissions/reportSubmissionService';
+import { toAiDiagnosisProjection } from '../modules/report-submissions/reportSubmissionService';
+import type { AiDiagnosisService } from '../modules/ai-diagnosis/aiDiagnosisService';
+import { AiDiagnosisServiceError } from '../modules/ai-diagnosis/model';
 import { ManagerReviewError, SupervisorReviewError } from '../modules/review/model';
 import type {
   ManagerReviewService,
@@ -37,6 +40,13 @@ export interface ApiRequestHandlerDependencies {
   reportSubmissionService: ReportSubmissionService;
   managerReviewService: ManagerReviewService;
   supervisorReviewService: SupervisorReviewService;
+  /**
+   * Story 8.9 D-01: optional AI diagnosis service. When wired, the
+   * `POST /reports/:reportId/ai-diagnosis/request` endpoint enqueues a
+   * worker job. When omitted (legacy bootstrap), the endpoint returns 503
+   * with a clear message so the mobile client can surface "AI indisponivel".
+   */
+  aiDiagnosisService?: AiDiagnosisService;
 }
 
 export function createApiRequestHandler(dependencies: ApiRequestHandlerDependencies) {
@@ -501,6 +511,70 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           error,
           'Report submission status refresh failed. Please retry while connected.',
         );
+      }
+
+      return true;
+    }
+
+    // Story 8.9 D-01: manual AI diagnosis request endpoint. The technician
+    // taps "Solicitar diagnostico assistido" on the report screen; the
+    // endpoint enqueues a worker job and returns the current state so the
+    // mobile UI can immediately show "Pendente". When the worker completes,
+    // the supervisor / technician status fetch shows the result. AI is
+    // assistive: any error here MUST NOT halt the report itself.
+    const aiDiagnosisRequestMatch =
+      method === 'POST'
+        ? url.match(/^\/reports\/([^/]+)\/ai-diagnosis\/request$/)
+        : null;
+    if (aiDiagnosisRequestMatch) {
+      try {
+        const user = await authenticateRequest(request, dependencies.authService);
+        const reportId = decodeURIComponent(aiDiagnosisRequestMatch[1] ?? '');
+
+        if (!dependencies.aiDiagnosisService) {
+          context.logger.warn('ai-diagnosis.request.unavailable', {
+            actorId: user.id,
+            reportId,
+          });
+          writeJson(response, 503, {
+            message: 'AI diagnosis service is not configured.',
+            aiDiagnosis: toAiDiagnosisProjection(null),
+          });
+          return true;
+        }
+
+        const record = await dependencies.aiDiagnosisService.requestForReport({
+          user,
+          reportId,
+          requestSource: 'manual',
+        });
+
+        context.logger.info('ai-diagnosis.request.accepted', {
+          actorId: user.id,
+          actorRole: user.role,
+          reportId,
+          state: record.state,
+        });
+        writeJson(response, 200, { aiDiagnosis: toAiDiagnosisProjection(record) });
+      } catch (error) {
+        if (error instanceof AiDiagnosisServiceError) {
+          context.logger.warn('ai-diagnosis.request.failed', {
+            statusCode: error.statusCode,
+          });
+          writeJson(response, error.statusCode, { message: error.message });
+          return true;
+        }
+        if (error instanceof AuthenticationError) {
+          context.logger.warn('ai-diagnosis.request.unauthorized', {
+            statusCode: error.statusCode,
+          });
+          writeJson(response, error.statusCode, { message: error.message });
+          return true;
+        }
+        context.logger.warn('ai-diagnosis.request.failed', { statusCode: 500 });
+        writeJson(response, 500, {
+          message: 'AI diagnosis request failed. Report submission is unaffected.',
+        });
       }
 
       return true;

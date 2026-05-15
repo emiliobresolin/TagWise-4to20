@@ -16,7 +16,9 @@ import {
   EVIDENCE_SYNC_API_CONTRACT_VERSION,
   EvidenceUploadApiError,
   REPORT_SUBMISSION_API_CONTRACT_VERSION,
+  type AiDiagnosisRequestResponse,
   type EvidenceUploadApiClient,
+  type ReportSubmissionAiDiagnosisProjection,
   type ReportSubmissionStatusResponse,
   type ReportSubmissionRequest,
   type ReportSubmissionSyncIssue,
@@ -80,30 +82,44 @@ export class EvidenceUploadOrchestrator {
 
     await this.submitReportForServerValidation(store, shell);
 
-    // If the report submission succeeded but one or more photos failed, propagate
-    // the first photo failure so the caller's catch path still surfaces a
-    // message to the user that some evidence needs retry. The report itself is
-    // already in the server queue at this point.
-    if (attachmentFailures.length > 0) {
-      const firstFailure = attachmentFailures[0];
-      throw firstFailure instanceof Error
-        ? firstFailure
-        : new Error('Evidence upload failed for one or more photos.');
+    // Story 8.12 finding #2 / N-3: previously this rethrew the first
+    // per-photo failure, but the report itself was already accepted by
+    // the server. The user then saw a global "sync error" toast even
+    // though their report had arrived at the supervisor. Per-photo
+    // failures are already recorded on each photo's own `syncIssue`
+    // field and can be retried independently from the photo card.
+    // Swallow the per-attachment failures here so the caller's catch
+    // path is not triggered when the report itself succeeded.
+    if (attachmentFailures.length > 0 && typeof console !== 'undefined') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `Report ${shell.report.reportId} submitted but ${attachmentFailures.length} photo upload(s) need retry; see per-photo syncIssue.`,
+      );
     }
   }
 
   async refreshReportServerStatus(
     session: ActiveUserSession,
     shell: SharedExecutionShell,
-  ): Promise<void> {
+  ): Promise<ReportSubmissionAiDiagnosisProjection | null> {
     if (session.connectionMode !== 'connected') {
-      return;
+      return null;
     }
 
     const status = await this.dependencies.apiClient.getReportSubmissionStatus(
       shell.report.reportId,
     );
     const store = this.dependencies.userPartitions.forUser(session.userId);
+    // Story 8.12 finding #2: when the supervisor returns the report,
+    // stamp `invalidated: true` plus the supervisor's return comment so
+    // the technician cannot keep editing the same draft. The next time
+    // they open the tag, a fresh draft is minted.
+    const invalidated =
+      status.reportState === 'returned-by-supervisor' ||
+      status.reportState === 'returned-by-manager';
+    const invalidationReason = invalidated
+      ? resolveInvalidationReason(status.approvalHistory)
+      : null;
     await updateReportDraftRecord(store, shell, {
       state: mapServerReportStateToLocal(status.reportState),
       lifecycleState: status.lifecycleState,
@@ -111,8 +127,34 @@ export class EvidenceUploadOrchestrator {
       syncIssue: null,
       syncIssueReasonCode: null,
       approvalHistory: status.approvalHistory,
+      invalidated,
+      invalidationReason,
       updatedAt: status.acceptedAt || this.now().toISOString(),
     });
+    // Story 8.9 D-01: return the AI diagnosis projection so TagWiseApp can
+    // refresh its in-memory state. AI flows back via the same status fetch.
+    return status.aiDiagnosis;
+  }
+
+  /**
+   * Story 8.9 D-01: request a manual AI diagnosis for the given report. The
+   * backend enqueues a worker job and returns the current AI projection
+   * (typically state='pending'). Errors propagate as
+   * `EvidenceUploadApiError`; the caller is responsible for surfacing the
+   * failure as a non-blocking UX notice.
+   */
+  async requestAiDiagnosis(
+    session: ActiveUserSession,
+    reportId: string,
+  ): Promise<AiDiagnosisRequestResponse> {
+    if (session.connectionMode !== 'connected') {
+      throw new EvidenceUploadApiError(
+        'Conexao obrigatoria para solicitar diagnostico assistido.',
+        0,
+        'network',
+      );
+    }
+    return this.dependencies.apiClient.requestAiDiagnosis(reportId);
   }
 
   private async submitReportForServerValidation(
@@ -352,6 +394,12 @@ interface StoredReportSubmissionDraftPayload {
   submittedAt?: string | null;
   syncIssue?: string | null;
   syncIssueReasonCode?: string | null;
+  // Story 8.12 finding #2: when the server reports the supervisor
+  // returned the draft, persist that as an `invalidated` flag plus the
+  // supervisor's comment so the technician sees a read-only history
+  // entry and is forced to start a fresh visit on the next open.
+  invalidated?: boolean;
+  invalidationReason?: string | null;
   updatedAt: string;
 }
 
@@ -421,6 +469,14 @@ async function loadPhotoSubmissionAttachments(
       serverEvidenceId: payload.serverEvidenceId ?? null,
       presenceFinalizedAt: payload.presenceFinalizedAt ?? null,
       syncState: payload.syncState ?? 'local-only',
+      // Story 8.8 D-02 / D-04: round-trip per-photo execution context label and
+      // technician observation through the submission DTO. Backend stores the
+      // entire request payload as JSON, so these fields persist without a
+      // schema migration; supervisor read path surfaces them via the same
+      // payload.photoAttachments array.
+      contextNote: payload.contextNote ?? null,
+      executionStepId: payload.executionStepId ?? null,
+      technicianNote: payload.technicianNote ?? null,
     });
   }
 
@@ -437,6 +493,11 @@ async function updateReportDraftRecord(
     syncIssue: string | null;
     syncIssueReasonCode: ReportSubmissionSyncIssue['reasonCode'] | null;
     approvalHistory?: ReportSubmissionStatusResponse['approvalHistory'];
+    // Story 8.12 finding #2: optional flags so the refresh-status path
+    // can stamp an invalidated draft. Other paths leave them undefined
+    // and the previously-persisted values stick.
+    invalidated?: boolean;
+    invalidationReason?: string | null;
     updatedAt: string;
   },
 ): Promise<void> {
@@ -465,9 +526,29 @@ async function updateReportDraftRecord(
       syncIssue: input.syncIssue,
       syncIssueReasonCode: input.syncIssueReasonCode,
       approvalHistory: input.approvalHistory ?? payload.approvalHistory,
+      invalidated: input.invalidated ?? payload.invalidated,
+      invalidationReason: input.invalidationReason ?? payload.invalidationReason,
       updatedAt: input.updatedAt,
     } satisfies StoredReportSubmissionDraftPayload),
   });
+}
+
+function resolveInvalidationReason(
+  history: ReportSubmissionStatusResponse['approvalHistory'] | undefined,
+): string | null {
+  // Story 8.12 finding #2: the supervisor's return comment lives in the
+  // last approval-history item with actionType === 'returned'. Surface
+  // it so the technician knows what to fix in the new visit.
+  if (!history?.items) {
+    return null;
+  }
+  for (let index = history.items.length - 1; index >= 0; index -= 1) {
+    const item = history.items[index];
+    if (item && item.actionType === 'returned' && item.comment) {
+      return item.comment;
+    }
+  }
+  return null;
 }
 
 async function markFinalizedPhotoRecordsSynced(
@@ -677,6 +758,10 @@ function parsePhotoAttachmentPayload(
         typeof parsed.contextNote === 'string' || parsed.contextNote === null
           ? parsed.contextNote
           : null,
+      technicianNote:
+        typeof parsed.technicianNote === 'string' || parsed.technicianNote === null
+          ? parsed.technicianNote
+          : null,
       source: parsed.source,
       width: typeof parsed.width === 'number' ? parsed.width : null,
       height: typeof parsed.height === 'number' ? parsed.height : null,
@@ -851,6 +936,14 @@ function parseReportSubmissionDraftPayload(
           ? parsed.syncIssueReasonCode
           : undefined,
       approvalHistory: parseApprovalHistory(parsed.approvalHistory),
+      // Story 8.12 finding #2: round-trip the invalidated flag + reason
+      // so the local draft remembers a supervisor return across app
+      // restarts.
+      invalidated: typeof parsed.invalidated === 'boolean' ? parsed.invalidated : undefined,
+      invalidationReason:
+        typeof parsed.invalidationReason === 'string' || parsed.invalidationReason === null
+          ? parsed.invalidationReason
+          : undefined,
       updatedAt: parsed.updatedAt,
     };
   } catch {

@@ -1,5 +1,6 @@
 export type SharedExecutionStepKind =
   | 'context'
+  | 'instrument'
   | 'calculation'
   | 'history'
   | 'guidance'
@@ -217,10 +218,17 @@ export interface SharedExecutionPhotoAttachment {
   /**
    * Optional human-readable sub-step context for this photo. Used to
    * disambiguate photos taken at different points of a multi-point execution
-   * (e.g., "Ponto de loop 50%"). Mobile-only; the backend ignores unknown fields.
+   * (e.g., "Ponto de loop 50%"). System-set at attach time.
    * Set per-call via `attachPhotoEvidence(..., { contextNote })`.
    */
   contextNote: string | null;
+  /**
+   * Optional free-text technician observation for this photo (e.g.,
+   * "Loop OK, cabos danificados na flange"). User-set at or after attach.
+   * Separate from `contextNote`: contextNote is system-set sub-step label,
+   * technicianNote is free-text observation.
+   */
+  technicianNote: string | null;
   fileName: string;
   mimeType: string | null;
   previewUri: string;
@@ -241,6 +249,19 @@ export interface SharedExecutionPhotoAttachment {
   updatedAt: string;
 }
 
+export interface SharedExecutionLoopReadingPoint {
+  setpointPercent: number;
+  expected: string;
+  measured: string;
+  expectedPv: number | null;
+  expectedMa: number | null;
+  measuredPv: number | null;
+  measuredMa: number | null;
+  error: number | null;
+  errorPercent: number | null;
+  passed: boolean | null;
+}
+
 export interface SharedExecutionEvidenceState {
   draftReportId: string;
   draftReportState: SharedExecutionReportState;
@@ -249,6 +270,13 @@ export interface SharedExecutionEvidenceState {
   guidanceEvidenceUpdatedAt: string | null;
   photoAttachments: SharedExecutionPhotoAttachment[];
   photoEvidenceUpdatedAt: string | null;
+  // Story 8.15: when the technician saved a loop test on this
+  // template, the per-point detail rehydrates here so the loop screen
+  // can show the curve after navigating away and the Report screen can
+  // display a formatted results section.
+  loopReadings: SharedExecutionLoopReadingPoint[];
+  loopInputMode: 'pv' | 'ma' | null;
+  loopUpdatedAt: string | null;
 }
 
 export type SharedExecutionReportState =
@@ -329,6 +357,15 @@ export interface SharedExecutionReportDraftState {
   submittedAt: string | null;
   syncIssue?: string | null;
   syncIssueReasonCode?: string | null;
+  // Story 8.12 finding #2: when a supervisor returns a report, the draft
+  // is marked `invalidated: true` so the technician cannot keep editing
+  // the same row. Re-opening the tag mints a fresh draft (new reportId),
+  // and the invalidated row remains as a read-only history entry the
+  // technician can review but not re-submit. `invalidationReason` carries
+  // the supervisor's "Devolver" comment so the technician understands
+  // what needs to change in the new visit.
+  invalidated?: boolean;
+  invalidationReason?: string | null;
   approvalHistory?: {
     items: SharedExecutionApprovalHistoryItem[];
     placeholder: string;
@@ -360,6 +397,21 @@ export interface StoredExecutionCalculationRecord {
   updatedAt: string;
 }
 
+export interface StoredExecutionLoopReadingPoint {
+  setpointPercent: number;
+  expected: string;
+  measured: string;
+  expectedPv: number | null;
+  expectedMa: number | null;
+  measuredPv: number | null;
+  measuredMa: number | null;
+  error: number | null;
+  errorPercent: number | null;
+  passed: boolean | null;
+}
+
+export type StoredExecutionLoopInputMode = 'pv' | 'ma';
+
 export interface StoredExecutionStructuredReadingsEvidence {
   expectedLabel: string;
   observedLabel: string;
@@ -371,6 +423,15 @@ export interface StoredExecutionStructuredReadingsEvidence {
   percentOfSpan: number | null;
   acceptance: SharedExecutionCalculationAcceptance;
   acceptanceReason: string;
+  // Story 8.15: when this evidence row was produced by a loop test,
+  // the per-point detail is preserved here so the loop screen can
+  // rehydrate the points after the technician navigates away and the
+  // Report screen can render a "Resultados do teste de loop" table.
+  // The single-point fields above reflect the worst-case row for
+  // visit aggregation. Old rows that pre-date this field stay valid
+  // because both fields below are optional.
+  loopReadings?: StoredExecutionLoopReadingPoint[];
+  loopInputMode?: StoredExecutionLoopInputMode;
 }
 
 export interface StoredExecutionChecklistOutcomeRecord {
@@ -413,6 +474,12 @@ export interface StoredExecutionPhotoAttachmentPayload {
    * parser falls back to `null`.
    */
   contextNote?: string | null;
+  /**
+   * Persisted form of `SharedExecutionPhotoAttachment.technicianNote`. Optional
+   * and backwards-compatible: existing rows pre-Story-8.8 do not have this
+   * field; the parser falls back to `null`.
+   */
+  technicianNote?: string | null;
   source: SharedExecutionPhotoAttachmentSource;
   width: number | null;
   height: number | null;

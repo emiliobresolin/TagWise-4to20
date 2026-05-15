@@ -1,4 +1,6 @@
 import type {
+  AssignedWorkPackagePriorTestReadingResult,
+  AssignedWorkPackagePriorTestReadingSnapshot,
   AssignedWorkPackageTemplateGuidanceItemSnapshot,
   SeededAssignedWorkPackageRecord,
 } from './model';
@@ -279,6 +281,442 @@ function buildValveDiagnosisPrompts() {
   ];
 }
 
+interface PriorPointDefinition {
+  pointPercent: number;
+  pointLabel: string;
+  deviation: number;
+  result?: AssignedWorkPackagePriorTestReadingResult;
+  technicianNote?: string | null;
+  supervisorNote?: string | null;
+}
+
+interface PriorSessionDefinition {
+  sessionId: string;
+  tagId: string;
+  templateId: string;
+  observedAt: string;
+  unit: string;
+  rangeMin: number;
+  rangeMax: number;
+  points: PriorPointDefinition[];
+}
+
+// Story 8.11 finding #7: multi-point structured history per tag. Each session
+// represents one past calibration/verification visit; rows are produced per
+// measurement point so the Compare screen can render a per-point variation
+// timeline across past tests.
+function buildPriorReadingSession(
+  definition: PriorSessionDefinition,
+): AssignedWorkPackagePriorTestReadingSnapshot[] {
+  const span = definition.rangeMax - definition.rangeMin;
+  return definition.points.map((point) => {
+    const expectedValue =
+      definition.rangeMin + (point.pointPercent / 100) * span;
+    const observedValue = expectedValue + point.deviation;
+    const percentOfSpan = span > 0 ? (point.deviation / span) * 100 : null;
+    return {
+      id: `reading-${definition.sessionId}-${point.pointPercent}`,
+      tagId: definition.tagId,
+      templateId: definition.templateId,
+      observedAt: definition.observedAt,
+      pointPercent: point.pointPercent,
+      pointLabel: point.pointLabel,
+      expectedValue,
+      observedValue: roundReading(observedValue),
+      unit: definition.unit,
+      signedDeviation: roundReading(point.deviation),
+      percentOfSpan: percentOfSpan === null ? null : roundReading(percentOfSpan),
+      result: point.result ?? 'pass',
+      technicianNote: point.technicianNote ?? null,
+      supervisorNote: point.supervisorNote ?? null,
+    };
+  });
+}
+
+function roundReading(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function buildPackageOnePriorReadings(): AssignedWorkPackagePriorTestReadingSnapshot[] {
+  // PT-101 pressure transmitter (0-10 bar, +/-0.25% span tolerance).
+  // The drift narrative matches the historySummary trend hint: positive bias
+  // builds at 75% across 3 consecutive checks before the most recent visit.
+  const pt101Sessions: PriorSessionDefinition[] = [
+    {
+      sessionId: 'pt101-2025-11',
+      tagId: 'tag-pt-101',
+      templateId: 'tpl-pressure-as-found',
+      observedAt: '2025-11-15T09:30:00.000Z',
+      unit: 'bar',
+      rangeMin: 0,
+      rangeMax: 10,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.005 },
+        { pointPercent: 50, pointLabel: '50%', deviation: -0.005 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.01 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.005 },
+      ],
+    },
+    {
+      sessionId: 'pt101-2026-01',
+      tagId: 'tag-pt-101',
+      templateId: 'tpl-pressure-as-found',
+      observedAt: '2026-01-20T10:15:00.000Z',
+      unit: 'bar',
+      rangeMin: 0,
+      rangeMax: 10,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.005 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.01 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.06 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.04 },
+      ],
+    },
+    {
+      sessionId: 'pt101-2026-02',
+      tagId: 'tag-pt-101',
+      templateId: 'tpl-pressure-as-found',
+      observedAt: '2026-02-15T11:00:00.000Z',
+      unit: 'bar',
+      rangeMin: 0,
+      rangeMax: 10,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.005 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.01 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.02 },
+        {
+          pointPercent: 75,
+          pointLabel: '75%',
+          deviation: 0.1,
+          result: 'pass-with-note',
+          technicianNote: 'Bias positivo crescente em 75%. Marcar para reavaliacao.',
+        },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.06 },
+      ],
+    },
+    {
+      sessionId: 'pt101-2026-03',
+      tagId: 'tag-pt-101',
+      templateId: 'tpl-pressure-as-found',
+      observedAt: '2026-03-14T14:30:00.000Z',
+      unit: 'bar',
+      rangeMin: 0,
+      rangeMax: 10,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.005 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.015 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.03 },
+        {
+          pointPercent: 75,
+          pointLabel: '75%',
+          deviation: 0.12,
+          result: 'pass-with-note',
+          technicianNote: 'Deriva no limite em 75%. Tecnico justificou e supervisor aprovou.',
+          supervisorNote: 'Recheck em 30 dias. Investigar diafragma se padrao persistir.',
+        },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.07 },
+      ],
+    },
+  ];
+
+  // TT-205 RTD input (0-250 C, +/-0.3 C). Stable deviations; supports
+  // technician confidence that the loop is steady at all 5 points.
+  const tt205Sessions: PriorSessionDefinition[] = [
+    {
+      sessionId: 'tt205-2025-11',
+      tagId: 'tag-tt-205',
+      templateId: 'tpl-temperature-calibration-verification',
+      observedAt: '2025-11-20T08:45:00.000Z',
+      unit: 'C',
+      rangeMin: 0,
+      rangeMax: 250,
+      points: [
+        { pointPercent: 0, pointLabel: '0 C', deviation: 0.05 },
+        { pointPercent: 25, pointLabel: '62 C', deviation: 0.1 },
+        { pointPercent: 50, pointLabel: '125 C', deviation: 0.12 },
+        { pointPercent: 75, pointLabel: '188 C', deviation: 0.15 },
+        { pointPercent: 100, pointLabel: '250 C', deviation: 0.1 },
+      ],
+    },
+    {
+      sessionId: 'tt205-2026-01',
+      tagId: 'tag-tt-205',
+      templateId: 'tpl-temperature-calibration-verification',
+      observedAt: '2026-01-22T09:30:00.000Z',
+      unit: 'C',
+      rangeMin: 0,
+      rangeMax: 250,
+      points: [
+        { pointPercent: 0, pointLabel: '0 C', deviation: 0.08 },
+        { pointPercent: 25, pointLabel: '62 C', deviation: 0.12 },
+        { pointPercent: 50, pointLabel: '125 C', deviation: 0.15 },
+        { pointPercent: 75, pointLabel: '188 C', deviation: 0.18 },
+        { pointPercent: 100, pointLabel: '250 C', deviation: 0.14 },
+      ],
+    },
+    {
+      sessionId: 'tt205-2026-02',
+      tagId: 'tag-tt-205',
+      templateId: 'tpl-temperature-calibration-verification',
+      observedAt: '2026-02-12T10:00:00.000Z',
+      unit: 'C',
+      rangeMin: 0,
+      rangeMax: 250,
+      points: [
+        { pointPercent: 0, pointLabel: '0 C', deviation: 0.06 },
+        { pointPercent: 25, pointLabel: '62 C', deviation: 0.1 },
+        { pointPercent: 50, pointLabel: '125 C', deviation: 0.13 },
+        { pointPercent: 75, pointLabel: '188 C', deviation: 0.16 },
+        { pointPercent: 100, pointLabel: '250 C', deviation: 0.11 },
+      ],
+    },
+    {
+      sessionId: 'tt205-2026-03',
+      tagId: 'tag-tt-205',
+      templateId: 'tpl-temperature-calibration-verification',
+      observedAt: '2026-03-12T09:15:00.000Z',
+      unit: 'C',
+      rangeMin: 0,
+      rangeMax: 250,
+      points: [
+        { pointPercent: 0, pointLabel: '0 C', deviation: 0.05 },
+        { pointPercent: 25, pointLabel: '62 C', deviation: 0.09 },
+        { pointPercent: 50, pointLabel: '125 C', deviation: 0.12 },
+        {
+          pointPercent: 75,
+          pointLabel: '188 C',
+          deviation: 0.18,
+          technicianNote: 'Reaperto do bloco de terminais resolveu ruido intermitente.',
+        },
+        { pointPercent: 100, pointLabel: '250 C', deviation: 0.1 },
+      ],
+    },
+  ];
+
+  // AI-330 4-20 mA process loop (0-100% process, +/-1% span). Recurring mid-
+  // range drift documented in the trend hint.
+  const ai330Sessions: PriorSessionDefinition[] = [
+    {
+      sessionId: 'ai330-2025-12',
+      tagId: 'tag-ai-330',
+      templateId: 'tpl-loop-current-vs-process',
+      observedAt: '2025-12-08T14:30:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.1 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.3 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.5 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.4 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.2 },
+      ],
+    },
+    {
+      sessionId: 'ai330-2026-01',
+      tagId: 'tag-ai-330',
+      templateId: 'tpl-loop-current-vs-process',
+      observedAt: '2026-01-25T13:00:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.1 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.3 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.7 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.4 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.2 },
+      ],
+    },
+    {
+      sessionId: 'ai330-2026-02',
+      tagId: 'tag-ai-330',
+      templateId: 'tpl-loop-current-vs-process',
+      observedAt: '2026-02-20T12:45:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.15 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.4 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.9 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.5 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.25 },
+      ],
+    },
+    {
+      sessionId: 'ai330-2026-03',
+      tagId: 'tag-ai-330',
+      templateId: 'tpl-loop-current-vs-process',
+      observedAt: '2026-03-18T13:10:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.2 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.5 },
+        {
+          pointPercent: 50,
+          pointLabel: '50%',
+          deviation: 1.1,
+          result: 'pass-with-note',
+          technicianNote: 'Bias 50% no limite. Tecnico anexou foto da placa do isolador.',
+          supervisorNote: 'Reverificacao em 15 dias.',
+        },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.6 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.3 },
+      ],
+    },
+  ];
+
+  return [...pt101Sessions, ...tt205Sessions, ...ai330Sessions].flatMap(
+    buildPriorReadingSession,
+  );
+}
+
+function buildPackageTwoPriorReadings(): AssignedWorkPackagePriorTestReadingSnapshot[] {
+  // LT-410 level transmitter (0-8 m, +/-0.2% span). Upper-range bias building
+  // toward the recalibration window flagged in the existing trend hint.
+  const lt410Sessions: PriorSessionDefinition[] = [
+    {
+      sessionId: 'lt410-2025-11',
+      tagId: 'tag-lt-410',
+      templateId: 'tpl-level-basic-calibration',
+      observedAt: '2025-11-30T15:00:00.000Z',
+      unit: 'm',
+      rangeMin: 0,
+      rangeMax: 8,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.002 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.005 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.01 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.04 },
+        { pointPercent: 100, pointLabel: '100%', deviation: 0.05 },
+      ],
+    },
+    {
+      sessionId: 'lt410-2025-12',
+      tagId: 'tag-lt-410',
+      templateId: 'tpl-level-basic-calibration',
+      observedAt: '2025-12-28T15:30:00.000Z',
+      unit: 'm',
+      rangeMin: 0,
+      rangeMax: 8,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.003 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.006 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.015 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.06 },
+        { pointPercent: 90, pointLabel: '90%', deviation: 0.09 },
+      ],
+    },
+    {
+      sessionId: 'lt410-2026-01',
+      tagId: 'tag-lt-410',
+      templateId: 'tpl-level-basic-calibration',
+      observedAt: '2026-01-30T15:45:00.000Z',
+      unit: 'm',
+      rangeMin: 0,
+      rangeMax: 8,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.004 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.008 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.02 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.08 },
+        { pointPercent: 90, pointLabel: '90%', deviation: 0.1 },
+      ],
+    },
+    {
+      sessionId: 'lt410-2026-02',
+      tagId: 'tag-lt-410',
+      templateId: 'tpl-level-basic-calibration',
+      observedAt: '2026-02-28T16:05:00.000Z',
+      unit: 'm',
+      rangeMin: 0,
+      rangeMax: 8,
+      points: [
+        { pointPercent: 0, pointLabel: '0%', deviation: 0.005 },
+        { pointPercent: 25, pointLabel: '25%', deviation: 0.01 },
+        { pointPercent: 50, pointLabel: '50%', deviation: 0.025 },
+        { pointPercent: 75, pointLabel: '75%', deviation: 0.1 },
+        {
+          pointPercent: 90,
+          pointLabel: '90%',
+          deviation: 0.12,
+          result: 'pass-with-note',
+          technicianNote: 'Bias acima de tolerancia em 90%. Justificado por tanque em movimento.',
+          supervisorNote: 'Recalibrar na proxima janela.',
+        },
+      ],
+    },
+  ];
+
+  // XV-402 valve stroke test (0-100% position). Commanded vs observed travel
+  // at the three stroke checkpoints with steady positioner response.
+  const xv402Sessions: PriorSessionDefinition[] = [
+    {
+      sessionId: 'xv402-2025-12',
+      tagId: 'tag-xv-402',
+      templateId: 'tpl-valve-stroke-test',
+      observedAt: '2025-12-22T08:00:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: 'Fechado', deviation: 0.5 },
+        { pointPercent: 50, pointLabel: 'Meio curso', deviation: 1.2 },
+        { pointPercent: 100, pointLabel: 'Aberto', deviation: 0.8 },
+      ],
+    },
+    {
+      sessionId: 'xv402-2026-01',
+      tagId: 'tag-xv-402',
+      templateId: 'tpl-valve-stroke-test',
+      observedAt: '2026-01-20T08:15:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: 'Fechado', deviation: 0.6 },
+        { pointPercent: 50, pointLabel: 'Meio curso', deviation: 1.3 },
+        { pointPercent: 100, pointLabel: 'Aberto', deviation: 0.9 },
+      ],
+    },
+    {
+      sessionId: 'xv402-2026-02',
+      tagId: 'tag-xv-402',
+      templateId: 'tpl-valve-stroke-test',
+      observedAt: '2026-02-22T08:10:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: 'Fechado', deviation: 0.7 },
+        { pointPercent: 50, pointLabel: 'Meio curso', deviation: 1.4 },
+        { pointPercent: 100, pointLabel: 'Aberto', deviation: 1.0 },
+      ],
+    },
+    {
+      sessionId: 'xv402-2026-03',
+      tagId: 'tag-xv-402',
+      templateId: 'tpl-valve-stroke-test',
+      observedAt: '2026-03-22T08:20:00.000Z',
+      unit: '%',
+      rangeMin: 0,
+      rangeMax: 100,
+      points: [
+        { pointPercent: 0, pointLabel: 'Fechado', deviation: 0.8 },
+        { pointPercent: 50, pointLabel: 'Meio curso', deviation: 1.5 },
+        { pointPercent: 100, pointLabel: 'Aberto', deviation: 1.1 },
+      ],
+    },
+  ];
+
+  return [...lt410Sessions, ...xv402Sessions].flatMap(buildPriorReadingSession);
+}
+
 export function buildSeedAssignedWorkPackages(
   technicianUserId: string,
 ): SeededAssignedWorkPackageRecord[] {
@@ -289,7 +727,13 @@ export function buildSeedAssignedWorkPackages(
     assignedTeam: 'Instrumentation Alpha',
     priority: 'high' as const,
     status: 'assigned' as const,
-    packageVersion: 1,
+    // Story 8.13: bump packageVersion so the technician's next refresh
+    // pulls the new templates (renamed AI-330 entries). The
+    // snapshotContractVersion is the DTO/template-payload contract
+    // version and is kept stable so server-side report validation
+    // continues to accept submissions produced against the same
+    // template-payload shape.
+    packageVersion: 2,
     snapshotContractVersion: '2026-04-v1',
     tagCount: 3,
     dueWindow: {
@@ -306,7 +750,13 @@ export function buildSeedAssignedWorkPackages(
     assignedTeam: 'Instrumentation Alpha',
     priority: 'routine' as const,
     status: 'assigned' as const,
-    packageVersion: 1,
+    // Story 8.13: bump packageVersion so the technician's next refresh
+    // pulls the new templates (renamed AI-330 entries). The
+    // snapshotContractVersion is the DTO/template-payload contract
+    // version and is kept stable so server-side report validation
+    // continues to accept submissions produced against the same
+    // template-payload shape.
+    packageVersion: 2,
     snapshotContractVersion: '2026-04-v1',
     tagCount: 2,
     dueWindow: {
@@ -363,6 +813,7 @@ export function buildSeedAssignedWorkPackages(
               'tpl-temperature-input-simulation',
               'tpl-temperature-calibration-verification',
               'tpl-temperature-range-check',
+              'tpl-temperature-loop-range',
             ],
             guidanceReferenceIds: ['guide-rtd-input-check'],
             historySummaryId: 'history-tt-205',
@@ -492,15 +943,41 @@ export function buildSeedAssignedWorkPackages(
             expectedEvidence: ['input source note', 'supporting photo'],
             historyComparisonExpectation: 'compare comparable temperature verification results when available',
           }),
+          // Story 8.12 finding #4: every 4-20 mA ranged instrument needs an
+          // explicit loop-test sweep template so the technician can run a
+          // 0/25/50/75/100% verification across the configured range.
+          buildTemplate({
+            id: 'tpl-temperature-loop-range',
+            instrumentFamily: 'temperature transmitter / RTD input',
+            testPattern: 'loop verification across configured range',
+            title: 'Temperature loop verification',
+            calculationMode: 'expected output vs measured output across loop range',
+            acceptanceStyle: 'within tolerance at each loop checkpoint',
+            captureSummary:
+              'Capture 0/25/50/75/100% temperature checkpoints and verify the loop output across the configured operating range.',
+            expectedLabel: 'Expected temperature',
+            observedLabel: 'Measured output',
+            checklistSteps: buildTemperatureChecklistSteps(),
+            guidedDiagnosisPrompts: buildTemperatureDiagnosisPrompts(),
+            minimumSubmissionEvidence: ['loop checkpoints', 'measured outputs'],
+            expectedEvidence: ['reference source note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated loop drift at the same checkpoints',
+          }),
+          // Story 8.13 finding #1: this template was previously titled
+          // "Analog loop integrity check" which made the visual pattern
+          // resolver classify it as a loop-test and route it through
+          // LoopExecutionScreen. Renamed to "Analog continuity check"
+          // so it routes through the single-point calculation screen;
+          // the dedicated loop sweep lives in tpl-loop-current-vs-process.
           buildTemplate({
             id: 'tpl-loop-integrity-check',
             instrumentFamily: 'analog 4-20 mA loop',
-            testPattern: 'loop integrity check',
-            title: 'Analog loop integrity check',
-            calculationMode: 'expected current vs measured current',
-            acceptanceStyle: 'within tolerance at each loop checkpoint',
+            testPattern: 'continuity verification at zero point',
+            title: 'Analog continuity check',
+            calculationMode: 'expected current vs measured current at zero point',
+            acceptanceStyle: 'within tolerance at the zero checkpoint',
             captureSummary:
-              'Capture expected and measured loop current at the selected checkpoints to verify continuity and stable signal transfer.',
+              'Capture expected and measured current at the zero checkpoint to verify analog continuity and stable signal transfer.',
             expectedLabel: 'Expected current',
             observedLabel: 'Measured current',
             expectedUnit: 'mA',
@@ -515,14 +992,19 @@ export function buildSeedAssignedWorkPackages(
             historyComparisonExpectation: 'compare repeated continuity loss, instability, or loop drift at the same checkpoints',
           }),
           buildTemplate({
+            // Story 8.13 finding #1: renamed from "Analog loop signal
+            // validation" so the visual pattern resolver routes this
+            // through the single-point calculation screen instead of
+            // the loop-test screen. The dedicated loop sweep is in
+            // tpl-loop-current-vs-process below.
             id: 'tpl-loop-signal-validation',
             instrumentFamily: 'analog 4-20 mA loop',
-            testPattern: 'signal validation',
-            title: 'Analog loop signal validation',
-            calculationMode: 'expected current vs measured current',
-            acceptanceStyle: 'tolerance-based pass/fail across validated signal points',
+            testPattern: 'signal validation at span point',
+            title: 'Analog signal validation at span',
+            calculationMode: 'expected current vs measured current at span',
+            acceptanceStyle: 'tolerance-based pass/fail at the span checkpoint',
             captureSummary:
-              'Capture expected and measured current values while validating the loop signal against the configured process range.',
+              'Capture expected and measured current at the span checkpoint to verify analog signal integrity against the configured process range.',
             expectedLabel: 'Expected current',
             observedLabel: 'Measured current',
             expectedUnit: 'mA',
@@ -590,31 +1072,43 @@ export function buildSeedAssignedWorkPackages(
           },
         ],
         historySummaries: [
+          // Story 8.8 data realism: enrich history summaries with measured
+          // values so the technician can verify the comparison screen against
+          // realistic prior calibration data. The structure remains the same
+          // (a single summary per tag); the freeform narrative now contains
+          // explicit point/value pairs and decision context.
           {
             id: 'history-pt-101',
             tagId: 'tag-pt-101',
             lastObservedAt: '2026-03-14T14:30:00.000Z',
-            summaryText: 'Last approved check showed mild span drift at 75% point.',
+            summaryText:
+              'Calibracao aprovada com observacao em 2026-03-14. Ponto 75%: medido 7,62 bar vs esperado 7,50 bar (+0,12 bar, dentro de +/-0,25% span). Supervisor aprovou apos justificativa do tecnico. Recomendou novo check em 30 dias.',
             lastResult: 'pass-with-note',
-            trendHint: 'watch repeated positive drift above mid-span',
+            trendHint:
+              'Deriva positiva acima da meia escala em 3 checks consecutivos. Investigar diafragma se padrao persistir.',
           },
           {
             id: 'history-tt-205',
             tagId: 'tag-tt-205',
             lastObservedAt: '2026-03-12T09:15:00.000Z',
-            summaryText: 'Previous RTD verification passed after retightening terminal block.',
+            summaryText:
+              'Verificacao RTD aprovada em 2026-03-12. Pontos 0/25/50/75/100 C dentro de +/-0,3 C (desvio max +0,18 C @ 75 C). Bloco de terminais reapertado apos ruido intermitente; supervisor aprovou sem observacao.',
             lastResult: 'pass',
-            trendHint: 'repeat wiring check if noise reappears',
+            trendHint:
+              'Reaperto resolveu ruido. Repetir check de fiacao se ruido reaparecer no proximo ciclo.',
           },
           {
             id: 'history-ai-330',
             tagId: 'tag-ai-330',
             lastObservedAt: '2026-03-18T13:10:00.000Z',
-            summaryText: 'Previous loop validation found slight mid-range current drift but remained acceptable.',
+            summaryText:
+              'Validacao de loop 4-20 mA com observacao em 2026-03-18. Em 50%: medido 12,18 mA vs esperado 12,00 mA (+0,18 mA, ~1,1% span, no limite). Tecnico anexou foto da placa do isolador. Supervisor aprovou e marcou para reverificacao em 15 dias.',
             lastResult: 'pass-with-note',
-            trendHint: 'watch recurring mid-range current drift before escalating',
+            trendHint:
+              'Deriva recorrente em meio de faixa. Escalar se proximo check apresentar mesma tendencia.',
           },
         ],
+        priorTestReadings: buildPackageOnePriorReadings(),
       },
     },
     {
@@ -642,6 +1136,7 @@ export function buildSeedAssignedWorkPackages(
               'tpl-level-range-check',
               'tpl-level-basic-calibration',
               'tpl-level-output-verification',
+              'tpl-level-loop-range',
             ],
             guidanceReferenceIds: ['guide-level-reference-check'],
             historySummaryId: 'history-lt-410',
@@ -719,6 +1214,26 @@ export function buildSeedAssignedWorkPackages(
             expectedEvidence: ['reference setup note', 'supporting photo'],
             historyComparisonExpectation: 'compare repeated bias at the same operating region',
           }),
+          // Story 8.12 finding #4: explicit loop-test sweep template for the
+          // level transmitter so the technician can run a 0/25/50/75/100%
+          // verification across the configured 0-8 m range.
+          buildTemplate({
+            id: 'tpl-level-loop-range',
+            instrumentFamily: 'level transmitter',
+            testPattern: 'loop verification across configured range',
+            title: 'Level loop verification',
+            calculationMode: 'expected level vs measured output across loop range',
+            acceptanceStyle: 'within tolerance at each loop checkpoint',
+            captureSummary:
+              'Capture 0/25/50/75/100% level checkpoints and verify the loop output across the configured operating range.',
+            expectedLabel: 'Expected level',
+            observedLabel: 'Measured output',
+            checklistSteps: buildLevelChecklistSteps(),
+            guidedDiagnosisPrompts: buildLevelDiagnosisPrompts(),
+            minimumSubmissionEvidence: ['loop checkpoints', 'measured outputs'],
+            expectedEvidence: ['reference setup note', 'supporting photo'],
+            historyComparisonExpectation: 'compare repeated loop drift at the same checkpoints',
+          }),
           buildTemplate({
             id: 'tpl-valve-stroke-test',
             instrumentFamily: 'control valve with positioner',
@@ -792,19 +1307,24 @@ export function buildSeedAssignedWorkPackages(
             id: 'history-lt-410',
             tagId: 'tag-lt-410',
             lastObservedAt: '2026-02-28T16:05:00.000Z',
-            summaryText: 'Last check noted upper-range bias during high-level verification.',
+            summaryText:
+              'Verificacao de nivel aprovada com observacao em 2026-02-28. Em 90% da faixa: medido 6,12 m vs esperado 6,00 m (+0,12 m, +2,0%, acima de tolerancia 1%). Tecnico justificou como condicao do tanque em movimento. Supervisor aprovou e marcou para recalibracao na proxima janela.',
             lastResult: 'pass-with-note',
-            trendHint: 'watch repeated high-end bias before recalibration',
+            trendHint:
+              'Bias positivo em extremo superior em 2 checks. Recalibrar antes da proxima campanha.',
           },
           {
             id: 'history-xv-402',
             tagId: 'tag-xv-402',
             lastObservedAt: '2026-03-22T08:20:00.000Z',
-            summaryText: 'Previous stroke test returned slight opening delay but stayed acceptable.',
+            summaryText:
+              'Teste de stroke da valvula aprovado em 2026-03-22. Tempo de abertura 0-100%: 3,8 s (limite 4,0 s). Retracao 100-0%: 3,1 s. Posicionador respondeu sem oscilacao em ambos os sentidos. Sem comentarios adicionais do supervisor.',
             lastResult: 'pass',
-            trendHint: 'recheck actuator response if opening lag increases',
+            trendHint:
+              'Resposta dentro do limite. Reavaliar tempo de abertura se ultrapassar 4 s no proximo check.',
           },
         ],
+        priorTestReadings: buildPackageTwoPriorReadings(),
       },
     },
   ];

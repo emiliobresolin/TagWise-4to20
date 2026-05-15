@@ -368,5 +368,14 @@ function buildReportDetail(): SupervisorReviewReportDetail {
       ],
       placeholder: 'No approval decisions have been recorded for this report yet.',
     },
+    aiDiagnosis: {
+      state: 'unavailable',
+      summary: null,
+      detail: null,
+      providerLabel: null,
+      generatedAt: null,
+      failureReason: null,
+      lastRequestedAt: null,
+    },
   };
 }

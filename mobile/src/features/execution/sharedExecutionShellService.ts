@@ -14,6 +14,7 @@ import type {
   SharedExecutionChecklistOutcome,
   SharedExecutionCaptureFieldId,
   SharedExecutionEvidenceState,
+  SharedExecutionLoopReadingPoint,
   SharedExecutionField,
   SharedExecutionGuidanceState,
   SharedExecutionLinkedGuidanceSnippet,
@@ -89,6 +90,11 @@ interface StoredPerTagReportDraftPayload {
   submittedAt?: string | null;
   syncIssue?: string | null;
   syncIssueReasonCode?: string | null;
+  // Story 8.12 finding #2: persisted invalidated flag + supervisor's
+  // return comment. When set, the draft is read-only and a fresh
+  // visit must be started.
+  invalidated?: boolean;
+  invalidationReason?: string | null;
   updatedAt: string;
 }
 
@@ -141,6 +147,65 @@ interface SharedExecutionShellServiceDependencies {
   now?: () => Date;
 }
 
+// Story 8.11: a per-template summary of saved test status, used by the
+// detail screen to show "Concluido" / "Falha" / "Iniciar" badges next to
+// each template in the "Escolher teste" list. The badge severity follows
+// the calculation acceptance so a failing template stays visible to the
+// technician without re-opening the shell.
+export interface SharedExecutionTemplateStatus {
+  templateId: string;
+  templateVersion: string;
+  updatedAt: string;
+  acceptance: SharedExecutionCalculationAcceptance;
+}
+
+// Story 8.11 finding #10: a per-tag visit aggregator that loads every
+// per-template shell the technician has touched on this tag and
+// projects ONE visit-level view consumed by the Compare and Report
+// screens. Persistence stays per-template (each test still has its own
+// calculation / evidence record); the visit view is a thin projection.
+export interface InstrumentVisitTemplateEntry {
+  templateId: string;
+  templateVersion: string;
+  templateTitle: string;
+  testPattern: string;
+  instrumentFamily: string;
+  acceptance: SharedExecutionCalculationAcceptance;
+  acceptanceReason: string | null;
+  expectedValueLabel: string;
+  observedValueLabel: string;
+  signedDeviation: number | null;
+  percentOfSpan: number | null;
+  unit: string | null;
+  updatedAt: string;
+  // Story 8.15: when this template was saved as a loop test, the
+  // per-point detail is mirrored here so the Report screen can render
+  // a "Curva do teste de loop" section without re-loading the shell.
+  loopReadings: SharedExecutionLoopReadingPoint[];
+  loopInputMode: 'pv' | 'ma' | null;
+}
+
+export interface InstrumentVisitView {
+  workPackageId: string;
+  tagId: string;
+  tagCode: string;
+  generatedAt: string;
+  templates: InstrumentVisitTemplateEntry[];
+  photoAttachments: SharedExecutionPhotoAttachment[];
+  observationNotesByTemplate: Array<{ templateId: string; templateTitle: string; notes: string }>;
+  riskItems: SharedExecutionRiskItem[];
+  checklistItemsByTemplate: Array<{
+    templateId: string;
+    templateTitle: string;
+    items: SharedExecutionChecklistItem[];
+  }>;
+  // Canonical per-template shell that anchors submission. The first
+  // template the technician saved calculation for is the anchor so the
+  // submission DTO has a stable identity; the cross-test summary is
+  // appended to its observation notes on submit.
+  canonicalTemplateId: string | null;
+}
+
 export class SharedExecutionShellService {
   private readonly now: () => Date;
 
@@ -149,6 +214,153 @@ export class SharedExecutionShellService {
   constructor(private readonly dependencies: SharedExecutionShellServiceDependencies) {
     this.now = dependencies.now ?? (() => new Date());
     this.templateRegistry = dependencies.templateRegistry ?? new LocalExecutionTemplateRegistry();
+  }
+
+  async loadVisitForTag(
+    session: ActiveUserSession,
+    workPackageId: string,
+    tagId: string,
+  ): Promise<InstrumentVisitView | null> {
+    // Story 8.11 finding #10: project ONE per-visit aggregate from the
+    // per-template shells already persisted for this tag. The
+    // SharedExecutionPhotoAttachment list already lives at the tag
+    // grain (the draft is keyed by tag); only calculation, structured
+    // readings, observation notes, risk items, and checklist live per
+    // template, so we union them across templates here.
+    const snapshot = await this.dependencies.userPartitions
+      .forUser(session.userId)
+      .workPackages.getSnapshot(workPackageId);
+    if (!snapshot) {
+      return null;
+    }
+
+    const tag = snapshot.tags.find((item) => item.id === tagId);
+    if (!tag) {
+      return null;
+    }
+
+    const statuses = await this.listTemplateStatusesForTag(session, workPackageId, tagId);
+    if (statuses.length === 0) {
+      return {
+        workPackageId,
+        tagId,
+        tagCode: tag.tagCode,
+        generatedAt: this.now().toISOString(),
+        templates: [],
+        photoAttachments: [],
+        observationNotesByTemplate: [],
+        riskItems: [],
+        checklistItemsByTemplate: [],
+        canonicalTemplateId: null,
+      };
+    }
+
+    const sortedStatuses = [...statuses].sort((a, b) =>
+      a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0,
+    );
+
+    const templateEntries: InstrumentVisitTemplateEntry[] = [];
+    const observationNotesByTemplate: InstrumentVisitView['observationNotesByTemplate'] = [];
+    const checklistItemsByTemplate: InstrumentVisitView['checklistItemsByTemplate'] = [];
+    const aggregatedRisk = new Map<string, SharedExecutionRiskItem>();
+    let aggregatedPhotos: SharedExecutionPhotoAttachment[] = [];
+
+    for (const status of sortedStatuses) {
+      const shell = await this.loadShell(session, workPackageId, tagId, status.templateId);
+      if (!shell) {
+        continue;
+      }
+
+      const calculation = shell.calculation;
+      const result = calculation?.result ?? null;
+      templateEntries.push({
+        templateId: shell.template.id,
+        templateVersion: shell.template.version,
+        templateTitle: shell.template.title,
+        testPattern: shell.template.testPattern,
+        instrumentFamily: shell.template.instrumentFamily,
+        acceptance: result?.acceptance ?? 'unavailable',
+        acceptanceReason: result?.acceptanceReason ?? null,
+        expectedValueLabel: calculation?.rawInputs.expectedValue ?? '',
+        observedValueLabel: calculation?.rawInputs.observedValue ?? '',
+        signedDeviation: result?.signedDeviation ?? null,
+        percentOfSpan: result?.percentOfSpan ?? null,
+        unit: calculation?.definition.unit ?? null,
+        updatedAt: status.updatedAt,
+        // Story 8.15: mirror per-point loop detail onto the visit entry
+        // so the Report screen renders the curve directly from the
+        // aggregator without re-loading shells.
+        loopReadings: shell.evidence.loopReadings,
+        loopInputMode: shell.evidence.loopInputMode,
+      });
+
+      if (shell.evidence.observationNotes.trim().length > 0) {
+        observationNotesByTemplate.push({
+          templateId: shell.template.id,
+          templateTitle: shell.template.title,
+          notes: shell.evidence.observationNotes,
+        });
+      }
+
+      if (shell.guidance.checklistItems.length > 0) {
+        checklistItemsByTemplate.push({
+          templateId: shell.template.id,
+          templateTitle: shell.template.title,
+          items: shell.guidance.checklistItems,
+        });
+      }
+
+      for (const item of shell.guidance.riskItems) {
+        if (!aggregatedRisk.has(item.id)) {
+          aggregatedRisk.set(item.id, item);
+        }
+      }
+
+      // Photos already aggregate at the tag grain (the draft id is
+      // (workPackage, tag)); just keep the latest snapshot to avoid
+      // duplicating identical entries that each shell sees.
+      aggregatedPhotos = shell.evidence.photoAttachments.slice();
+    }
+
+    return {
+      workPackageId,
+      tagId,
+      tagCode: tag.tagCode,
+      generatedAt: this.now().toISOString(),
+      templates: templateEntries,
+      photoAttachments: aggregatedPhotos,
+      observationNotesByTemplate,
+      riskItems: Array.from(aggregatedRisk.values()),
+      checklistItemsByTemplate,
+      canonicalTemplateId: templateEntries[0]?.templateId ?? null,
+    };
+  }
+
+  async listTemplateStatusesForTag(
+    session: ActiveUserSession,
+    workPackageId: string,
+    tagId: string,
+  ): Promise<SharedExecutionTemplateStatus[]> {
+    // Story 8.11: project a per-template status badge map so the detail
+    // screen can tell the technician which tests on this tag have already
+    // been run, with the calculation outcome (pass/fail) reflected as a
+    // pill color.
+    const records = await this.dependencies.userPartitions
+      .forUser(session.userId)
+      .executionCalculations.listForTag(workPackageId, tagId);
+
+    return records.map((record) => {
+      const acceptance =
+        record.result && typeof record.result === 'object' && 'acceptance' in record.result
+          ? (record.result.acceptance as SharedExecutionTemplateStatus['acceptance'])
+          : 'unavailable';
+      return {
+        templateId: record.templateId,
+        templateVersion: record.templateVersion,
+        updatedAt: record.updatedAt,
+        acceptance,
+      };
+    });
   }
 
   async loadShell(
@@ -329,6 +541,104 @@ export class SharedExecutionShellService {
       : shell;
   }
 
+  // Story 8.15: persist the per-point detail of a loop test. The
+  // worst-case single point flows into the calculation row so the
+  // visit aggregator's "Resumo da visita" panel renders a meaningful
+  // summary; the full curve is stamped on the calculation evidence
+  // row's structuredReadings.loopReadings so the loop screen can
+  // rehydrate the points after navigation and the Report screen can
+  // display a formatted results table.
+  async saveLoopTestEvidence(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+    input: {
+      points: SharedExecutionLoopReadingPoint[];
+      inputMode: 'pv' | 'ma';
+      worstCase: {
+        rawInputs: SharedExecutionCalculationRawInputs;
+      } | null;
+    },
+  ): Promise<SharedExecutionShell> {
+    if (isReportLockedForTechnician(shell.report)) {
+      return shell;
+    }
+
+    const updatedAt = this.now().toISOString();
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const draftReportId = await ensureDraftReportLink(store, shell, updatedAt);
+
+    let structuredReadings: StoredExecutionStructuredReadingsEvidence | null;
+    if (shell.calculation && input.worstCase) {
+      const result = computeDeterministicCalculation(
+        shell.calculation.definition,
+        input.worstCase.rawInputs,
+      );
+      await this.dependencies.userPartitions
+        .forUser(session.userId)
+        .executionCalculations.saveCalculation({
+          workPackageId: shell.workPackageId,
+          tagId: shell.tagId,
+          templateId: shell.template.id,
+          templateVersion: shell.template.version,
+          calculationMode: shell.template.calculationMode,
+          acceptanceStyle: shell.template.acceptanceStyle,
+          executionContext: shell.calculation.definition.executionContext,
+          rawInputs: input.worstCase.rawInputs,
+          result,
+          updatedAt,
+        });
+      structuredReadings = {
+        ...buildStructuredReadingsEvidence(shell, input.worstCase.rawInputs, result),
+        loopReadings: input.points,
+        loopInputMode: input.inputMode,
+      };
+    } else {
+      // No calculation definition (template doesn't expose deterministic
+      // calc) - still persist the per-point detail so it doesn't get
+      // lost. The worst-case fields are filled with neutral defaults.
+      structuredReadings = {
+        expectedLabel: 'Loop expected',
+        observedLabel: 'Loop measured',
+        expectedValue: '',
+        observedValue: '',
+        unit: null,
+        signedDeviation: 0,
+        absoluteDeviation: 0,
+        percentOfSpan: null,
+        acceptance: 'unavailable',
+        acceptanceReason: 'Loop test sem definicao deterministica para o pior caso.',
+        loopReadings: input.points,
+        loopInputMode: input.inputMode,
+      };
+    }
+
+    await store.executionEvidence.saveEvidence({
+      workPackageId: shell.workPackageId,
+      tagId: shell.tagId,
+      templateId: shell.template.id,
+      templateVersion: shell.template.version,
+      draftReportId,
+      executionStepId: 'calculation',
+      structuredReadings,
+      observationNotes: '',
+      checklistOutcomes: [],
+      riskJustifications: [],
+      createdAt: updatedAt,
+      updatedAt,
+    });
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell
+      ? mergeInSessionEvidenceIntoShell(reloadedShell, shell)
+      : shell;
+  }
+
   updateObservationNotes(shell: SharedExecutionShell, observationNotes: string): SharedExecutionShell {
     if (shell.evidence.observationNotes === observationNotes || isReportLockedForTechnician(shell.report)) {
       return shell;
@@ -397,7 +707,11 @@ export class SharedExecutionShellService {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
     photo: SharedExecutionPhotoAttachmentInput,
-    options?: { contextNote?: string | null },
+    options?: {
+      contextNote?: string | null;
+      technicianNote?: string | null;
+      executionStepIdOverride?: SharedExecutionStepKind;
+    },
   ): Promise<SharedExecutionShell> {
     if (isReportLockedForTechnician(shell.report)) {
       return shell;
@@ -414,12 +728,20 @@ export class SharedExecutionShellService {
     });
 
     // Story 8.7 AC 24: per-photo `contextNote` carries sub-step context (e.g.
-    // "Ponto de loop 50%"). Trim and treat empty strings as null. The canonical
-    // executionStepId union remains the 5 fixed values; this field is a
-    // disambiguator, not a step kind.
+    // "Ponto de loop 50%"). Story 8.8 adds `technicianNote` for free-text
+    // observations and `executionStepIdOverride` for instrument-level photos
+    // attached from the tag detail screen (D-03 / D-04). All three fields are
+    // trimmed, empty strings become null, and the canonical executionStepId
+    // union now includes 'instrument'.
     const trimmedContextNote = options?.contextNote?.trim() ?? null;
     const contextNote: string | null =
       trimmedContextNote && trimmedContextNote.length > 0 ? trimmedContextNote : null;
+    const trimmedTechnicianNote = options?.technicianNote?.trim() ?? null;
+    const technicianNote: string | null =
+      trimmedTechnicianNote && trimmedTechnicianNote.length > 0 ? trimmedTechnicianNote : null;
+    const executionStepId: SharedExecutionStepKind = options?.executionStepIdOverride
+      ? options.executionStepIdOverride
+      : toExecutionStepKind(shell.progress.currentStepId);
 
     await store.evidenceMetadata.saveEvidenceMetadata({
       evidenceId: buildPhotoEvidenceId(updatedAt),
@@ -435,8 +757,9 @@ export class SharedExecutionShellService {
         templateId: shell.template.id,
         templateVersion: shell.template.version,
         draftReportId,
-        executionStepId: toExecutionStepKind(shell.progress.currentStepId),
+        executionStepId,
         contextNote,
+        technicianNote,
         source: photo.source,
         width: photo.width,
         height: photo.height,
@@ -486,6 +809,66 @@ export class SharedExecutionShellService {
 
     await store.mediaSandbox.deleteFile(metadata.mediaRelativePath);
     await store.evidenceMetadata.deleteEvidenceMetadata(evidenceId);
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell
+      ? mergeInSessionWorkingStateIntoShell(reloadedShell, shell)
+      : shell;
+  }
+
+  /**
+   * Story 8.8 D-04: update the technician's free-text observation on an
+   * existing photo attachment in place. Trims, normalizes empty to null, and
+   * leaves all other photo fields (sync state, server presence, contextNote)
+   * untouched. Locked reports cannot be mutated.
+   */
+  async updatePhotoTechnicianNote(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+    evidenceId: string,
+    note: string | null,
+  ): Promise<SharedExecutionShell> {
+    if (isReportLockedForTechnician(shell.report)) {
+      return shell;
+    }
+
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const metadata = await store.evidenceMetadata.getEvidenceById(evidenceId);
+
+    if (
+      !metadata ||
+      metadata.businessObjectType !== LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE ||
+      metadata.businessObjectId !== shell.evidence.draftReportId
+    ) {
+      return shell;
+    }
+
+    const currentPayload = parsePhotoAttachmentPayload(metadata.payloadJson);
+    if (!currentPayload) {
+      return shell;
+    }
+
+    const trimmed = note?.trim() ?? null;
+    const nextNote: string | null = trimmed && trimmed.length > 0 ? trimmed : null;
+
+    await store.evidenceMetadata.saveEvidenceMetadata({
+      evidenceId,
+      businessObjectType: metadata.businessObjectType,
+      businessObjectId: metadata.businessObjectId,
+      fileName: metadata.fileName,
+      mediaRelativePath: metadata.mediaRelativePath,
+      mimeType: metadata.mimeType,
+      payloadJson: JSON.stringify({
+        ...currentPayload,
+        technicianNote: nextNote,
+      } satisfies StoredExecutionPhotoAttachmentPayload),
+    });
 
     const reloadedShell = await this.loadShell(
       session,
@@ -619,11 +1002,12 @@ export class SharedExecutionShellService {
         existingPayload?.state === SUBMITTED_PENDING_SYNC_REPORT_STATE ||
         existingPayload?.state === SUBMITTED_PENDING_REVIEW_REPORT_STATE;
 
-      if (!alreadySubmitted && shell.guidance.submitReadiness === 'blocked') {
-        throw new Error(
-          'This per-tag report is not ready for local submission yet. Capture the minimum evidence and required justifications first.',
-        );
-      }
+      // Story 8.10 finding #6: per user product rule, the mobile shell must
+      // NEVER hard-block submission. Whatever warnings are visible become
+      // sync issues the user can resolve later; the report goes into the
+      // local queue regardless. The 'blocked' branch is intentionally a
+      // no-op now: warnings flow through to the report, but submission
+      // continues.
 
       const reviewNotes = alreadySubmitted
         ? existingPayload?.reviewNotes ?? shell.report.reviewNotes
@@ -1126,13 +1510,20 @@ function buildRiskItems(
     context.template.minimumSubmissionEvidence,
     context.evidence,
   )) {
+    // Story 8.10 finding #6: per user product rule, the mobile shell must
+    // NEVER hard-block submission. Minimum-evidence gaps surface as visible
+    // warnings (and the supervisor will see them on the submitted report),
+    // but the technician can always push the report to the local queue.
+    // Backend validation may still reject the submission; the user sees that
+    // as a sync issue on the report and resolves it later. Severity stays as
+    // 'warning' here so `submitReadiness` never flips to 'blocked'.
     riskItems.push({
       id: buildEvidenceRiskId('minimum-evidence', label),
       reasonType: 'missing-minimum-evidence',
-      severity: 'submit-block',
+      severity: 'warning',
       title: `Evidencia minima ausente: ${label}`,
       detail:
-        'Esta evidencia faz parte do minimo do template e precisa ser capturada antes do envio.',
+        'Esta evidencia faz parte do minimo do template. Recomendado capturar antes do envio; o envio nao e bloqueado.',
       justificationRequired: false,
       justificationPrompt: null,
       justificationText: '',
@@ -1363,6 +1754,12 @@ function buildReportDraftState(input: {
     submittedAt: storedPayload?.submittedAt ?? null,
     syncIssue: storedPayload?.syncIssue ?? null,
     syncIssueReasonCode: storedPayload?.syncIssueReasonCode ?? null,
+    // Story 8.12 finding #2: thread the persisted invalidated flag into
+    // the in-memory shell so editability predicates can deny edits on a
+    // supervisor-returned draft, and the UI can render the read-only
+    // history hint with the supervisor's return comment.
+    invalidated: storedPayload?.invalidated ?? false,
+    invalidationReason: storedPayload?.invalidationReason ?? null,
     approvalHistory: storedPayload?.approvalHistory ?? {
       items: [],
       placeholder: 'No approval decisions have been recorded for this report yet.',
@@ -2178,6 +2575,14 @@ function buildEvidenceState(
   );
   const latestPhotoAttachment = storedPhotoAttachments.at(-1);
 
+  // Story 8.15: loop readings live in the calculation evidence row
+  // (executionStepId='calculation') so the visit aggregator can keep
+  // its existing single-point view while the per-point detail is
+  // preserved alongside.
+  const loopReadings = calculationEvidence?.structuredReadings?.loopReadings ?? [];
+  const loopInputMode =
+    calculationEvidence?.structuredReadings?.loopInputMode ?? null;
+
   return {
     draftReportId:
       guidanceEvidence?.draftReportId ??
@@ -2189,6 +2594,9 @@ function buildEvidenceState(
     guidanceEvidenceUpdatedAt: guidanceEvidence?.updatedAt ?? null,
     photoAttachments: storedPhotoAttachments,
     photoEvidenceUpdatedAt: latestPhotoAttachment?.updatedAt ?? null,
+    loopReadings,
+    loopInputMode,
+    loopUpdatedAt: loopReadings.length > 0 ? calculationEvidence?.updatedAt ?? null : null,
   };
 }
 
@@ -2469,6 +2877,7 @@ async function buildPhotoAttachments(
         evidenceId: record.evidenceId,
         executionStepId: payload.executionStepId,
         contextNote: payload.contextNote ?? null,
+        technicianNote: payload.technicianNote ?? null,
         fileName: record.fileName,
         mimeType: record.mimeType,
         previewUri: await store.mediaSandbox.resolveFileUri(record.mediaRelativePath),
@@ -2525,6 +2934,10 @@ function parsePhotoAttachmentPayload(
         contextNote:
           typeof parsed.contextNote === 'string' || parsed.contextNote === null
             ? parsed.contextNote
+            : null,
+        technicianNote:
+          typeof parsed.technicianNote === 'string' || parsed.technicianNote === null
+            ? parsed.technicianNote
             : null,
         source: parsed.source,
         width: typeof parsed.width === 'number' ? parsed.width : null,
@@ -2726,6 +3139,13 @@ function parseStoredPerTagReportDraftPayload(
           ? parsed.syncIssueReasonCode
           : undefined,
       approvalHistory: parseApprovalHistory(parsed.approvalHistory),
+      // Story 8.12 finding #2: round-trip the invalidated flag so the
+      // per-tag draft remembers a supervisor return across app restarts.
+      invalidated: typeof parsed.invalidated === 'boolean' ? parsed.invalidated : undefined,
+      invalidationReason:
+        typeof parsed.invalidationReason === 'string' || parsed.invalidationReason === null
+          ? parsed.invalidationReason
+          : undefined,
       updatedAt: parsed.updatedAt,
     };
   } catch {
@@ -2759,6 +3179,11 @@ function buildStoredPerTagReportDraftPayload(
     submittedAt: input.submittedAt,
     syncIssue: shell.report.syncIssue ?? null,
     syncIssueReasonCode: shell.report.syncIssueReasonCode ?? null,
+    // Story 8.12 finding #2: persist the invalidated flag + reason so
+    // that even local-only writes (e.g. observation note edits during
+    // re-review) do not clear the supervisor-return marker.
+    invalidated: shell.report.invalidated ?? false,
+    invalidationReason: shell.report.invalidationReason ?? null,
     approvalHistory: shell.report.approvalHistory ?? {
       items: [],
       placeholder: 'No approval decisions have been recorded for this report yet.',
@@ -2969,6 +3394,7 @@ function toExecutionStepKind(stepId: string): SharedExecutionStepKind {
 function isExecutionStepKind(value: unknown): value is SharedExecutionStepKind {
   return (
     value === 'context' ||
+    value === 'instrument' ||
     value === 'calculation' ||
     value === 'history' ||
     value === 'guidance' ||

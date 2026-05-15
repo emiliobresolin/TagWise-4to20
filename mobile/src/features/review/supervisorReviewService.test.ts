@@ -411,6 +411,15 @@ describe('SupervisorReviewService', () => {
               ],
               placeholder: '',
             },
+            aiDiagnosis: {
+              state: 'unavailable',
+              summary: null,
+              detail: null,
+              providerLabel: null,
+              generatedAt: null,
+              failureReason: null,
+              lastRequestedAt: null,
+            },
           },
         };
       },

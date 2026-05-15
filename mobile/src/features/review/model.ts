@@ -15,11 +15,31 @@ export interface SupervisorReviewRiskFlag {
   justificationText: string;
 }
 
+export type SupervisorReviewPhotoExecutionStepId =
+  | 'context'
+  | 'instrument'
+  | 'calculation'
+  | 'history'
+  | 'guidance'
+  | 'report';
+
 export interface SupervisorReviewPhotoAttachment {
   evidenceId: string;
   serverEvidenceId: string | null;
   presenceFinalizedAt: string | null;
   syncState: 'local-only' | 'queued' | 'syncing' | 'pending-validation' | 'synced' | 'sync-issue';
+  /**
+   * Story 8.8 D-02: per-photo sub-step label set by the technician's mobile
+   * client at attach time. Pre-8.8 reports do not carry this field; the
+   * supervisor renderer must treat null/undefined as "no sub-step label".
+   */
+  contextNote?: string | null;
+  executionStepId?: SupervisorReviewPhotoExecutionStepId | null;
+  /**
+   * Story 8.8 D-04: per-photo technician free-text observation. Pre-8.8
+   * reports do not carry this field.
+   */
+  technicianNote?: string | null;
 }
 
 export interface SupervisorReviewEvidenceStatus {
@@ -80,6 +100,28 @@ export interface SupervisorReviewReportDetail extends SupervisorReviewQueueItem 
     items: SupervisorReviewApprovalHistoryItem[];
     placeholder: string;
   };
+  /**
+   * Story 8.9 D-01: assistive AI diagnosis surface on supervisor review.
+   * Always present (defaults to state='unavailable' when no AI row exists on
+   * the backend). Never blocks supervisor decision — assistive only.
+   */
+  aiDiagnosis: SupervisorReviewAiDiagnosisProjection;
+}
+
+export type SupervisorReviewAiDiagnosisState =
+  | 'pending'
+  | 'available'
+  | 'unavailable'
+  | 'failed-nonblocking';
+
+export interface SupervisorReviewAiDiagnosisProjection {
+  state: SupervisorReviewAiDiagnosisState;
+  summary: string | null;
+  detail: string | null;
+  providerLabel: string | null;
+  generatedAt: string | null;
+  failureReason: string | null;
+  lastRequestedAt: string | null;
 }
 
 export interface SupervisorReviewQueueResponse {

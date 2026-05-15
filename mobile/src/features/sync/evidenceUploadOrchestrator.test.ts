@@ -12,6 +12,7 @@ import type {
 import type { ActiveUserSession } from '../auth/model';
 import type {
   SharedExecutionPhotoAttachment,
+  SharedExecutionReportLifecycleState,
   SharedExecutionShell,
   StoredExecutionPhotoAttachmentPayload,
 } from '../execution/model';
@@ -117,6 +118,7 @@ describe('EvidenceUploadOrchestrator', () => {
         finalizeEvidenceBinaryUpload,
         submitReportForValidation: vi.fn(),
         getReportSubmissionStatus: vi.fn(),
+        requestAiDiagnosis: vi.fn(),
       },
       binaryUploadBoundary: { uploadBinary },
       now: () => new Date('2026-04-23T14:11:00.000Z'),
@@ -178,9 +180,14 @@ describe('EvidenceUploadOrchestrator', () => {
       binaryUploadBoundary: { uploadBinary: vi.fn() },
     });
 
-    await expect(orchestrator.syncSubmittedReportEvidence(connectedSession, shell)).rejects.toThrow(
-      'metadata service unavailable',
-    );
+    // Story 8.12 finding #2 / N-3: per-photo upload failures are no
+    // longer rethrown from syncSubmittedReportEvidence - the failure is
+    // already recorded on the photo's `syncIssue` field and the report
+    // itself is queued/submitted independently. The orchestrator call
+    // must resolve cleanly; the photo's syncState records the issue.
+    await expect(
+      orchestrator.syncSubmittedReportEvidence(connectedSession, shell),
+    ).resolves.toBeUndefined();
 
     const payload = await loadPhotoPayload(store, attachment.evidenceId);
     expect(payload).toMatchObject({
@@ -225,9 +232,10 @@ describe('EvidenceUploadOrchestrator', () => {
       binaryUploadBoundary: { uploadBinary: vi.fn() },
     });
 
-    await expect(orchestrator.syncSubmittedReportEvidence(connectedSession, shell)).rejects.toThrow(
-      'Evidence file type must be one of:',
-    );
+    // Story 8.12 finding #2 / N-3: per-photo failures resolve cleanly.
+    await expect(
+      orchestrator.syncSubmittedReportEvidence(connectedSession, shell),
+    ).resolves.toBeUndefined();
 
     const payload = await loadPhotoPayload(store, attachment.evidenceId);
     expect(payload).toMatchObject({
@@ -291,9 +299,10 @@ describe('EvidenceUploadOrchestrator', () => {
       now: () => new Date('2026-04-23T14:11:00.000Z'),
     });
 
-    await expect(orchestrator.syncSubmittedReportEvidence(connectedSession, shell)).rejects.toThrow(
-      'object storage verification unavailable',
-    );
+    // Story 8.12 finding #2 / N-3: per-photo failure does not bubble up.
+    await expect(
+      orchestrator.syncSubmittedReportEvidence(connectedSession, shell),
+    ).resolves.toBeUndefined();
 
     expect(uploadBinary).toHaveBeenCalledOnce();
     const payload = await loadPhotoPayload(store, attachment.evidenceId);
@@ -371,6 +380,14 @@ describe('EvidenceUploadOrchestrator', () => {
             serverEvidenceId: 'server-evidence-1',
             presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
             syncState: 'pending-validation',
+            // Story 8.8 D-02 / D-04: contextNote, executionStepId, and
+            // technicianNote round-trip from the local photo payload into the
+            // backend submission DTO. The default fixture has them all null
+            // (no sub-step label, no observation); the dedicated round-trip
+            // test below asserts non-null values flow through.
+            contextNote: null,
+            executionStepId: 'guidance',
+            technicianNote: null,
           },
         ],
       }),
@@ -391,6 +408,86 @@ describe('EvidenceUploadOrchestrator', () => {
       syncIssue: null,
     });
     await expect(runtime.repositories.localWorkState.getUnsyncedWorkCount()).resolves.toBe(0);
+  });
+
+  it('round-trips contextNote, executionStepId and technicianNote through the report submission DTO (Story 8.8 D-02 / D-04)', async () => {
+    const labeledAttachment = buildPhotoAttachment({
+      contextNote: 'Ponto de loop 50%',
+      executionStepId: 'instrument',
+      technicianNote: 'Loop OK, cabos danificados na flange',
+      metadataSyncedAt: '2026-04-23T14:10:00.000Z',
+      serverEvidenceId: 'server-evidence-rt',
+      presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+      syncState: 'pending-validation',
+    });
+    const { runtime, store, shell, attachment } = await createFixture(labeledAttachment);
+    await seedReportDraftAndSubmitQueue(store, shell);
+    await seedEvidenceQueueItems(store, shell, attachment);
+    const finalizedSync = '2026-04-23T14:12:00.000Z';
+    const syncEvidenceMetadata = vi.fn(async () => ({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: 'server-evidence-rt',
+      reportId: shell.report.reportId,
+      evidenceId: attachment.evidenceId,
+      metadataReceivedAt: '2026-04-23T14:10:00.000Z',
+      presenceStatus: 'metadata-recorded' as const,
+    }));
+    const authorizeEvidenceBinaryUpload = vi.fn(async () => ({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: 'server-evidence-rt',
+      reportId: shell.report.reportId,
+      evidenceId: attachment.evidenceId,
+      objectKey: 'objects/server-evidence-rt',
+      uploadUrl: 'https://example.com/upload/rt',
+      uploadMethod: 'PUT' as const,
+      requiredHeaders: {},
+      expiresAt: '2026-04-23T14:30:00.000Z',
+    }));
+    const finalizeEvidenceBinaryUpload = vi.fn(async () => ({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: 'server-evidence-rt',
+      reportId: shell.report.reportId,
+      evidenceId: attachment.evidenceId,
+      presenceStatus: 'binary-finalized' as const,
+      presenceFinalizedAt: finalizedSync,
+    }));
+    const submitReportForValidation = vi.fn(async () => ({
+      contractVersion: REPORT_SUBMISSION_API_CONTRACT_VERSION,
+      reportId: shell.report.reportId,
+      serverReportVersion: `report-submission:user-tech:${shell.report.reportId}:rt`,
+      reportState: 'submitted-pending-review' as const,
+      lifecycleState: 'Submitted - Pending Supervisor Review' as SharedExecutionReportLifecycleState,
+      syncState: 'synced' as const,
+      acceptedAt: '2026-04-23T14:20:00.000Z',
+    }));
+
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: runtime.repositories.userPartitions,
+      apiClient: {
+        syncEvidenceMetadata,
+        authorizeEvidenceBinaryUpload,
+        finalizeEvidenceBinaryUpload,
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary: vi.fn() },
+      localWorkState: runtime.repositories.localWorkState,
+      now: () => new Date('2026-04-23T14:20:00.000Z'),
+    });
+
+    await orchestrator.syncSubmittedReportEvidence(connectedSession, shell);
+
+    expect(submitReportForValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        photoAttachments: [
+          expect.objectContaining({
+            evidenceId: attachment.evidenceId,
+            contextNote: 'Ponto de loop 50%',
+            executionStepId: 'instrument',
+            technicianNote: 'Loop OK, cabos danificados na flange',
+          }),
+        ],
+      }),
+    );
   });
 
   it('submits the report for server validation even when a per-attachment sync fails', async () => {
@@ -431,9 +528,13 @@ describe('EvidenceUploadOrchestrator', () => {
       now: () => new Date('2026-04-23T14:20:00.000Z'),
     });
 
+    // Story 8.12 finding #2 / N-3: per-photo failure no longer rethrows,
+    // so the orchestrator resolves and the caller sees no error - the
+    // report itself succeeded and the photo's syncIssue captures the
+    // upload problem for independent retry.
     await expect(
       orchestrator.syncSubmittedReportEvidence(connectedSession, shell),
-    ).rejects.toThrow('metadata service unavailable');
+    ).resolves.toBeUndefined();
 
     // The report submission ran despite the photo failure.
     expect(submitReportForValidation).toHaveBeenCalledTimes(1);
@@ -555,6 +656,15 @@ describe('EvidenceUploadOrchestrator', () => {
           },
         ],
         placeholder: '',
+      },
+      aiDiagnosis: {
+        state: 'unavailable' as const,
+        summary: null,
+        detail: null,
+        providerLabel: null,
+        generatedAt: null,
+        failureReason: null,
+        lastRequestedAt: null,
       },
     }));
     const orchestrator = new EvidenceUploadOrchestrator({
@@ -722,6 +832,7 @@ function buildPhotoAttachment(
     evidenceId: 'photo:20260423140500:orchestrator',
     executionStepId: 'guidance',
     contextNote: null,
+    technicianNote: null,
     fileName: 'field-photo.jpg',
     mimeType: 'image/jpeg',
     previewUri: 'field-photo.jpg',
@@ -802,6 +913,9 @@ function buildShell(attachment: SharedExecutionPhotoAttachment): SharedExecution
       guidanceEvidenceUpdatedAt: null,
       photoAttachments: [attachment],
       photoEvidenceUpdatedAt: attachment.updatedAt,
+      loopReadings: [],
+      loopInputMode: null,
+      loopUpdatedAt: null,
     },
     report: {
       reportId,
@@ -852,6 +966,12 @@ async function saveLocalEvidence(
       templateVersion: shell.template.version,
       draftReportId: shell.report.reportId,
       executionStepId: attachment.executionStepId,
+      // Story 8.8 D-02 / D-04: preserve the per-photo sub-step label and
+      // technician note when the test fixture seeds local evidence; without
+      // these fields the round-trip test cannot prove that the orchestrator
+      // forwards them into the submission DTO.
+      contextNote: attachment.contextNote,
+      technicianNote: attachment.technicianNote,
       source: attachment.source,
       width: attachment.width,
       height: attachment.height,

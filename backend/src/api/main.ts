@@ -20,6 +20,9 @@ import {
   ManagerReviewService,
   SupervisorReviewService,
 } from '../modules/review/supervisorReviewService';
+import { AiDiagnosisRepository } from '../modules/ai-diagnosis/aiDiagnosisRepository';
+import { AiDiagnosisService } from '../modules/ai-diagnosis/aiDiagnosisService';
+import { WorkerJobRepository } from '../modules/worker-jobs/workerJobRepository';
 import { createApiRequestHandler } from './createApiRequestHandler';
 import { createS3EvidenceObjectStorageClient } from '../platform/storage/objectStorage';
 
@@ -66,17 +69,43 @@ async function main() {
   const mobileDiagnosticsService = new MobileDiagnosticsService(
     new MobileDiagnosticsRepository(pool),
   );
-  const reportSubmissionService = new ReportSubmissionService(
-    new ReportSubmissionRepository(pool),
+  // Story 8.9 D-01: wire AI diagnosis service. It needs the report
+  // submission repo + work package service to derive the provider input at
+  // request time, and the worker job repo to enqueue the background job.
+  const reportSubmissionRepository = new ReportSubmissionRepository(pool);
+  const aiDiagnosisRepository = new AiDiagnosisRepository(pool);
+  const workerJobRepository = new WorkerJobRepository(pool);
+  const aiDiagnosisService = new AiDiagnosisService(
+    aiDiagnosisRepository,
+    workerJobRepository,
+    reportSubmissionRepository,
     assignedWorkPackageService,
+  );
+
+  const reportSubmissionService = new ReportSubmissionService(
+    reportSubmissionRepository,
+    assignedWorkPackageService,
+    undefined,
+    {
+      aiDiagnosisService,
+      onAiEnqueueError: (error, reportId) => {
+        logger.warn('ai-diagnosis.enqueue.failed', {
+          reportId,
+          message: error instanceof Error ? error.message : 'unknown',
+        });
+      },
+    },
   );
   const supervisorReviewService = new SupervisorReviewService(
     new SupervisorReviewRepository(pool),
     undefined,
     manager.id,
+    aiDiagnosisService,
   );
   const managerReviewService = new ManagerReviewService(
     new SupervisorReviewRepository(pool),
+    undefined,
+    aiDiagnosisService,
   );
   await supervisorReviewService.ensureSeedRoutes(
     supervisor.id,
@@ -98,6 +127,7 @@ async function main() {
       managerReviewService,
       reportSubmissionService,
       supervisorReviewService,
+      aiDiagnosisService,
     }),
   });
 

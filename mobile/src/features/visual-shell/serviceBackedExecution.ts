@@ -172,7 +172,7 @@ export function buildVisualExecutionCalculation(
       'Faixa esperada nao declarada',
     result: buildCalculationResult(calculation),
     updatedAtLabel: calculation.updatedAt ? formatTimestamp(calculation.updatedAt) : 'Ainda nao salvo',
-    editable: isTechnicianEditableReport(shell.report.state),
+    editable: isTechnicianEditableReport(shell.report),
     conversion: resolveLoopConversionMetadata(definition),
     unavailableReason: null,
   };
@@ -268,7 +268,7 @@ export function buildVisualExecutionGuidance(
         ? 'Pendencias que bloqueiam envio'
         : 'Sem bloqueio para envio',
     submitReadinessSeverity: shell.guidance.submitReadiness === 'blocked' ? 'due' : 'ok',
-    editable: isTechnicianEditableReport(shell.report.state),
+    editable: isTechnicianEditableReport(shell.report),
     unavailableReason: null,
   };
 }
@@ -310,8 +310,13 @@ export function resolveLoopConversionMetadata(
   };
 }
 
-function isTechnicianEditableReport(state: SharedExecutionShell['report']['state']): boolean {
-  return state === 'technician-owned-draft' || state === 'submitted-pending-sync';
+function isTechnicianEditableReport(report: SharedExecutionShell['report']): boolean {
+  // Story 8.12 finding #2: invalidated drafts (supervisor returned the
+  // report; technician must start fresh on the next visit) are read-only.
+  if (report.invalidated) {
+    return false;
+  }
+  return report.state === 'technician-owned-draft' || report.state === 'submitted-pending-sync';
 }
 
 export function convertLoopValue(

@@ -176,6 +176,7 @@ function tagContext(tag: LocalAssignedTagEntry): LocalTagContext {
       lastResult: `last-result-${tag.tagCode}`,
       recurrenceCue: 'No recurrence',
     },
+    priorReadings: [],
     referencePointers: {
       state: 'available',
       templates: ['tpl-local'],

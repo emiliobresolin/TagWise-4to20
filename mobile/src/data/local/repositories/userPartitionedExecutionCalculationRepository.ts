@@ -20,6 +20,37 @@ export class UserPartitionedExecutionCalculationRepository {
     private readonly ownerUserId: string,
   ) {}
 
+  async listForTag(
+    workPackageId: string,
+    tagId: string,
+  ): Promise<StoredExecutionCalculationRecord[]> {
+    // Story 8.11: enumerate every persisted calculation for a tag so the
+    // detail screen can render per-template status badges (Concluido /
+    // Falha / Iniciar) without loading each shell individually.
+    const rows = await this.database.getAllAsync<ExecutionCalculationRow>(
+      `
+        SELECT
+          work_package_id,
+          tag_id,
+          template_id,
+          template_version,
+          calculation_mode,
+          acceptance_style,
+          execution_context_json,
+          raw_inputs_json,
+          result_json,
+          updated_at
+        FROM user_partitioned_execution_calculations
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?;
+      `,
+      [this.ownerUserId, workPackageId, tagId],
+    );
+
+    return rows.map(mapExecutionCalculationRow);
+  }
+
   async getCalculation(
     workPackageId: string,
     tagId: string,
@@ -50,6 +81,20 @@ export class UserPartitionedExecutionCalculationRepository {
     );
 
     return row ? mapExecutionCalculationRow(row) : null;
+  }
+
+  async deleteForWorkPackage(workPackageId: string): Promise<void> {
+    // Story 8.13: drop every saved calculation row for this work
+    // package so the detail screen badges and the visit aggregator
+    // start fresh after re-download.
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_execution_calculations
+        WHERE owner_user_id = ?
+          AND work_package_id = ?;
+      `,
+      [this.ownerUserId, workPackageId],
+    );
   }
 
   async saveCalculation(record: StoredExecutionCalculationRecord): Promise<void> {

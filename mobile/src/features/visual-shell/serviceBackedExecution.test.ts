@@ -380,6 +380,9 @@ function buildShell(
       guidanceEvidenceUpdatedAt: null,
       photoAttachments: [],
       photoEvidenceUpdatedAt: null,
+      loopReadings: [],
+      loopInputMode: null,
+      loopUpdatedAt: null,
     },
     report: {
       reportId: 'draft-001',

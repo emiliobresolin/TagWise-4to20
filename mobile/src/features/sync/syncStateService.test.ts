@@ -130,7 +130,7 @@ describe('SyncStateService', () => {
       executionShellService: { loadShell },
       evidenceUploadOrchestrator: {
         syncSubmittedReportEvidence,
-        refreshReportServerStatus: vi.fn(async () => undefined),
+        refreshReportServerStatus: vi.fn(async () => null),
       },
     });
 
@@ -180,7 +180,7 @@ describe('SyncStateService', () => {
       executionShellService: { loadShell: vi.fn(async () => shell) },
       evidenceUploadOrchestrator: {
         syncSubmittedReportEvidence,
-        refreshReportServerStatus: vi.fn(async () => undefined),
+        refreshReportServerStatus: vi.fn(async () => null),
       },
     });
 
@@ -233,7 +233,7 @@ describe('SyncStateService', () => {
       executionShellService: { loadShell: vi.fn(async () => shell) },
       evidenceUploadOrchestrator: {
         syncSubmittedReportEvidence,
-        refreshReportServerStatus: vi.fn(async () => undefined),
+        refreshReportServerStatus: vi.fn(async () => null),
       },
     });
 
@@ -292,7 +292,7 @@ describe('SyncStateService', () => {
       executionShellService: { loadShell: vi.fn(async () => reloadedShell) },
       evidenceUploadOrchestrator: {
         syncSubmittedReportEvidence,
-        refreshReportServerStatus: vi.fn(async () => undefined),
+        refreshReportServerStatus: vi.fn(async () => null),
       },
     });
 
@@ -335,7 +335,7 @@ describe('SyncStateService', () => {
       },
     };
     const loadShell = vi.fn(async () => reloadedShell);
-    const refreshReportServerStatus = vi.fn(async () => undefined);
+    const refreshReportServerStatus = vi.fn(async () => null);
     const service = new SyncStateService({
       userPartitions: buildStoreFactory({
         drafts: [],
@@ -353,7 +353,7 @@ describe('SyncStateService', () => {
 
     expect(refreshReportServerStatus).toHaveBeenCalledWith(connectedSession, shell);
     expect(loadShell).toHaveBeenCalledWith(connectedSession, 'wp-1', 'tag-1', 'pressure-template');
-    expect(refreshed.report).toMatchObject({
+    expect(refreshed.shell.report).toMatchObject({
       state: 'technician-owned-draft',
       lifecycleState: 'Returned by Supervisor',
       approvalHistory: {
@@ -365,6 +365,9 @@ describe('SyncStateService', () => {
         ],
       },
     });
+    // Story 8.9 D-01: orchestrator returned null in this fixture (offline /
+    // no backend AI). Service should pass that through unchanged.
+    expect(refreshed.aiDiagnosis).toBeNull();
   });
 });
 
@@ -404,7 +407,7 @@ function buildExecutionShellService() {
 function buildEvidenceUploadOrchestrator() {
   return {
     syncSubmittedReportEvidence: vi.fn(async () => undefined),
-    refreshReportServerStatus: vi.fn(async () => undefined),
+    refreshReportServerStatus: vi.fn(async () => null),
   };
 }
 
@@ -580,6 +583,7 @@ function buildSubmittedShell(input: {
           evidenceId: 'evidence-1',
           executionStepId: 'guidance',
           contextNote: null,
+          technicianNote: null,
           fileName: 'evidence-1.jpg',
           mimeType: 'image/jpeg',
           previewUri: 'file:///local/evidence-1.jpg',
@@ -601,6 +605,9 @@ function buildSubmittedShell(input: {
         },
       ],
       photoEvidenceUpdatedAt: null,
+      loopReadings: [],
+      loopInputMode: null,
+      loopUpdatedAt: null,
     },
     report: {
       reportId: input.reportId,

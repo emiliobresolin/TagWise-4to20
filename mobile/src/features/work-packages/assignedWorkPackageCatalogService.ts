@@ -49,6 +49,25 @@ export class AssignedWorkPackageCatalogService {
     return workPackages.listSummaries();
   }
 
+  async deleteLocalPackage(
+    session: ActiveUserSession,
+    workPackageId: string,
+  ): Promise<LocalAssignedWorkPackageSummary[]> {
+    // Story 8.13: wipe local execution state for a single work package
+    // so the technician can re-download fresh data after a seed change.
+    // The summary row is preserved so the package still appears in the
+    // dashboard catalog; the snapshot is dropped so the next download
+    // pulls the up-to-date templates and prior readings. Drafts are
+    // intentionally NOT deleted - approved/submitted reports remain
+    // visible as history; only in-progress execution state is reset.
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    await store.workPackages.deleteSnapshot(workPackageId);
+    await store.executionProgress.deleteForWorkPackage(workPackageId);
+    await store.executionCalculations.deleteForWorkPackage(workPackageId);
+    await store.executionEvidence.deleteForWorkPackage(workPackageId);
+    return store.workPackages.listSummaries();
+  }
+
   async downloadAssignedPackage(
     session: ActiveUserSession,
     workPackageId: string,

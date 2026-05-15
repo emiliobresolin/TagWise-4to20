@@ -9,6 +9,7 @@ import type {
 } from '../review/model';
 import {
   buildVisualAiDiagnosisProjection,
+  formatPhotoContextSubtitle,
   type VisualAiDiagnosisProjection,
   type VisualAiDiagnosisProjectionInput,
   type VisualReportSummaryRow,
@@ -67,6 +68,16 @@ export interface VisualReviewRiskFlagProjection
 
 export interface VisualReviewPhotoAttachmentProjection extends SupervisorReviewPhotoAttachment {
   finalizedLabel: string;
+  /**
+   * Story 8.8 D-02: PT-BR subtitle combining canonical step kind label and
+   * free-form contextNote. Empty when neither is meaningful.
+   */
+  contextSubtitle: string;
+  /**
+   * Story 8.8 D-04: PT-BR-safe trimmed technician note for direct rendering,
+   * or empty string when none was captured.
+   */
+  technicianNoteLabel: string;
 }
 
 export interface VisualReviewApprovalHistoryProjection
@@ -271,10 +282,25 @@ export function buildVisualReviewDetailProjection(
       finalizedLabel: attachment.presenceFinalizedAt
         ? formatTimestamp(attachment.presenceFinalizedAt)
         : 'Nao finalizada',
+      contextSubtitle: formatPhotoContextSubtitle({
+        contextNote: attachment.contextNote ?? null,
+        executionStepId: attachment.executionStepId ?? null,
+      }),
+      technicianNoteLabel: attachment.technicianNote?.trim() ?? '',
     })),
     evidenceStatusRows: [
-      { label: 'Estado da evidencia', value: translateOperationalMessage(report.evidenceStatus.state) },
-      { label: 'Evidencia fotografica', value: translateOperationalMessage(report.evidenceStatus.message) },
+      // Story 8.8 PT-BR sweep: map enum + free-text English evidence status
+      // through PT-BR translators so the supervisor never sees raw backend
+      // tokens (no-photo-evidence / all-photo-evidence-finalized / etc).
+      { label: 'Estado da evidencia', value: translateEvidencePresenceState(report.evidenceStatus.state) },
+      {
+        label: 'Evidencia fotografica',
+        value: translateEvidencePresenceMessage(
+          report.evidenceStatus.state,
+          report.evidenceStatus.message,
+          report.evidenceStatus.pendingPhotoAttachments,
+        ),
+      },
       { label: 'Fotos totais', value: `${report.evidenceStatus.totalPhotoAttachments}` },
       { label: 'Fotos finalizadas', value: `${report.evidenceStatus.finalizedPhotoAttachments}` },
       { label: 'Fotos pendentes', value: `${report.evidenceStatus.pendingPhotoAttachments}` },
@@ -488,4 +514,44 @@ function toQueueGroupKey(
 
 function formatTimestamp(value: string | null) {
   return value ? new Date(value).toLocaleString('pt-BR') : 'Nao registrado';
+}
+
+/**
+ * Story 8.8 PT-BR sweep: map the backend `SupervisorReviewEvidencePresenceState`
+ * enum into PT-BR copy. Defaults to the raw token so unknown future values are
+ * still visible (and obviously English-shaped) on the supervisor screen.
+ */
+function translateEvidencePresenceState(value: string): string {
+  switch (value) {
+    case 'no-photo-evidence':
+      return 'Sem foto de evidencia';
+    case 'all-photo-evidence-finalized':
+      return 'Todas as fotos finalizadas';
+    case 'pending-photo-evidence':
+      return 'Fotos pendentes';
+    default:
+      return value;
+  }
+}
+
+/**
+ * Story 8.8 PT-BR sweep: replace the backend's English `evidenceStatus.message`
+ * sentences with PT-BR copy. The backend authoritatively builds the count;
+ * the supervisor sees a translated sentence rather than the raw English.
+ */
+function translateEvidencePresenceMessage(
+  state: string,
+  englishMessage: string,
+  pendingCount: number,
+): string {
+  switch (state) {
+    case 'no-photo-evidence':
+      return 'Nenhuma foto de evidencia anexada neste relatorio.';
+    case 'all-photo-evidence-finalized':
+      return 'Todas as fotos anexadas ja finalizaram no servidor.';
+    case 'pending-photo-evidence':
+      return `${pendingCount} foto(s) ainda aguardam presenca finalizada no servidor.`;
+    default:
+      return translateOperationalMessage(englishMessage);
+  }
 }

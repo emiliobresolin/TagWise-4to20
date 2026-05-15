@@ -18,7 +18,12 @@ export interface EvidenceUploadMetadataRequest {
   fileName: string;
   mimeType: string | null;
   fileSizeBytes: number;
-  executionStepId: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
+  // Story 8.8 D-03: widened to include 'instrument' for tag-detail photos
+  // (nameplate / wiring / installation). The canonical type is
+  // SharedExecutionStepKind in execution/model.ts; this literal is duplicated
+  // here only because the sync API client surface is independent of the
+  // execution model to avoid a circular import.
+  executionStepId: 'context' | 'instrument' | 'calculation' | 'history' | 'guidance' | 'report';
   source: 'camera' | 'library';
   localCapturedAt: string;
   metadataIdempotencyKey: string;
@@ -101,6 +106,21 @@ export interface ReportSubmissionRequest {
     serverEvidenceId: string | null;
     presenceFinalizedAt: string | null;
     syncState: 'local-only' | 'queued' | 'syncing' | 'pending-validation' | 'synced' | 'sync-issue';
+    // Story 8.8 D-02 / D-04: per-photo execution-step kind + free-form sub-step
+    // label + technician free-text observation. All three are optional and
+    // backwards-compatible; pre-8.8 mobile builds simply omit them. Backend
+    // persists the whole request payload as JSON and the supervisor read path
+    // surfaces these fields via payload.photoAttachments.
+    contextNote?: string | null;
+    executionStepId?:
+      | 'context'
+      | 'instrument'
+      | 'calculation'
+      | 'history'
+      | 'guidance'
+      | 'report'
+      | null;
+    technicianNote?: string | null;
   }>;
 }
 
@@ -119,11 +139,43 @@ export interface ReportSubmissionResponse {
   acceptedAt: string;
 }
 
+/**
+ * Story 8.9 D-01: per-report AI diagnosis payload returned alongside report
+ * status. Mirrors the backend `ReportSubmissionAiDiagnosisProjection`. Always
+ * present; defaults to state='unavailable' when no row exists on the backend.
+ */
+export type ReportSubmissionAiDiagnosisState =
+  | 'pending'
+  | 'available'
+  | 'unavailable'
+  | 'failed-nonblocking';
+
+export interface ReportSubmissionAiDiagnosisProjection {
+  state: ReportSubmissionAiDiagnosisState;
+  summary: string | null;
+  detail: string | null;
+  providerLabel: string | null;
+  generatedAt: string | null;
+  failureReason: string | null;
+  lastRequestedAt: string | null;
+}
+
 export interface ReportSubmissionStatusResponse extends ReportSubmissionResponse {
   approvalHistory: {
     items: SharedExecutionApprovalHistoryItem[];
     placeholder: string;
   };
+  aiDiagnosis: ReportSubmissionAiDiagnosisProjection;
+}
+
+/**
+ * Story 8.9 D-01: response of the manual AI request endpoint
+ * `POST /reports/:reportId/ai-diagnosis/request`. Wraps the AI projection so
+ * the mobile client immediately reflects the current state (typically
+ * 'pending' until the worker completes).
+ */
+export interface AiDiagnosisRequestResponse {
+  aiDiagnosis: ReportSubmissionAiDiagnosisProjection;
 }
 
 export interface EvidenceUploadApiClient {
@@ -141,6 +193,13 @@ export interface EvidenceUploadApiClient {
   }): Promise<EvidenceBinaryFinalizationResponse>;
   submitReportForValidation(request: ReportSubmissionRequest): Promise<ReportSubmissionResponse>;
   getReportSubmissionStatus(reportId: string): Promise<ReportSubmissionStatusResponse>;
+  /**
+   * Story 8.9 D-01: request a manual AI diagnosis for a submitted report.
+   * The backend enqueues a worker job and returns the current AI projection
+   * (typically state='pending'). Failures are surfaced as
+   * `EvidenceUploadApiError`; the report itself is unaffected.
+   */
+  requestAiDiagnosis(reportId: string): Promise<AiDiagnosisRequestResponse>;
 }
 
 export class EvidenceUploadApiError extends Error {
@@ -214,6 +273,20 @@ export function createFetchEvidenceUploadApiClient(options: {
           options.baseUrl,
           `/sync/report-submissions/${encodeURIComponent(reportId)}/status`,
         ),
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+      );
+    },
+    requestAiDiagnosis(reportId) {
+      // Story 8.9 D-01: empty body POST. The backend reads the authenticated
+      // user from the bearer token and the report id from the URL.
+      return postJson<AiDiagnosisRequestResponse>(
+        buildUrl(
+          options.baseUrl,
+          `/reports/${encodeURIComponent(reportId)}/ai-diagnosis/request`,
+        ),
+        {},
         options.secureStorage,
         fetchImplementation,
         timeoutMs,

@@ -280,6 +280,137 @@ describe('LocalTagContextService', () => {
     await runtime.database.closeAsync?.();
   });
 
+  it('projects multi-point prior readings sorted newest-first and scoped to the requested tag', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-tag-context-prior-readings-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    // Story 8.11 finding #7: prior readings must be:
+    // 1) filtered to the requested tagId (cross-tag contamination would
+    //    mix LT-410 readings into PT-101's Compare screen),
+    // 2) sorted newest-first so the most recent past visit is displayed
+    //    at the top of the per-point timeline.
+    const priorReadingsSnapshot: AssignedWorkPackageSnapshot = {
+      ...baseSnapshot,
+      priorTestReadings: [
+        {
+          id: 'reading-older',
+          tagId: 'tag-001',
+          templateId: 'tpl-pressure',
+          observedAt: '2025-11-15T09:30:00.000Z',
+          pointPercent: 50,
+          pointLabel: '50%',
+          expectedValue: 5,
+          observedValue: 5.01,
+          unit: 'bar',
+          signedDeviation: 0.01,
+          percentOfSpan: 0.1,
+          result: 'pass',
+          technicianNote: null,
+          supervisorNote: null,
+        },
+        {
+          id: 'reading-newer',
+          tagId: 'tag-001',
+          templateId: 'tpl-pressure',
+          observedAt: '2026-03-14T14:30:00.000Z',
+          pointPercent: 75,
+          pointLabel: '75%',
+          expectedValue: 7.5,
+          observedValue: 7.62,
+          unit: 'bar',
+          signedDeviation: 0.12,
+          percentOfSpan: 1.2,
+          result: 'pass-with-note',
+          technicianNote: 'Drift at upper-mid range.',
+          supervisorNote: null,
+        },
+        {
+          id: 'reading-other-tag',
+          tagId: 'tag-other',
+          templateId: null,
+          observedAt: '2026-04-01T10:00:00.000Z',
+          pointPercent: 50,
+          pointLabel: '50%',
+          expectedValue: 0,
+          observedValue: 0,
+          unit: 'bar',
+          signedDeviation: 0,
+          percentOfSpan: 0,
+          result: 'pass',
+          technicianNote: null,
+          supervisorNote: null,
+        },
+      ],
+    };
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(priorReadingsSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new LocalTagContextService({
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    const context = await service.getTagContext(
+      session,
+      priorReadingsSnapshot.summary.id,
+      'tag-001',
+    );
+
+    expect(context?.priorReadings).toHaveLength(2);
+    expect(context?.priorReadings[0]).toMatchObject({
+      id: 'reading-newer',
+      pointPercent: 75,
+      result: 'pass-with-note',
+      technicianNote: 'Drift at upper-mid range.',
+    });
+    expect(context?.priorReadings[1]).toMatchObject({
+      id: 'reading-older',
+      pointPercent: 50,
+      result: 'pass',
+    });
+    expect(
+      context?.priorReadings.some((entry) => entry.id === 'reading-other-tag'),
+    ).toBe(false);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('returns an empty priorReadings array when the snapshot does not include any', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-tag-context-no-prior-readings-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new LocalTagContextService({
+      userPartitions: runtime.repositories.userPartitions,
+      now: () => new Date('2026-04-19T11:00:00.000Z'),
+    });
+
+    const context = await service.getTagContext(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+    );
+
+    expect(context?.priorReadings).toEqual([]);
+
+    await runtime.database.closeAsync?.();
+  });
+
   it('marks cached history as age unknown when upstream freshness metadata is missing', async () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-tag-context-age-unknown-'));
     createdDirectories.push(tempDirectory);

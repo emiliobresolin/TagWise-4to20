@@ -6,6 +6,9 @@ import { createS3ObjectStorageClient } from '../platform/storage/objectStorage';
 import { createServiceRuntime } from '../runtime/serviceRuntime';
 import { WorkerJobRepository } from '../modules/worker-jobs/workerJobRepository';
 import { WorkerJobService } from '../modules/worker-jobs/workerJobService';
+import { AiDiagnosisRepository } from '../modules/ai-diagnosis/aiDiagnosisRepository';
+import { createAiDiagnosisProvider } from '../modules/ai-diagnosis/aiDiagnosisProviderFactory';
+import { createAiDiagnosisJobHandler } from '../modules/ai-diagnosis/aiDiagnosisJobHandler';
 import { startWorkerJobLoop } from './workerJobLoop';
 
 async function main() {
@@ -20,6 +23,18 @@ async function main() {
   // Story 1.2 wires object storage into the worker boundary without starting later media flows yet.
   createS3ObjectStorageClient(environment.objectStorage);
   const workerJobRepository = new WorkerJobRepository(pool);
+
+  // Story 8.9 D-01: register the AI diagnosis worker handler. Provider
+  // selection comes from `environment.ai` (mock by default; OpenAI when
+  // configured). The handler is best-effort: provider failures move the
+  // per-report AI row to 'failed-nonblocking' but never halt the report.
+  const aiDiagnosisRepository = new AiDiagnosisRepository(pool);
+  const aiDiagnosisProvider = createAiDiagnosisProvider(environment.ai);
+  const aiDiagnosisJobHandler = createAiDiagnosisJobHandler({
+    repository: aiDiagnosisRepository,
+    provider: aiDiagnosisProvider,
+  });
+
   const workerJobService = new WorkerJobService(workerJobRepository, {
     workerId: `worker-service:${process.pid}`,
     handlers: [
@@ -33,6 +48,7 @@ async function main() {
           });
         },
       },
+      aiDiagnosisJobHandler,
     ],
   });
 

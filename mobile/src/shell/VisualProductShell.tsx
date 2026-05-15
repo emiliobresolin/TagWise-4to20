@@ -2,6 +2,7 @@ import { CameraView, type BarcodeScanningResult } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   BackHandler,
   Image,
   KeyboardAvoidingView,
@@ -18,8 +19,15 @@ import {
 import type { ActiveUserSession } from '../features/auth/model';
 import type {
   SharedExecutionChecklistOutcome,
+  SharedExecutionLoopReadingPoint,
+  SharedExecutionPhotoAttachment,
   SharedExecutionShell,
+  SharedExecutionStepKind,
 } from '../features/execution/model';
+import type {
+  InstrumentVisitView,
+  SharedExecutionTemplateStatus,
+} from '../features/execution/sharedExecutionShellService';
 import {
   buildTechnicianVisualWorkflow,
   isVisualDemoShellEnabled,
@@ -56,6 +64,9 @@ import {
   buildVisualReportProjection,
   classifySyncError,
   createVisualReportActions,
+  formatPhotoContextSubtitle,
+  formatPhotoExecutionStepLabel,
+  type VisualAiDiagnosisProjectionInput,
   type VisualReportProjection,
   type VisualReportPendingActionRoute,
 } from '../features/visual-shell/serviceBackedReport';
@@ -111,6 +122,7 @@ import type {
   LocalAssignedTagEntry,
   LocalAssignedWorkPackageSummary,
   LocalTagContext,
+  LocalTagPriorTestReading,
 } from '../features/work-packages/model';
 import type { ManualInstrumentInput } from '../features/work-packages/manualInstrumentModel';
 import type { LocalQrScanResult } from '../features/work-packages/localQrScanService';
@@ -177,7 +189,20 @@ export interface VisualProductShellProps {
   selectedTagContext: LocalTagContext | null;
   selectedExecutionTemplateId: string | null;
   executionShell: SharedExecutionShell | null;
+  // Story 8.11: per-template saved status badges (Concluido / Falha /
+  // Iniciar) that the detail screen renders alongside each template.
+  executionTemplateStatuses: readonly SharedExecutionTemplateStatus[];
+  // Story 8.11 finding #10: aggregated visit view consumed by the Report
+  // screen so the technician sees ONE relatorio per tag instead of one
+  // per template.
+  instrumentVisit: InstrumentVisitView | null;
   reportSyncDetail: ReportSyncDetail | null;
+  // Story 8.9 D-01: AI diagnosis projections for the technician report
+  // screen and the supervisor review detail. Both default to null when the
+  // backend has not provided a state; the projection adapters then fall
+  // back to the hardcoded 'unavailable' input.
+  executionAiDiagnosis: VisualAiDiagnosisProjectionInput | null;
+  supervisorAiDiagnosis: VisualAiDiagnosisProjectionInput | null;
   syncBusy: boolean;
   reviewBusy: boolean;
   supervisorReviewQueue: SupervisorReviewQueueItem[];
@@ -193,6 +218,9 @@ export interface VisualProductShellProps {
   onSwitchUser: () => void;
   onRefreshPackages: () => void;
   onDownloadPackage: (workPackageId: string) => Promise<void>;
+  // Story 8.13: delete a single locally-cached package so the
+  // technician can re-download fresh data. Used after seed changes.
+  onDeleteLocalPackage: (workPackageId: string) => Promise<void>;
   onBrowsePackageTags: (workPackageId: string) => Promise<void>;
   onCreateManualInstrument: (input: ManualInstrumentInput) => Promise<boolean>;
   onOpenTechnicianReport: (report: VisualTechnicianReportSummary) => Promise<boolean>;
@@ -218,19 +246,39 @@ export interface VisualProductShellProps {
   onRiskJustificationChange: (riskItemId: string, justificationText: string) => void;
   onSaveGuidanceEvidence: () => Promise<void>;
   onSaveLoopTestNote: (note: string) => Promise<void>;
+  // Story 8.15: persist the per-point detail of the loop test so the
+  // loop screen rehydrates on next entry and the Report screen can
+  // render a formatted results section.
+  onSaveLoopTestEvidence: (input: {
+    points: SharedExecutionLoopReadingPoint[];
+    inputMode: 'pv' | 'ma';
+    worstCase: { rawInputs: { expectedValue: string; observedValue: string } } | null;
+  }) => Promise<void>;
   onReportReviewNotesChange: (value: string) => void;
   onSaveReportDraft: () => Promise<void>;
   // Story 8.7 AC 7: the optional `contextNote` carries sub-step context (e.g.
   // "Ponto de loop 50%") so a photo taken during a loop test point can be
   // labeled correctly in the report evidence area.
+  // Story 8.8 D-03 / D-04: optional `options.technicianNote` and
+  // `options.executionStepIdOverride` allow per-photo technician comments and
+  // instrument-level (tag-detail-screen) photos.
   onAttachReportPhoto: (
     source: 'camera' | 'library',
     contextNote?: string | null,
+    options?: {
+      technicianNote?: string | null;
+      executionStepIdOverride?: SharedExecutionStepKind;
+    },
   ) => Promise<void>;
   onRemoveReportPhoto: (evidenceId: string) => Promise<void>;
+  onUpdatePhotoTechnicianNote: (evidenceId: string, note: string | null) => Promise<void>;
   onSubmitReport: () => Promise<void>;
   onRetryReportSync: () => Promise<void>;
   onRefreshReportServerStatus: () => Promise<void>;
+  // Story 8.9 D-01: technician taps "Solicitar diagnostico assistido" on
+  // the report screen. The handler enqueues a worker job server-side and
+  // refreshes the local AI projection. AI failures are non-blocking.
+  onRequestExecutionAiDiagnosis: () => Promise<void>;
   onRefreshSupervisorReviewQueue: () => Promise<void>;
   onOpenSupervisorReviewReport: (reportId: string) => Promise<void>;
   onCloseSupervisorReviewReport: () => void;
@@ -256,7 +304,11 @@ export function VisualProductShell({
   selectedTagContext,
   selectedExecutionTemplateId,
   executionShell,
+  executionTemplateStatuses,
+  instrumentVisit,
   reportSyncDetail,
+  executionAiDiagnosis,
+  supervisorAiDiagnosis,
   syncBusy,
   reviewBusy,
   supervisorReviewQueue,
@@ -272,6 +324,7 @@ export function VisualProductShell({
   onSwitchUser,
   onRefreshPackages,
   onDownloadPackage,
+  onDeleteLocalPackage,
   onBrowsePackageTags,
   onCreateManualInstrument,
   onOpenTechnicianReport,
@@ -291,13 +344,16 @@ export function VisualProductShell({
   onRiskJustificationChange,
   onSaveGuidanceEvidence,
   onSaveLoopTestNote,
+  onSaveLoopTestEvidence,
   onReportReviewNotesChange,
   onSaveReportDraft,
   onAttachReportPhoto,
   onRemoveReportPhoto,
+  onUpdatePhotoTechnicianNote,
   onSubmitReport,
   onRetryReportSync,
   onRefreshReportServerStatus,
+  onRequestExecutionAiDiagnosis,
   onRefreshSupervisorReviewQueue,
   onOpenSupervisorReviewReport,
   onCloseSupervisorReviewReport,
@@ -327,6 +383,33 @@ export function VisualProductShell({
   const [calculatorReturnRoute, setCalculatorReturnRoute] = useState<VisualRoute>('dashboard');
   const [loopInputMode, setLoopInputMode] = useState<LoopPointInputMode>('pv');
   const [loopPoints, setLoopPoints] = useState<LoopTestPoint[]>(() => createDefaultLoopPoints());
+
+  // Story 8.15: when the active execution shell carries persisted
+  // loopReadings (from a previous save of this template), rehydrate
+  // loopPoints + inputMode so the loop screen shows the saved curve
+  // when the technician re-opens the template. We key on the
+  // (template, updatedAt) pair so successive saves on the same
+  // template overwrite local state cleanly without clobbering a
+  // mid-edit session from the user.
+  const loopReadingsHydrationKey = useMemo(() => {
+    const persisted = executionShell?.evidence.loopReadings ?? [];
+    if (persisted.length === 0) return null;
+    return `${executionShell?.template.id ?? ''}:${executionShell?.evidence.loopUpdatedAt ?? ''}`;
+  }, [executionShell?.template.id, executionShell?.evidence.loopUpdatedAt, executionShell?.evidence.loopReadings]);
+  useEffect(() => {
+    if (!loopReadingsHydrationKey || !executionShell) return;
+    const persisted = executionShell.evidence.loopReadings;
+    if (persisted.length === 0) return;
+    setLoopInputMode(executionShell.evidence.loopInputMode ?? 'pv');
+    setLoopPoints(
+      persisted.map((reading, index) => ({
+        id: `point-${index + 1}`,
+        setpointPercent: reading.setpointPercent,
+        expected: reading.expected,
+        measured: reading.measured,
+      })),
+    );
+  }, [loopReadingsHydrationKey, executionShell]);
   const [activeHistoryPointId, setActiveHistoryPointId] = useState('current-result');
   const [calculatorApplyTargetId, setCalculatorApplyTargetId] = useState('expectedValue:main');
   const [activeReviewGroupKey, setActiveReviewGroupKey] =
@@ -386,8 +469,12 @@ export function VisualProductShell({
     executionShell,
   ]);
   const serviceReport = useMemo(
-    () => buildVisualReportProjection(executionShell, reportSyncDetail),
-    [executionShell, reportSyncDetail],
+    // Story 8.9 D-01: thread the executionAiDiagnosis projection into the
+    // report projection so the AI section reflects backend state (pending /
+    // available / unavailable / failed-nonblocking) rather than the
+    // hardcoded 'unavailable' default.
+    () => buildVisualReportProjection(executionShell, reportSyncDetail, executionAiDiagnosis),
+    [executionShell, reportSyncDetail, executionAiDiagnosis],
   );
   const reportActions = useMemo(
     () =>
@@ -414,8 +501,15 @@ export function VisualProductShell({
     [supervisorReviewQueue],
   );
   const reviewDetail = useMemo(
-    () => buildVisualReviewDetailProjection(selectedSupervisorReviewReport, reviewAccess),
-    [reviewAccess, selectedSupervisorReviewReport],
+    // Story 8.9 D-01: thread the supervisorAiDiagnosis projection into the
+    // supervisor review detail so the assistive AI status is visible
+    // alongside the technician's report.
+    () => buildVisualReviewDetailProjection(
+      selectedSupervisorReviewReport,
+      reviewAccess,
+      supervisorAiDiagnosis,
+    ),
+    [reviewAccess, selectedSupervisorReviewReport, supervisorAiDiagnosis],
   );
   const reviewDecisionActions = useMemo(
     () =>
@@ -575,16 +669,23 @@ export function VisualProductShell({
   async function handleOpenExecutionRoute(nextRoute: VisualRoute) {
     setShellMessage(null);
 
-    if (session && !selectedExecutionTemplateId) {
+    // Story 8.13 finding #2: the Compare screen consumes
+    // `selectedTagContext.priorReadings` (per-tag historical data) and
+    // does NOT depend on a loaded execution shell. Other execution
+    // routes (calculation, loop-test, diagnosis, report) still require
+    // a template selection to open the shell.
+    const requiresTemplate = nextRoute !== 'history';
+
+    if (session && requiresTemplate && !selectedExecutionTemplateId) {
       setShellMessage('Selecione um teste baixado antes de abrir a etapa tecnica.');
-    } else if (session && selectedExecutionTemplateId) {
+    } else if (session && requiresTemplate && selectedExecutionTemplateId) {
       const didLoad = await onProceedToExecutionShell();
       if (!didLoad) {
         setShellMessage('O teste local nao esta disponivel para esta tag/template.');
       }
     }
 
-    setRoute(nextRoute);
+    openRoute(nextRoute);
   }
 
   async function handleSelectTemplateAndOpen(templateId: string) {
@@ -598,7 +699,12 @@ export function VisualProductShell({
 
     if (didOpen) {
       setShellMessage(`${pattern.label}: ${pattern.detail}`);
-      setRoute(pattern.route);
+      // Story 8.10 finding #9: route to the test execution via `openRoute` so
+      // the current route ('detail') is pushed onto the navigation history.
+      // Without this, pressing `Voltar` from the test screen incorrectly
+      // popped past the detail hub. The Story 8.7 stack now correctly maps
+      // dashboard -> detail -> calculation/loop-test.
+      openRoute(pattern.route);
       return;
     }
 
@@ -617,15 +723,35 @@ export function VisualProductShell({
       processMax: resolveLoopProcessMax(serviceCalculation),
       tolerance: resolveLoopTolerance(serviceCalculation),
     });
-    const note = formatLoopTestEvidenceNote({
-      rows: result.rows,
-      summary: result.summary,
+    // Story 8.15: persist per-point detail (curve + errors) into the
+    // calculation evidence row so the loop screen can rehydrate after
+    // navigation and the Report screen can render a formatted results
+    // table. The worst-deviation row (by absolute error) is also
+    // written to the calculation repo so the visit aggregator's
+    // "Resumo da visita" panel renders a single-point summary that
+    // matches the loop test's overall outcome.
+    const persistedPoints: SharedExecutionLoopReadingPoint[] = result.rows.map((row) => ({
+      setpointPercent: row.setpointPercent,
+      expected: row.expected,
+      measured: row.measured,
+      expectedPv: row.expectedPv,
+      expectedMa: row.expectedMa,
+      measuredPv: row.measuredPv,
+      measuredMa: row.measuredMa,
+      error: row.error,
+      errorPercent: row.errorPercent,
+      passed: row.passed,
+    }));
+    const worstCase = findWorstLoopCaseRawInputs(result.rows, loopInputMode);
+    await onSaveLoopTestEvidence({
+      points: persistedPoints,
       inputMode: loopInputMode,
-      unit: serviceCalculation.conversion.processRange?.unit ?? serviceCalculation.unitLabel,
+      worstCase,
     });
-
-    await onSaveLoopTestNote(note);
-    setShellMessage('Teste de loop salvo localmente. Proximo: comparar historico ou abrir checklist.');
+    setShellMessage(
+      'Teste de loop salvo localmente. Volte ao instrumento para escolher outro teste ou avancar para Comparacao.',
+    );
+    popRoute();
   }
 
   function handleApplyCalculatorResult() {
@@ -836,6 +962,7 @@ export function VisualProductShell({
             onCancelQrScanner={onCancelQrScanner}
             onBrowsePackageTags={(workPackageId) => void onBrowsePackageTags(workPackageId)}
             onDownloadPackage={(workPackageId) => void onDownloadPackage(workPackageId)}
+            onDeleteLocalPackage={(workPackageId) => void onDeleteLocalPackage(workPackageId)}
             onRefreshPackages={onRefreshPackages}
             onOpenReview={() => void handleOpenReviewRoute()}
             onResolveQrManualPayload={() => void handleResolveQrManualPayload()}
@@ -884,17 +1011,35 @@ export function VisualProductShell({
           />
         ) : route === 'detail' && selectedTag ? (
           <TagDetailScreen
+            // Story 8.14 finding #5: lock the test affordances on the
+            // detail screen when this tag has an approved report. The
+            // lock auto-clears when a fresh package is downloaded (a
+            // new packageVersion brings new templates/data and the
+            // approved drafts no longer pin the current view).
+            approvedReportLock={Boolean(
+              selectedLocalTag &&
+                technicianReports.some(
+                  (report) =>
+                    report.workPackageId === selectedLocalTag.workPackageId &&
+                    report.tagId === selectedLocalTag.tagId &&
+                    report.status === 'approved',
+                ),
+            )}
             lastValueLabel={model.lastValueLabel}
             selectedExecutionTemplateId={selectedExecutionTemplateId}
             selectedTag={selectedTag}
             selectedTagContext={selectedTagContext}
+            executionTemplateStatuses={executionTemplateStatuses}
+            photoAttachments={executionShell?.evidence.photoAttachments ?? []}
             variableRangeLabel={model.variableRangeLabel}
+            onAttachInstrumentPhoto={(source) =>
+              void onAttachReportPhoto(source, 'Instrumento', {
+                executionStepIdOverride: 'instrument',
+              })
+            }
             onBack={() => openRoute('dashboard')}
-            onOpenCalculation={() => void handleOpenExecutionRoute('calculation')}
             onOpenCalculator={() => openCalculator('detail')}
-            onOpenDiagnosis={() => void handleOpenExecutionRoute('diagnosis')}
             onOpenHistory={() => void handleOpenExecutionRoute('history')}
-            onOpenReport={() => void handleOpenExecutionRoute('report')}
             onSelectExecutionTemplate={(templateId) => void handleSelectTemplateAndOpen(templateId)}
           />
         ) : route === 'detail' ? (
@@ -932,16 +1077,31 @@ export function VisualProductShell({
               stages={executionStages}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
+              photoAttachments={executionShell?.evidence.photoAttachments ?? []}
               onAttachExecutionPhoto={(source, contextNote) =>
-                void onAttachReportPhoto(source, contextNote)
+                // Story 8.13 finding #8: tag photos with the screen's
+                // executionStepId so the per-screen thumbnail filter
+                // can find them. Without the override, the photo gets
+                // tagged based on the shell's currentStepId which may
+                // not match the screen the technician is on.
+                void onAttachReportPhoto(source, contextNote, {
+                  executionStepIdOverride: 'calculation',
+                })
               }
               onBack={() => openRoute('detail')}
               onOpenCalculator={() => openCalculator('calculation')}
               onOpenStage={handleOpenStageRoute}
               onInputChange={onCalculationInputChange}
               onSaveCalculation={async () => {
+                // Story 8.10 findings #1 + #9: after saving, return to the
+                // instrument detail hub via popRoute() so the navigation
+                // history stays clean (the 'calculation' route is removed
+                // from the stack instead of stacking up). The user can pick
+                // another test or proceed to the Comparison phase from the
+                // detail hub.
                 await onSaveCalculation();
-                setShellMessage('Calculo salvo localmente. Proximo: comparar historico ou abrir checklist.');
+                setShellMessage('Calculo salvo localmente. Volte ao instrumento para escolher outro teste ou avancar para Comparacao.');
+                popRoute();
               }}
             />
           ) : (
@@ -957,11 +1117,16 @@ export function VisualProductShell({
               calculation={serviceCalculation}
               inputMode={loopInputMode}
               points={loopPoints}
+              photoAttachments={executionShell?.evidence.photoAttachments ?? []}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
               stages={executionStages}
               onAttachExecutionPhoto={(source, contextNote) =>
-                void onAttachReportPhoto(source, contextNote)
+                // Story 8.13 finding #8: loop-test photos always
+                // belong to the calculation step.
+                void onAttachReportPhoto(source, contextNote, {
+                  executionStepIdOverride: 'calculation',
+                })
               }
               onBack={() => openRoute('detail')}
               onInputModeChange={setLoopInputMode}
@@ -986,6 +1151,7 @@ export function VisualProductShell({
               activePointId={activeHistoryPointId}
               history={serviceHistory}
               pointOptions={historyPointOptions}
+              priorReadings={selectedTagContext?.priorReadings ?? []}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
               stages={executionStages}
@@ -1009,8 +1175,14 @@ export function VisualProductShell({
               stages={executionStages}
               selectedTag={selectedTag}
               shellMessage={shellMessage ?? authMessage}
+              photoAttachments={executionShell?.evidence.photoAttachments ?? []}
               onAttachExecutionPhoto={(source, contextNote) =>
-                void onAttachReportPhoto(source, contextNote)
+                // Story 8.13 finding #8: photos taken from the checklist
+                // screen must be stamped with executionStepId='guidance'
+                // so the screen's own thumbnail row finds them.
+                void onAttachReportPhoto(source, contextNote, {
+                  executionStepIdOverride: 'guidance',
+                })
               }
               onBack={() => openRoute('detail')}
               onChecklistOutcomeChange={onChecklistOutcomeChange}
@@ -1041,6 +1213,7 @@ export function VisualProductShell({
               stages={executionStages}
               shellMessage={shellMessage ?? authMessage}
               syncBusy={syncBusy}
+              instrumentVisit={instrumentVisit}
               onAttachCamera={() => void reportActions.attachPhotoFromCamera()}
               onAttachLibrary={() => void reportActions.attachPhotoFromLibrary()}
               onBack={() => openRoute('diagnosis')}
@@ -1058,6 +1231,10 @@ export function VisualProductShell({
                 await reportActions.submitReport();
                 setShellMessage('Envio solicitado. O status local/sync permanece visivel neste relatorio.');
               }}
+              onUpdatePhotoTechnicianNote={(evidenceId, note) =>
+                void onUpdatePhotoTechnicianNote(evidenceId, note)
+              }
+              onRequestExecutionAiDiagnosis={() => void onRequestExecutionAiDiagnosis()}
             />
           ) : (
             <DemoReportScreen
@@ -1087,8 +1264,50 @@ export function VisualProductShell({
         )}
       </ScrollView>
       </KeyboardAvoidingView>
+      {/* Story 8.12 finding #6: floating toast that overlays the bottom
+          of the screen regardless of scroll position. Previously
+          confirmation and error messages rendered inline at the top of
+          each screen and scrolled out of view while the user was filling
+          a form lower on the page. The toast auto-clears after 5s and
+          can be dismissed manually. */}
+      <MessageToast message={shellMessage} onDismiss={() => setShellMessage(null)} />
     </SafeAreaView>
     </ShellNavigationContext.Provider>
+  );
+}
+
+function MessageToast({
+  message,
+  onDismiss,
+}: {
+  message: string | null;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      onDismiss();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [message, onDismiss]);
+  if (!message) {
+    return null;
+  }
+  return (
+    <View pointerEvents="box-none" style={styles.toastOverlay}>
+      <View style={styles.toastCard}>
+        <Text style={styles.toastMessage}>{message}</Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onDismiss}
+          style={styles.toastDismiss}
+        >
+          <Text style={styles.toastDismissLabel}>x</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -1120,6 +1339,7 @@ function DashboardScreen({
   onCancelQrScanner,
   onBrowsePackageTags,
   onDownloadPackage,
+  onDeleteLocalPackage,
   onQrManualPayloadChange,
   onOpenReports,
   onOpenReview,
@@ -1162,6 +1382,7 @@ function DashboardScreen({
   onCancelQrScanner: () => void;
   onBrowsePackageTags: (workPackageId: string) => void;
   onDownloadPackage: (workPackageId: string) => void;
+  onDeleteLocalPackage: (workPackageId: string) => void;
   onQrManualPayloadChange: (value: string) => void;
   onOpenReports: () => void;
   onOpenReview: () => void;
@@ -1292,6 +1513,7 @@ function DashboardScreen({
             preparation={packagePreparation}
             onBrowsePackageTags={onBrowsePackageTags}
             onDownloadPackage={onDownloadPackage}
+            onDeleteLocalPackage={onDeleteLocalPackage}
             onRefreshPackages={onRefreshPackages}
           />
           <ManualInstrumentPanel
@@ -1419,12 +1641,14 @@ function WorkPackagePreparationPanel({
   preparation,
   onBrowsePackageTags,
   onDownloadPackage,
+  onDeleteLocalPackage,
   onRefreshPackages,
 }: {
   packageBusy: boolean;
   preparation: VisualWorkPackagePreparationProjection;
   onBrowsePackageTags: (workPackageId: string) => void;
   onDownloadPackage: (workPackageId: string) => void;
+  onDeleteLocalPackage: (workPackageId: string) => void;
   onRefreshPackages: () => void;
 }) {
   return (
@@ -1500,6 +1724,41 @@ function WorkPackagePreparationPanel({
                 >
                   <Text style={styles.smallGhostLabel}>Abrir tags</Text>
                 </Pressable>
+                {/* Story 8.13: Apagar pacote local. Story 8.14 #5
+                    adds a confirmation dialog so the action cannot be
+                    triggered by accident. Approved reports stay
+                    visible in history (drafts preserved); the tag with
+                    an approved report stays locked on the detail
+                    screen until a new package version arrives. */}
+                {workPackage.cacheState === 'cached' ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={packageBusy}
+                    onPress={() =>
+                      Alert.alert(
+                        'Apagar pacote local',
+                        `Apagar os dados locais de "${workPackage.title}"? ` +
+                          'O snapshot e o progresso de testes em andamento serao removidos. ' +
+                          'Relatorios ja aprovados continuam visiveis no historico e os ' +
+                          'instrumentos correspondentes permanecem bloqueados ate o proximo pacote.',
+                        [
+                          { text: 'Cancelar', style: 'cancel' },
+                          {
+                            text: 'Apagar',
+                            style: 'destructive',
+                            onPress: () => onDeleteLocalPackage(workPackage.id),
+                          },
+                        ],
+                      )
+                    }
+                    style={[
+                      styles.smallGhostButton,
+                      packageBusy ? styles.disabledAction : null,
+                    ]}
+                  >
+                    <Text style={styles.smallGhostLabel}>Apagar pacote local</Text>
+                  </Pressable>
+                ) : null}
               </View>
             </View>
           ))}
@@ -1766,7 +2025,7 @@ function FieldCalculatorScreen({
   //   (b) Conversao / Loop mode toggle. Loop mode restores the 5/10-point
   //       helper that Story 8.6 moved out of the calculator. It is a helper
   //       only — does not persist to any instrument execution.
-  const [helperMode, setHelperMode] = useState<'conversion' | 'loop'>('conversion');
+  const [helperMode, setHelperMode] = useState<'conversion' | 'loop' | 'sweep'>('conversion');
   const [showResult, setShowResult] = useState(false);
   const [needsRecalculate, setNeedsRecalculate] = useState(false);
   const [loopHelperPoints, setLoopHelperPoints] = useState<LoopTestPoint[]>(() =>
@@ -1865,9 +2124,36 @@ function FieldCalculatorScreen({
             Modo: Loop
           </Text>
         </Pressable>
+        {/* Story 8.12 finding #3: quick-reference "Tabela 0-100%" mode that
+            shows 0/25/50/75/100% with the corresponding 4-20 mA and PV
+            values for the configured range. Read-only sweep table; no
+            inputs other than the range itself. */}
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setHelperMode('sweep')}
+          style={[
+            styles.pickerChip,
+            helperMode === 'sweep' ? styles.pickerChipActive : null,
+          ]}
+        >
+          <Text
+            style={[
+              styles.pickerChipText,
+              helperMode === 'sweep' ? styles.pickerChipTextActive : null,
+            ]}
+          >
+            Modo: Tabela 0-100%
+          </Text>
+        </Pressable>
       </View>
 
-      {helperMode === 'conversion' ? (
+      {helperMode === 'sweep' ? (
+        <CalculatorSweepPanel
+          processMinRaw={draft.processMin}
+          processMaxRaw={draft.processMax}
+          unit={draft.unit}
+        />
+      ) : helperMode === 'conversion' ? (
         <>
           <View style={styles.connectionCard}>
             <Text style={styles.sectionTitle}>Conversor rapido</Text>
@@ -2491,25 +2777,43 @@ function TagDetailScreen({
   selectedTag,
   selectedTagContext,
   variableRangeLabel,
+  onAttachInstrumentPhoto,
   onBack,
-  onOpenCalculation,
   onOpenCalculator,
-  onOpenDiagnosis,
   onOpenHistory,
-  onOpenReport,
   onSelectExecutionTemplate,
+  executionTemplateStatuses,
+  photoAttachments,
+  approvedReportLock,
 }: {
   lastValueLabel: string;
   selectedExecutionTemplateId: string | null;
   selectedTag: VisualTagSummary;
   selectedTagContext: LocalTagContext | null;
+  executionTemplateStatuses: readonly SharedExecutionTemplateStatus[];
+  // Story 8.12 finding #1: the detail screen's "Foto do instrumento"
+  // panel now renders captured instrument-level photos so the
+  // technician can see what they shot before continuing.
+  photoAttachments: readonly SharedExecutionPhotoAttachment[];
+  // Story 8.14 finding #5: when true, this tag already has an approved
+  // report under the current package version. The detail screen locks
+  // the test affordances; the user must wait for the next package.
+  approvedReportLock: boolean;
   variableRangeLabel: string;
+  // Story 8.8 D-03 / Story 8.10 #4: instrument-level photo. The handler now
+  // attaches without requiring a template selection (Story 8.10 ungated this).
+  // When no template is yet selected, the parent handler picks a default
+  // template silently so the photo still lands in the per-tag report context.
+  onAttachInstrumentPhoto: (source: 'camera' | 'library') => void;
   onBack: () => void;
-  onOpenCalculation: () => void;
+  // Story 8.10 redesign: only `onOpenCalculator` (standalone helper) and
+  // `onOpenHistory` (the entry into the sequential Comparar -> Checklist ->
+  // Relatorio pipeline) are reachable from the detail screen now. The prior
+  // `onOpenCalculation` / `onOpenDiagnosis` / `onOpenReport` action tiles
+  // were removed because they implied parallel actions; the new flow is
+  // strictly sequential through the pipeline.
   onOpenCalculator: () => void;
-  onOpenDiagnosis: () => void;
   onOpenHistory: () => void;
-  onOpenReport: () => void;
   onSelectExecutionTemplate: (templateId: string) => void;
 }) {
   const subtitle = selectedTagContext
@@ -2534,26 +2838,36 @@ function TagDetailScreen({
         <StatusPill label={statusLabel} severity={selectedTag.severity} large />
       </View>
 
+      {/* Story 8.8 D-05: instrument detail metric panel rendered as vertical
+          title-over-value blocks so long asset references, areas, and due
+          dates do not wrap mid-row on narrow Android phones. */}
       <View style={styles.metricPanel}>
-        <MetricLine label="Faixa" value={variableRangeLabel} />
+        <MetricLine label="Faixa" value={variableRangeLabel} variant="vertical" />
         <View style={styles.separator} />
         <MetricLine
           label="Tolerancia"
           value={selectedTagContext?.tolerance.value ?? 'Indisponivel'}
+          variant="vertical"
         />
         <View style={styles.separator} />
-        <MetricLine label="Ultimo valor" value={lastValueLabel} />
+        <MetricLine label="Ultimo valor" value={lastValueLabel} variant="vertical" />
         <View style={styles.separator} />
-        <MetricLine label="Area" value={selectedTagContext?.area.value ?? selectedTag.area} />
+        <MetricLine
+          label="Area"
+          value={selectedTagContext?.area.value ?? selectedTag.area}
+          variant="vertical"
+        />
         <View style={styles.separator} />
         <MetricLine
           label="Ativo"
           value={selectedTagContext?.parentAssetReference.value ?? selectedTag.badgeDetail}
+          variant="vertical"
         />
         <View style={styles.separator} />
         <MetricLine
           label="Vencimento"
           value={selectedTagContext?.dueIndicator.value ?? 'Indisponivel'}
+          variant="vertical"
         />
       </View>
 
@@ -2566,15 +2880,42 @@ function TagDetailScreen({
         />
       </View>
 
+      {/* Story 8.14 finding #5: when this tag already has an approved
+          report in the current package, lock the test affordances.
+          The lock clears when a new package version arrives (after the
+          supervisor releases the next package); the technician can
+          still review the existing data via the Compare / Report flow. */}
+      {approvedReportLock ? (
+        <View style={styles.invalidatedBanner}>
+          <Text style={styles.invalidatedBannerTitle}>
+            Instrumento concluido nesta versao do pacote
+          </Text>
+          <Text style={styles.invalidatedBannerBody}>
+            Este instrumento ja tem relatorio aprovado pelo supervisor para o
+            pacote atual. Os testes ficam bloqueados ate o proximo pacote ser
+            disponibilizado. Voce ainda pode revisar o historico e o relatorio.
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.sectionBand}>
         <SectionHeader title="Escolher teste" />
         {templates.length > 0 ? (
           templates.map((template) => {
             const selected = template.id === selectedExecutionTemplateId;
             const pattern = resolveVisualExecutionPattern(template);
+            // Story 8.11: a per-template badge shows the saved acceptance
+            // status from prior runs in this visit ("Concluido" / "Falha"
+            // / "Em andamento"). If the technician has not saved a
+            // calculation yet, the badge falls back to "Iniciar".
+            const savedStatus = executionTemplateStatuses.find(
+              (entry) => entry.templateId === template.id,
+            );
+            const badge = resolveTemplateStatusBadge(savedStatus, selected);
             return (
               <Pressable
                 accessibilityRole="button"
+                disabled={approvedReportLock}
                 key={template.id}
                 onPress={() => onSelectExecutionTemplate(template.id)}
                 style={[styles.templateRow, selected ? styles.templateRowSelected : null]}
@@ -2586,47 +2927,108 @@ function TagDetailScreen({
                   </Text>
                   <Text style={styles.historySubtitle}>{pattern.detail}</Text>
                 </View>
-                <StatusPill
-                  label={selected ? 'Abrindo' : 'Iniciar'}
-                  severity={selected ? 'ok' : 'medium'}
-                />
+                <StatusPill label={badge.label} severity={badge.severity} />
               </Pressable>
             );
           })
         ) : (
           <InlineMessage text="Nenhum template local disponivel para esta tag." />
         )}
+        {/* Story 8.10 finding #3: the two result tiles are now
+            informational only (no Pressable wrapper). They show the current
+            readiness state and the previous-cycle history outcome, but the
+            navigation actions live in the "Avancar para Comparacao" button
+            below to enforce the sequential pipeline. */}
         <View style={styles.resultGrid}>
-          <Pressable accessibilityRole="button" onPress={onOpenCalculation} style={styles.resultTile}>
+          <View style={styles.resultTile}>
             <Text style={styles.resultIcon}>✓</Text>
-            {/* Story 8.7 AC 8: replace the raw "Template / necessario" tile with
-                technician-facing PT-BR copy that depends on selection state. */}
             <Text style={styles.resultTitle}>
               {selectedExecutionTemplateId ? 'Pronto para medir' : 'Selecione um teste'}
             </Text>
             <Text style={styles.resultSubtitle}>
-              {selectedExecutionTemplateId ? 'toque para abrir' : 'lista abaixo'}
+              {selectedExecutionTemplateId ? 'toque na lista acima' : 'lista acima'}
             </Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={onOpenHistory} style={styles.resultTile}>
+          </View>
+          <View style={styles.resultTile}>
             <Text style={styles.resultIcon}>▥</Text>
             <Text style={styles.resultTitle}>
               {toHistoryResultLabel(selectedTagContext?.historyPreview.lastResult)}
             </Text>
             <Text style={styles.resultSubtitle}>{selectedTagContext?.historyPreview.state ?? 'demo'}</Text>
-          </Pressable>
+          </View>
         </View>
       </View>
 
-      <View style={styles.actionGrid}>
-        {/* Story 8.7 AC 2: the bottom "Calcular" action opens the standalone
-            calculator helper, not the measurement screen. The measurement
-            screen is reachable via the template row "Iniciar" and the
-            result tile above. */}
-        <ActionTile active icon="▦" label="Calcular" onPress={onOpenCalculator} />
-        <ActionTile icon="⇄" label="Comparar" onPress={onOpenHistory} />
-        <ActionTile highlight icon="⌁" label="Diagnosticar" onPress={onOpenDiagnosis} />
-        <ActionTile icon="▤" label="Registrar" onPress={onOpenReport} />
+      {/* Story 8.10 findings #1 + #3 + #10: the instrument screen is the
+          HUB. Tests are run from the template list above; after saving a
+          test the user returns here to pick the next one. Once finished,
+          "Avancar para Comparacao" enters the sequential phase pipeline:
+          Comparar -> Checklist -> Relatorio. The standalone Calculadora
+          remains accessible as a helper. The parallel "Comparar /
+          Diagnosticar / Registrar" tiles from prior stories were removed
+          because they implied parallel actions; the new flow is
+          strictly sequential. */}
+      <View style={styles.reportActionGrid}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenCalculator}
+          style={styles.smallGhostButton}
+        >
+          <Text style={styles.smallGhostLabel}>Calculadora</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenHistory}
+          style={styles.smallActionButton}
+        >
+          <Text style={styles.smallActionLabel}>Avancar para Comparacao</Text>
+        </Pressable>
+      </View>
+
+      {/* Story 8.10 finding #4: the instrument photo is always available on
+          the detail screen. The handler attaches the photo against the
+          execution shell when one exists (template selected); when no
+          template is yet selected, the parent handler picks the first
+          available template silently so the photo still lands in the
+          per-tag report context with `executionStepIdOverride: 'instrument'`. */}
+      <View style={styles.nextActionPanel}>
+        <Text style={styles.pendingTitle}>Foto do instrumento</Text>
+        <Text style={styles.pendingText}>
+          Anexe foto da placa, fiacao, instalacao ou condicao fisica do instrumento.
+          Voce pode adicionar a observacao no relatorio.
+        </Text>
+        <View style={styles.reportActionGrid}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={approvedReportLock}
+            onPress={() => onAttachInstrumentPhoto('camera')}
+            style={[
+              styles.smallActionButton,
+              approvedReportLock ? styles.disabledAction : null,
+            ]}
+          >
+            <Text style={styles.smallActionLabel}>Tirar foto</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={approvedReportLock}
+            onPress={() => onAttachInstrumentPhoto('library')}
+            style={[
+              styles.smallGhostButton,
+              approvedReportLock ? styles.disabledAction : null,
+            ]}
+          >
+            <Text style={styles.smallGhostLabel}>Da galeria</Text>
+          </Pressable>
+        </View>
+        {/* Story 8.12 finding #1: instrument-level photo preview row.
+            Filters captured photos by `executionStepId === 'instrument'`
+            so only instrument-tagged shots render here. */}
+        <PhotoThumbnailRow
+          photos={photoAttachments}
+          filterStepKind="instrument"
+          fallbackCaption="Instrumento"
+        />
       </View>
     </>
   );
@@ -2637,6 +3039,9 @@ function ServiceCalculationScreen({
   stages,
   selectedTag,
   shellMessage,
+  // Story 8.10 finding #5: pass the shell's photo list so the photo-actions
+  // section can render thumbnails of already-captured photos.
+  photoAttachments,
   onAttachExecutionPhoto,
   onBack,
   onOpenCalculator,
@@ -2648,6 +3053,7 @@ function ServiceCalculationScreen({
   stages: VisualExecutionStage[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
+  photoAttachments: readonly SharedExecutionPhotoAttachment[];
   onAttachExecutionPhoto: (source: 'camera' | 'library', contextNote: string | null) => void;
   onBack: () => void;
   onOpenCalculator: () => void;
@@ -2765,6 +3171,8 @@ function ServiceCalculationScreen({
         contextNote={null}
         editable={calculation.editable}
         onAttach={onAttachExecutionPhoto}
+        photos={photoAttachments}
+        filterStepKind="calculation"
       />
       <View style={styles.nextActionPanel}>
         <Text style={styles.pendingTitle}>Proximo passo</Text>
@@ -2807,10 +3215,10 @@ function ServiceCalculationScreen({
           <Text style={styles.pendingText}>{conversionResult.detail}</Text>
         </View>
       ) : null}
-      <NavigationAffordanceRow
-        onProximo={() => onOpenStage('history')}
-        proximoLabel="Proximo: Comparar"
-      />
+      {/* Story 8.10 findings #1 + #9: per-test screen no longer renders a
+          "Proximo" button — the Salvar handler pops back to detail
+          automatically. Voltar + Inicio remain for explicit navigation. */}
+      <NavigationAffordanceRow />
     </>
   );
 }
@@ -2819,6 +3227,7 @@ function LoopExecutionScreen({
   calculation,
   inputMode,
   points,
+  photoAttachments,
   selectedTag,
   shellMessage,
   stages,
@@ -2834,6 +3243,11 @@ function LoopExecutionScreen({
   calculation: VisualExecutionCalculationViewModel;
   inputMode: LoopPointInputMode;
   points: LoopTestPoint[];
+  // Story 8.12 finding #1: thumbnails of photos already captured per
+  // loop point, filtered inline by contextNote like
+  // "Ponto de loop 50%". Source comes from `executionShell?.evidence.
+  // photoAttachments` at the parent call site.
+  photoAttachments: readonly SharedExecutionPhotoAttachment[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
   stages: VisualExecutionStage[];
@@ -2991,6 +3405,14 @@ function LoopExecutionScreen({
               <Text style={styles.smallGhostLabel}>Galeria</Text>
             </Pressable>
           </View>
+          {/* Story 8.12 finding #1: per-point thumbnail row. Filters by
+              the contextNote that the capture path stamped on each
+              photo so the 50% row only shows 50% photos, etc. */}
+          <PhotoThumbnailRow
+            photos={photoAttachments}
+            filterContextNote={`Ponto de loop ${row.setpointPercent}%`}
+            fallbackCaption={`Ponto ${row.setpointPercent}%`}
+          />
         </View>
       ))}
 
@@ -3011,15 +3433,11 @@ function LoopExecutionScreen({
           >
             <Text style={styles.smallActionLabel}>Salvar loop</Text>
           </Pressable>
-          <Pressable accessibilityRole="button" onPress={() => onOpenStage('history')} style={styles.smallActionButton}>
-            <Text style={styles.smallActionLabel}>Comparar</Text>
-          </Pressable>
         </View>
       </View>
-      <NavigationAffordanceRow
-        onProximo={() => onOpenStage('history')}
-        proximoLabel="Proximo: Comparar"
-      />
+      {/* Story 8.10 findings #1 + #9: loop-test no longer renders a Proximo
+          button; Salvar pops back to detail. */}
+      <NavigationAffordanceRow />
     </>
   );
 }
@@ -3080,6 +3498,7 @@ function ServiceHistoryScreen({
   activePointId,
   history,
   pointOptions,
+  priorReadings,
   selectedTag,
   shellMessage,
   stages,
@@ -3091,6 +3510,7 @@ function ServiceHistoryScreen({
   activePointId: string;
   history: VisualExecutionHistoryViewModel;
   pointOptions: VisualHistoryPointOption[];
+  priorReadings: readonly LocalTagPriorTestReading[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
   stages: VisualExecutionStage[];
@@ -3101,8 +3521,18 @@ function ServiceHistoryScreen({
 }) {
   const selectedPoint =
     pointOptions.find((option) => option.id === activePointId) ?? pointOptions[0] ?? null;
+  const priorReadingsForPoint = selectPriorReadingsForPoint(priorReadings, selectedPoint);
 
-  if (history.state === 'unavailable' && history.rows.length === 0) {
+  // Story 8.13 finding #2: the Compare screen consumes per-tag history
+  // (priorReadings) directly from selectedTagContext. If neither the
+  // execution-shell-derived rows NOR any priorReadings exist, fall back
+  // to the unavailable screen; otherwise render the panel even when no
+  // test template has been opened.
+  if (
+    history.state === 'unavailable' &&
+    history.rows.length === 0 &&
+    priorReadings.length === 0
+  ) {
     return (
       <ExecutionUnavailableScreen
         message={shellMessage}
@@ -3159,71 +3589,134 @@ function ServiceHistoryScreen({
             ))}
           </ScrollView>
         ) : null}
-        {selectedPoint && selectedPoint.rows.length > 0 ? (
+        {/* Story 8.13 finding #6: chart bars are now sourced from the
+            per-tag priorReadings (multi-point history from the
+            package snapshot), not the empty current-execution rows.
+            Each bar = one past test session's reading at the selected
+            point. Bar height encodes deviation magnitude relative to
+            the worst observed deviation; color goes hot when the
+            reading was pass-with-note or fail. */}
+        {priorReadingsForPoint.length > 0 ? (
           <View style={styles.chartRail}>
-            {selectedPoint.rows.slice(0, 6).map((row, index) => (
-              <View key={`${row.label}:${row.value}`} style={styles.chartPointColumn}>
-                <View
-                  style={[
-                    styles.chartBar,
-                    { height: 24 + (index % 4) * 18 },
-                    row.severity === 'due' || row.severity === 'high' ? styles.chartBarHot : null,
-                  ]}
-                />
-                <View
-                  style={[
-                    styles.chartDot,
-                    row.severity === 'due' || row.severity === 'high' ? styles.chartDotHot : null,
-                  ]}
-                />
-                <Text style={styles.chartLabel}>{row.stateLabel}</Text>
-              </View>
-            ))}
+            {(() => {
+              const maxAbs = Math.max(
+                ...priorReadingsForPoint.map((r) => Math.abs(r.signedDeviation)),
+                0.0001,
+              );
+              return priorReadingsForPoint
+                .slice()
+                .reverse()
+                .slice(0, 6)
+                .map((reading) => {
+                  const height = 28 + Math.min(60, (Math.abs(reading.signedDeviation) / maxAbs) * 60);
+                  const hot = reading.result !== 'pass';
+                  const dateLabel = formatPriorReadingDate(reading.observedAt);
+                  return (
+                    <View key={reading.id} style={styles.chartPointColumn}>
+                      <View
+                        style={[
+                          styles.chartBar,
+                          { height },
+                          hot ? styles.chartBarHot : null,
+                        ]}
+                      />
+                      <View
+                        style={[styles.chartDot, hot ? styles.chartDotHot : null]}
+                      />
+                      <Text style={styles.chartLabel}>{dateLabel}</Text>
+                    </View>
+                  );
+                });
+            })()}
           </View>
         ) : (
-          // Story 8.7 AC 6/10: insufficient-history is no longer a dead text
-          // card. Tapping it routes to diagnosis so the technician can add the
-          // risk justification that explains the missing history.
+          // Story 8.13 finding #6: keep the diagnosis-link affordance
+          // for the truly empty case (no priorReadings for this tag at
+          // all OR at this point).
           <Pressable
             accessibilityRole="button"
             onPress={onOpenDiagnosis}
             style={styles.pendingCard}
           >
             <Text style={styles.pendingTitle}>
-              {selectedPoint?.emptyLabel ?? 'Sem dados suficientes para grafico.'}
+              {priorReadings.length === 0
+                ? 'Sem leituras anteriores em cache para esta tag.'
+                : 'Sem leituras anteriores no ponto selecionado. Troque o ponto para ver outras medicoes.'}
             </Text>
             <Text style={styles.smallGhostLabel}>Tocar para justificar no checklist</Text>
           </Pressable>
         )}
-        <Text style={styles.pendingText}>{history.summary}</Text>
-        <Text style={styles.pendingText}>{history.detail}</Text>
+        {history.state !== 'unavailable' ? (
+          <>
+            <Text style={styles.pendingText}>{history.summary}</Text>
+            <Text style={styles.pendingText}>{history.detail}</Text>
+          </>
+        ) : null}
       </View>
 
-      <SectionHeader icon="H" title="Linha do tempo do ponto selecionado" />
-      {selectedPoint && selectedPoint.rows.length > 0 ? (
-        selectedPoint.rows.map((row) => (
-          <View key={`${row.label}:${row.value}`} style={styles.historyRow}>
-            <View style={styles.flexOne}>
-              <Text style={styles.historyTitle}>{row.label}</Text>
+      {/* Story 8.13 finding #6: the "Linha do tempo do ponto selecionado"
+          section was sourced from selectedPoint.rows (execution shell
+          derived) and rendered "Sem dados suficientes" whenever no test
+          had been opened yet. Replaced by the "Leituras anteriores"
+          panel below which sources from priorReadings; the legacy
+          section is rendered ONLY when no priorReadings exist AND the
+          execution shell has rows. */}
+      {priorReadings.length === 0 &&
+      selectedPoint &&
+      selectedPoint.rows.length > 0 ? (
+        <>
+          <SectionHeader icon="H" title="Linha do tempo do ponto selecionado" />
+          {selectedPoint.rows.map((row) => (
+            <View key={`${row.label}:${row.value}`} style={styles.historyRowVertical}>
+              <View style={styles.historyRowVerticalHeader}>
+                <Text style={styles.historyTitle}>{row.label}</Text>
+                <StatusPill label={row.stateLabel} severity={row.severity} />
+              </View>
+              <Text style={styles.historyValueVertical}>{row.value}</Text>
               <Text style={styles.historySubtitle}>{row.stateLabel}</Text>
             </View>
-            <Text style={styles.historyValue}>{row.value}</Text>
-            <StatusPill label={row.stateLabel} severity={row.severity} />
+          ))}
+        </>
+      ) : null}
+
+      {/* Story 8.11 finding #7: multi-point structured history. The panel
+          renders prior test readings filtered by the active measurement point
+          so the technician can see drift across past tests at a glance. */}
+      <SectionHeader icon="P" title="Leituras anteriores neste ponto" />
+      {priorReadingsForPoint.length > 0 ? (
+        priorReadingsForPoint.map((reading) => (
+          <View key={reading.id} style={styles.priorReadingCard}>
+            <View style={styles.priorReadingHeader}>
+              <Text style={styles.priorReadingDate}>
+                {formatPriorReadingDate(reading.observedAt)}
+              </Text>
+              <StatusPill
+                label={formatPriorReadingResultLabel(reading.result)}
+                severity={mapPriorReadingResultSeverity(reading.result)}
+              />
+            </View>
+            <Text style={styles.priorReadingValue}>
+              {`${formatPriorReadingNumber(reading.observedValue)} ${reading.unit}`}
+            </Text>
+            <Text style={styles.priorReadingSubtitle}>
+              {`Esperado ${formatPriorReadingNumber(reading.expectedValue)} ${reading.unit} - desvio ${formatPriorReadingDeviation(reading)}`}
+            </Text>
+            {reading.technicianNote ? (
+              <Text style={styles.priorReadingNote}>{`Tecnico: ${reading.technicianNote}`}</Text>
+            ) : null}
+            {reading.supervisorNote ? (
+              <Text style={styles.priorReadingNote}>{`Supervisor: ${reading.supervisorNote}`}</Text>
+            ) : null}
           </View>
         ))
       ) : (
-        // Story 8.7 AC 6/10: empty timeline is Pressable to route into diagnosis
-        // for the risk justification step.
-        <Pressable
-          accessibilityRole="button"
-          onPress={onOpenDiagnosis}
-          style={styles.pendingCard}
-        >
+        <View style={styles.pendingCard}>
           <Text style={styles.pendingTitle}>
-            {selectedPoint?.emptyLabel ?? 'Nenhum campo de historico local esta em cache para esta tag.'}
+            {priorReadings.length === 0
+              ? 'Sem leituras anteriores armazenadas para esta tag.'
+              : 'Sem leituras anteriores no ponto selecionado. Troque o ponto para ver outras medicoes.'}
           </Text>
-          <Text style={styles.smallGhostLabel}>Tocar para justificar no checklist</Text>
-        </Pressable>
+        </View>
       )}
 
       <Pressable accessibilityRole="button" onPress={onOpenDiagnosis} style={styles.fullWidthPrimary}>
@@ -3236,6 +3729,210 @@ function ServiceHistoryScreen({
       />
     </>
   );
+}
+
+function selectPriorReadingsForPoint(
+  priorReadings: readonly LocalTagPriorTestReading[],
+  selectedPoint: VisualHistoryPointOption | null,
+): LocalTagPriorTestReading[] {
+  if (priorReadings.length === 0) {
+    return [];
+  }
+  if (!selectedPoint || selectedPoint.pointPercent === null) {
+    // The 4-20 mA conversion is unavailable, so the Compare screen falls
+    // back to the single "Resultado atual" tab; expose all readings sorted
+    // newest-first so the technician can still scan the timeline.
+    return [...priorReadings];
+  }
+  return priorReadings.filter((reading) => reading.pointPercent === selectedPoint.pointPercent);
+}
+
+function formatPriorReadingDate(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+  return date.toLocaleDateString('pt-BR', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+}
+
+function formatPriorReadingNumber(value: number): string {
+  return Number.isInteger(value) ? `${value}` : value.toFixed(3).replace(/\.?0+$/, '');
+}
+
+function formatPriorReadingDeviation(reading: LocalTagPriorTestReading): string {
+  const signed = formatPriorReadingNumber(reading.signedDeviation);
+  const prefixed = reading.signedDeviation > 0 ? `+${signed}` : signed;
+  if (reading.percentOfSpan === null) {
+    return `${prefixed} ${reading.unit}`;
+  }
+  const pct = formatPriorReadingNumber(reading.percentOfSpan);
+  const pctPrefixed = reading.percentOfSpan > 0 ? `+${pct}` : pct;
+  return `${prefixed} ${reading.unit} (${pctPrefixed}% span)`;
+}
+
+function formatPriorReadingResultLabel(
+  result: LocalTagPriorTestReading['result'],
+): string {
+  switch (result) {
+    case 'pass':
+      return 'OK';
+    case 'pass-with-note':
+      return 'Observacao';
+    case 'fail':
+      return 'Falha';
+    default:
+      return 'OK';
+  }
+}
+
+// Story 8.15: pick the loop point with the largest absolute error and
+// project it as a single-point rawInputs payload (expected/observed
+// strings) so the calculation engine can compute a worst-case
+// acceptance for the visit aggregator. Returns null when no point has
+// usable numeric values yet.
+function findWorstLoopCaseRawInputs(
+  rows: readonly {
+    setpointPercent: number;
+    expected: string;
+    measured: string;
+    expectedPv: number | null;
+    expectedMa: number | null;
+    measuredPv: number | null;
+    measuredMa: number | null;
+    error: number | null;
+  }[],
+  inputMode: 'pv' | 'ma',
+): { rawInputs: { expectedValue: string; observedValue: string } } | null {
+  let worst: typeof rows[number] | null = null;
+  let worstAbs = -Infinity;
+  for (const row of rows) {
+    if (row.error === null) continue;
+    const abs = Math.abs(row.error);
+    if (abs > worstAbs) {
+      worstAbs = abs;
+      worst = row;
+    }
+  }
+  if (!worst) return null;
+  const expectedValue =
+    inputMode === 'ma'
+      ? worst.expectedMa?.toString() ?? worst.expected
+      : worst.expectedPv?.toString() ?? worst.expected;
+  const observedValue =
+    inputMode === 'ma'
+      ? worst.measuredMa?.toString() ?? worst.measured
+      : worst.measuredPv?.toString() ?? worst.measured;
+  return { rawInputs: { expectedValue, observedValue } };
+}
+
+// Story 8.14 finding #10: map an evidence-reference's kind to the screen
+// where the technician can fix the gap. Structured readings live on the
+// calculation screen; observation notes + photos live on the checklist
+// (diagnosis) screen. Unknown kinds default to the checklist so the
+// technician at least lands on an editable surface.
+function resolveEvidenceRefRoute(
+  evidenceKind: string,
+): VisualReportPendingActionRoute {
+  switch (evidenceKind) {
+    case 'structured-readings':
+      return 'calculation';
+    case 'observation-notes':
+    case 'photo-evidence':
+    case 'unmapped':
+    default:
+      return 'diagnosis';
+  }
+}
+
+function visitAcceptanceLabel(
+  acceptance: InstrumentVisitView['templates'][number]['acceptance'],
+): string {
+  switch (acceptance) {
+    case 'pass':
+      return 'Concluido';
+    case 'fail':
+      return 'Falha';
+    default:
+      return 'Em andamento';
+  }
+}
+
+function visitAcceptanceSeverity(
+  acceptance: InstrumentVisitView['templates'][number]['acceptance'],
+): VisualSeverity {
+  switch (acceptance) {
+    case 'pass':
+      return 'ok';
+    case 'fail':
+      return 'high';
+    default:
+      return 'due';
+  }
+}
+
+function formatVisitMeasurementLine(
+  entry: InstrumentVisitView['templates'][number],
+): string {
+  const unit = entry.unit ?? '';
+  const expected = entry.expectedValueLabel || '-';
+  const observed = entry.observedValueLabel || '-';
+  const deviation =
+    entry.signedDeviation !== null
+      ? `${entry.signedDeviation > 0 ? '+' : ''}${entry.signedDeviation.toFixed(3).replace(/\.?0+$/, '')}${unit ? ` ${unit}` : ''}`
+      : '-';
+  const span =
+    entry.percentOfSpan !== null
+      ? ` (${entry.percentOfSpan > 0 ? '+' : ''}${entry.percentOfSpan.toFixed(2)}% span)`
+      : '';
+  return `Esperado ${expected}${unit ? ` ${unit}` : ''} - medido ${observed}${unit ? ` ${unit}` : ''} - desvio ${deviation}${span}`;
+}
+
+function resolveTemplateStatusBadge(
+  savedStatus: SharedExecutionTemplateStatus | undefined,
+  selected: boolean,
+): { label: string; severity: VisualSeverity } {
+  // Story 8.13 finding #3: badge labels in plain PT-BR so the
+  // technician understands the test state at a glance. Order of
+  // precedence:
+  // 1) saved acceptance pass -> "Concluido" (test is done and passed)
+  // 2) saved acceptance fail -> "Incompleto" (test ran but failed; the
+  //    technician must redo or justify - same UX treatment as not done)
+  // 3) saved without a final acceptance -> "Em andamento" (calc rows
+  //    persisted but no pass/fail verdict yet, e.g. partial loop)
+  // 4) currently selected, nothing saved -> "Em andamento"
+  // 5) untouched -> "Iniciar"
+  if (savedStatus) {
+    if (savedStatus.acceptance === 'pass') {
+      return { label: 'Concluido', severity: 'ok' };
+    }
+    if (savedStatus.acceptance === 'fail') {
+      return { label: 'Incompleto', severity: 'high' };
+    }
+    return { label: 'Em andamento', severity: 'due' };
+  }
+  if (selected) {
+    return { label: 'Em andamento', severity: 'due' };
+  }
+  return { label: 'Iniciar', severity: 'medium' };
+}
+
+function mapPriorReadingResultSeverity(
+  result: LocalTagPriorTestReading['result'],
+): VisualSeverity {
+  switch (result) {
+    case 'pass':
+      return 'ok';
+    case 'pass-with-note':
+      return 'due';
+    case 'fail':
+      return 'high';
+    default:
+      return 'medium';
+  }
 }
 
 function DemoHistoryScreen({
@@ -3310,6 +4007,9 @@ function ServiceGuidanceScreen({
   stages,
   selectedTag,
   shellMessage,
+  // Story 8.10 finding #5: photo thumbnails on the checklist screen so
+  // captured photos are visible right where they were taken.
+  photoAttachments,
   onAttachExecutionPhoto,
   onBack,
   onChecklistOutcomeChange,
@@ -3323,6 +4023,7 @@ function ServiceGuidanceScreen({
   stages: VisualExecutionStage[];
   selectedTag: VisualTagSummary;
   shellMessage: string | null;
+  photoAttachments: readonly SharedExecutionPhotoAttachment[];
   onAttachExecutionPhoto: (source: 'camera' | 'library', contextNote: string | null) => void;
   onBack: () => void;
   onChecklistOutcomeChange: (
@@ -3452,6 +4153,8 @@ function ServiceGuidanceScreen({
         editable={guidance.editable}
         label="Adicione foto do equipamento, da medicao ou do contexto local do checklist."
         onAttach={onAttachExecutionPhoto}
+        photos={photoAttachments}
+        filterStepKind="guidance"
       />
 
       <Pressable accessibilityRole="button" onPress={onOpenReport} style={styles.secondaryFullWidth}>
@@ -3541,6 +4244,7 @@ function ServiceReportScreen({
   stages,
   shellMessage,
   syncBusy,
+  instrumentVisit,
   onAttachCamera,
   onAttachLibrary,
   onBack,
@@ -3552,11 +4256,17 @@ function ServiceReportScreen({
   onReviewNotesChange,
   onSaveDraft,
   onSubmitReport,
+  onUpdatePhotoTechnicianNote,
+  onRequestExecutionAiDiagnosis,
 }: {
   report: VisualReportProjection;
   stages: VisualExecutionStage[];
   shellMessage: string | null;
   syncBusy: boolean;
+  // Story 8.11 finding #10: per-visit aggregate rendered above the
+  // per-template report so the technician sees a single Relatorio
+  // listing all tests run on the tag.
+  instrumentVisit: InstrumentVisitView | null;
   onAttachCamera: () => void;
   onAttachLibrary: () => void;
   onBack: () => void;
@@ -3568,6 +4278,9 @@ function ServiceReportScreen({
   onReviewNotesChange: (value: string) => void;
   onSaveDraft: () => void;
   onSubmitReport: () => void;
+  onUpdatePhotoTechnicianNote: (evidenceId: string, note: string | null) => void;
+  // Story 8.9 D-01: technician manual AI request handler.
+  onRequestExecutionAiDiagnosis: () => void;
 }) {
   if (report.state !== 'available') {
     return (
@@ -3587,13 +4300,120 @@ function ServiceReportScreen({
       <ExecutionStageStepper activeRoute="report" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.screenTitle}>Relatorio</Text>
 
+      {/* Story 8.12 finding #2: a supervisor-returned report is marked
+          INVALIDATED and the technician must start a new visit. The
+          banner is bold + red so it cannot be missed; the supervisor's
+          return comment is rendered inline so the technician knows what
+          to correct in the new visit. */}
+      {report.invalidated ? (
+        <View style={styles.invalidatedBanner}>
+          <Text style={styles.invalidatedBannerTitle}>
+            Relatorio invalidado pelo supervisor
+          </Text>
+          <Text style={styles.invalidatedBannerBody}>
+            Este relatorio foi devolvido. Ele permanece visivel como historico
+            mas nao pode ser editado nem reenviado. Inicie uma nova visita ao
+            instrumento para registrar as correcoes.
+          </Text>
+          {report.invalidationReason ? (
+            <Text style={styles.invalidatedBannerReason}>
+              {`Motivo do supervisor: ${report.invalidationReason}`}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
       <View style={styles.summaryCard}>
-        <SummaryLine label="Tag" value={report.tagCode} />
-        <SummaryLine label="Template" value={report.templateTitle} />
-        <SummaryLine label="Ciclo" value={reviewLifecycleLabel(report.lifecycleStateLabel)} pill />
-        <SummaryLine label="Estado" value={report.reportStateLabel} />
-        <SummaryLine label="Sync" value={`${syncLabel(report.syncBadge.state)}: ${report.syncBadge.detail}`} />
+        {/* Story 8.8 D-05: technician report header rendered vertically so the
+            Sync row's compound "label: detail" string and long template
+            titles stay readable on narrow Android phones. */}
+        <SummaryLine label="Tag" value={report.tagCode} variant="vertical" />
+        <SummaryLine label="Template" value={report.templateTitle} variant="vertical" />
+        <SummaryLine
+          label="Ciclo"
+          value={reviewLifecycleLabel(report.lifecycleStateLabel)}
+          pill
+          variant="vertical"
+        />
+        <SummaryLine label="Estado" value={report.reportStateLabel} variant="vertical" />
+        <SummaryLine
+          label="Sync"
+          value={`${syncLabel(report.syncBadge.state)}: ${report.syncBadge.detail}`}
+          variant="vertical"
+        />
       </View>
+
+      {/* Story 8.11 finding #10: per-visit aggregate panel rendered as
+          ONE relatorio. Each test the technician ran on this tag shows
+          up here with its acceptance and key measurement, regardless of
+          which per-template shell is currently active. */}
+      {instrumentVisit && instrumentVisit.templates.length > 0 ? (
+        <>
+          <Text style={styles.sectionTitle}>Resumo da visita</Text>
+          <View style={styles.summaryCard}>
+            <SummaryLine
+              label="Testes executados"
+              value={`${instrumentVisit.templates.length} de ${instrumentVisit.templates.length}`}
+              variant="vertical"
+            />
+            {instrumentVisit.templates.map((entry) => (
+              <View key={entry.templateId} style={styles.visitTemplateRow}>
+                <View style={styles.visitTemplateHeader}>
+                  <Text style={styles.visitTemplateTitle}>
+                    {toPtBrTemplateLabel(entry.templateTitle)}
+                  </Text>
+                  <StatusPill
+                    label={visitAcceptanceLabel(entry.acceptance)}
+                    severity={visitAcceptanceSeverity(entry.acceptance)}
+                  />
+                </View>
+                <Text style={styles.visitTemplateLine}>
+                  {formatVisitMeasurementLine(entry)}
+                </Text>
+                {entry.acceptanceReason ? (
+                  <Text style={styles.visitTemplateNote}>{entry.acceptanceReason}</Text>
+                ) : null}
+                {/* Story 8.15: persisted loop curve. Each row is one
+                    setpoint with the expected / measured / error per
+                    the technician's input mode (PV or mA). The
+                    severity pill is hot for points that exceeded
+                    tolerance. */}
+                {entry.loopReadings.length > 0 ? (
+                  <View style={styles.loopResultTable}>
+                    <Text style={styles.visitTemplateNote}>
+                      {`Curva do teste de loop (${entry.loopInputMode === 'ma' ? 'modo mA' : 'modo PV'}):`}
+                    </Text>
+                    {entry.loopReadings.map((reading) => (
+                      <View key={`${entry.templateId}-${reading.setpointPercent}`} style={styles.loopResultRow}>
+                        <Text style={styles.loopResultPercent}>{`${reading.setpointPercent}%`}</Text>
+                        <Text style={styles.loopResultValue}>
+                          {`esp ${reading.expected || '-'} / med ${reading.measured || '-'}`}
+                        </Text>
+                        <StatusPill
+                          label={
+                            reading.passed === null
+                              ? 'pendente'
+                              : reading.passed
+                              ? 'OK'
+                              : 'fora'
+                          }
+                          severity={
+                            reading.passed === null
+                              ? 'medium'
+                              : reading.passed
+                              ? 'ok'
+                              : 'high'
+                          }
+                        />
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        </>
+      ) : null}
 
       <Text style={styles.sectionTitle}>Resumo automatico</Text>
       <View style={styles.summaryCard}>
@@ -3654,79 +4474,62 @@ function ServiceReportScreen({
         actionLabel={`${report.photoAttachments.length} fotos locais`}
         title="Evidencias"
       />
+      {/* Story 8.14 finding #9: the report page is now read-only - it
+          is for double-checking, not for adding evidence. Photos are
+          captured from the instrument detail screen, the test
+          execution screens, and the checklist screen. The hint here
+          tells the technician where to add new evidence; tapping a
+          missing-evidence card below also routes there. */}
       <View style={styles.nextActionPanel}>
         <Text style={styles.pendingTitle}>Fotos e anexos</Text>
         <Text style={styles.pendingText}>
-          Adicione fotos ou arquivos da galeria quando o procedimento pedir evidencia minima ou esperada.
+          As fotos sao adicionadas durante a execucao do teste, no checklist ou na
+          tela do instrumento. Esta tela mostra apenas o que ja foi capturado para
+          revisao antes do envio.
         </Text>
       </View>
-      <View style={styles.reportActionGrid}>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!report.editable}
-          onPress={onAttachCamera}
-          style={[styles.smallActionButton, !report.editable ? styles.disabledAction : null]}
-        >
-          <Text style={styles.smallActionLabel}>Camera</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!report.editable}
-          onPress={onAttachLibrary}
-          style={[styles.smallGhostButton, !report.editable ? styles.disabledAction : null]}
-        >
-          <Text style={styles.smallGhostLabel}>Galeria</Text>
-        </Pressable>
-      </View>
 
-      {report.evidenceReferences.map((reference) => (
-        <View
-          key={`${reference.evidenceKind}:${reference.label}`}
-          style={[
-            styles.guidanceCard,
-            !reference.satisfied && reference.requirementLevel === 'minimum'
-              ? styles.guidanceCardWarning
-              : null,
-          ]}
-        >
-          <Text style={styles.historyTitle}>{reference.label}</Text>
-          <Text style={styles.pendingText}>
-            {reference.requirementLevel.toUpperCase()} - {reference.stateLabel}
-          </Text>
-          <Text style={styles.pendingText}>{reference.detail}</Text>
-        </View>
-      ))}
+      {/* Story 8.14 finding #10: unsatisfied evidence references are
+          now interactive - tapping routes the technician to the screen
+          where they can fix the gap. Submission is never blocked. */}
+      {report.evidenceReferences.map((reference) => {
+        const targetRoute = resolveEvidenceRefRoute(reference.evidenceKind);
+        const unsatisfied = !reference.satisfied;
+        const flagged = unsatisfied && reference.requirementLevel === 'minimum';
+        return (
+          <Pressable
+            accessibilityRole="button"
+            key={`${reference.evidenceKind}:${reference.label}`}
+            onPress={() => (unsatisfied ? onNavigatePending(targetRoute) : undefined)}
+            style={[styles.guidanceCard, flagged ? styles.guidanceCardWarning : null]}
+          >
+            <Text style={styles.historyTitle}>{reference.label}</Text>
+            <Text style={styles.pendingText}>
+              {reference.requirementLevel.toUpperCase()} - {reference.stateLabel}
+            </Text>
+            <Text style={styles.pendingText}>{reference.detail}</Text>
+            {unsatisfied ? (
+              <Text style={styles.smallGhostLabel}>Abrir etapa para resolver</Text>
+            ) : null}
+          </Pressable>
+        );
+      })}
 
       {report.photoAttachments.length > 0 ? (
         <View style={styles.reportPhotoGrid}>
           {report.photoAttachments.map((attachment) => (
-            <View key={attachment.evidenceId} style={styles.reportPhotoCard}>
-              <Image source={{ uri: attachment.previewUri }} style={styles.reportPhotoPreview} />
-              <Text style={styles.historyTitle}>{attachment.fileName}</Text>
-              <Text style={styles.historySubtitle}>
-                {attachment.source} - {attachment.syncState}
-              </Text>
-              {attachment.syncIssue ? (
-                <Text style={styles.pendingText}>
-                  {/* Story 8.7 AC 12: classify per-attachment errors so the
-                      technician sees an actionable PT-BR message rather than
-                      raw fetch failure text. */}
-                  {classifySyncError({ errorMessage: attachment.syncIssue }).copy}
-                </Text>
-              ) : null}
-              <Pressable
-                accessibilityRole="button"
-                disabled={!report.editable}
-                onPress={() => onRemovePhoto(attachment.evidenceId)}
-                style={[
-                  styles.smallGhostButton,
-                  styles.reportInlineButton,
-                  !report.editable ? styles.disabledAction : null,
-                ]}
-              >
-                <Text style={styles.smallGhostLabel}>Remover</Text>
-              </Pressable>
-            </View>
+            // Story 8.14 finding #9: photo cards on the Report screen
+            // are read-only. Remove + technician-note editing happen
+            // on the checklist screen where the photo was captured.
+            <ReportPhotoCard
+              key={attachment.evidenceId}
+              attachment={attachment}
+              editable={false}
+              onRemove={() => onRemovePhoto(attachment.evidenceId)}
+              onUpdateTechnicianNote={(note) =>
+                onUpdatePhotoTechnicianNote(attachment.evidenceId, note)
+              }
+            />
           ))}
         </View>
       ) : (
@@ -3738,10 +4541,15 @@ function ServiceReportScreen({
       )}
 
       <Text style={styles.sectionTitle}>Riscos e justificativas</Text>
+      {/* Story 8.14 finding #10: risk items now route the technician
+          to the checklist screen where the justification editor lives.
+          Submission is never blocked. */}
       {report.riskFlags.length > 0 ? (
         report.riskFlags.map((riskFlag) => (
-          <View
+          <Pressable
+            accessibilityRole="button"
             key={riskFlag.id}
+            onPress={() => onNavigatePending('diagnosis')}
             style={[
               styles.guidanceCard,
               riskFlag.severity === 'submit-block' ? styles.guidanceCardWarning : null,
@@ -3753,7 +4561,8 @@ function ServiceReportScreen({
             <Text style={styles.pendingText}>
               Justificativa: {riskFlag.justificationText.trim() || 'Nao capturada'}
             </Text>
-          </View>
+            <Text style={styles.smallGhostLabel}>Abrir checklist para justificar</Text>
+          </Pressable>
         ))
       ) : (
         <View style={styles.pendingCard}>
@@ -3761,21 +4570,33 @@ function ServiceReportScreen({
         </View>
       )}
 
+      {/* Story 8.14 finding #9: the report page is read-only. The
+          technician's review notes were the ONE thing the report page
+          let the user edit, and the user wanted them moved entirely to
+          the checklist screen (where "Observacoes do tecnico" already
+          lives). This block now shows the captured notes for review;
+          edits happen at the source. */}
       <Text style={styles.sectionTitle}>Observacoes do tecnico</Text>
-      {!report.editable && report.editLockReason ? (
+      {report.invalidated && report.editLockReason ? (
         <InlineMessage text={report.editLockReason} />
       ) : null}
-      <TextInput
-        autoCapitalize="sentences"
-        autoCorrect
-        editable={report.editable}
-        multiline
-        onChangeText={onReviewNotesChange}
-        placeholder="Adicione observacoes, correcoes ou notas finais para revisao..."
-        placeholderTextColor={colors.textSubtle}
-        style={[styles.justificationInput, !report.editable ? styles.disabledAction : null]}
-        value={report.reviewNotes}
-      />
+      <View style={styles.pendingCard}>
+        {report.reviewNotes.trim().length > 0 ? (
+          <Text style={styles.pendingText}>{report.reviewNotes}</Text>
+        ) : (
+          <Text style={styles.pendingText}>
+            Nenhuma observacao adicional foi capturada no checklist. Para
+            adicionar uma nota, abra o checklist tecnico.
+          </Text>
+        )}
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => onNavigatePending('diagnosis')}
+          style={styles.smallGhostButton}
+        >
+          <Text style={styles.smallGhostLabel}>Abrir checklist para editar</Text>
+        </Pressable>
+      </View>
 
       <View style={styles.guidanceCard}>
         <Text style={styles.historySubtitle}>Inteligencia do relatorio</Text>
@@ -3789,6 +4610,24 @@ function ServiceReportScreen({
           <Text style={styles.historySubtitle}>
             Gerado em: {report.aiDiagnosis.generatedAtLabel}
           </Text>
+        ) : null}
+        {/* Story 8.9 D-01: manual AI request button. Visible when the state
+            is not 'available' (no prior result yet, or a prior result was
+            replaced/failed). Tap enqueues a worker job server-side and
+            refreshes the local AI projection. AI is assistive — disabled
+            state surfaces a hint but does NOT block report submission. */}
+        {report.aiDiagnosis.state !== 'available' ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void onRequestExecutionAiDiagnosis()}
+            style={[styles.smallActionButton, styles.reportInlineButton]}
+          >
+            <Text style={styles.smallActionLabel}>
+              {report.aiDiagnosis.state === 'pending'
+                ? 'Aguardando diagnostico (toque para reverificar)'
+                : 'Solicitar diagnostico assistido'}
+            </Text>
+          </Pressable>
         ) : null}
       </View>
 
@@ -3835,29 +4674,25 @@ function ServiceReportScreen({
         </Pressable>
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        disabled={!report.canSaveDraft}
-        onPress={onSaveDraft}
-        style={[styles.secondaryFullWidth, !report.canSaveDraft ? styles.disabledAction : null]}
-      >
-        <Text style={styles.returnLabel}>Salvar rascunho</Text>
-      </Pressable>
+      {/* Story 8.14 finding #9: "Salvar rascunho" removed - the
+          report page is read-only review, and the per-step screens
+          already persist their work. The only action on this page is
+          "Enviar relatorio" plus the AI request button above. Per
+          finding #10 the submit is never blocked, even with missing
+          inputs - tap a red flag to fix what's missing first, or
+          submit as-is. */}
       <Pressable
         accessibilityRole="button"
         disabled={!report.canSubmit}
         onPress={onSubmitReport}
         style={[styles.fullWidthPrimary, !report.canSubmit ? styles.disabledAction : null]}
       >
-        <Text style={styles.fullWidthPrimaryLabel}>Enviar para fila local</Text>
+        <Text style={styles.fullWidthPrimaryLabel}>Enviar relatorio</Text>
       </Pressable>
-      {!report.canSubmit ? (
+      {!report.canSubmit && report.invalidated ? (
         <View style={styles.pendingCard}>
-          <Text style={styles.pendingTitle}>Envio ainda bloqueado</Text>
+          <Text style={styles.pendingTitle}>Envio bloqueado</Text>
           <Text style={styles.pendingText}>{report.submitReadinessLabel}</Text>
-          <Text style={styles.pendingText}>
-            Toque em uma pendencia acima para ir direto para a justificativa ou evidencia necessaria.
-          </Text>
         </View>
       ) : null}
       <NavigationAffordanceRow />
@@ -3973,10 +4808,21 @@ function ServiceReviewScreen({
               <View key={item.reportId} style={styles.guidanceCard}>
                 <Text style={styles.historyTitle}>{item.tagId}</Text>
                 <Text style={styles.historySubtitle}>{item.reportId}</Text>
-                <SummaryLine label="Ciclo" value={reviewLifecycleLabel(item.statusLabel)} />
-                <SummaryLine label="Pacote" value={item.workPackageId} />
-                <SummaryLine label="Riscos" value={`${item.riskFlagCount}`} />
-                <SummaryLine label="Evidencias pendentes" value={`${item.pendingEvidenceCount}`} />
+                {/* Story 8.8 D-05: supervisor queue card uses vertical layout
+                    so long work-package IDs (e.g. "BP-2025-001-A") do not
+                    truncate. */}
+                <SummaryLine
+                  label="Ciclo"
+                  value={reviewLifecycleLabel(item.statusLabel)}
+                  variant="vertical"
+                />
+                <SummaryLine label="Pacote" value={item.workPackageId} variant="vertical" />
+                <SummaryLine label="Riscos" value={`${item.riskFlagCount}`} variant="vertical" />
+                <SummaryLine
+                  label="Evidencias pendentes"
+                  value={`${item.pendingEvidenceCount}`}
+                  variant="vertical"
+                />
                 <Text style={styles.pendingText}>{item.executionSummary}</Text>
                 <Text style={styles.pendingText}>Aceito em: {item.acceptedAtLabel}</Text>
                 <Pressable
@@ -4050,10 +4896,18 @@ function ReviewDetailView({
     <View style={styles.guidanceCard}>
       <Text style={styles.sectionTitle}>{detail.title}</Text>
       <View style={styles.summaryCard}>
-        <SummaryLine label="Ciclo" value={reviewLifecycleLabel(detail.lifecycleStateLabel)} pill />
-        <SummaryLine label="Sync" value={syncLabel(detail.syncStateLabel)} />
+        {/* Story 8.8 D-05: supervisor review detail block uses vertical layout
+            so long timestamps and reviewer names in dynamic summaryRows do
+            not wrap. */}
+        <SummaryLine
+          label="Ciclo"
+          value={reviewLifecycleLabel(detail.lifecycleStateLabel)}
+          pill
+          variant="vertical"
+        />
+        <SummaryLine label="Sync" value={syncLabel(detail.syncStateLabel)} variant="vertical" />
         {detail.summaryRows.map((row) => (
-          <SummaryLine key={row.label} label={row.label} value={row.value} />
+          <SummaryLine key={row.label} label={row.label} value={row.value} variant="vertical" />
         ))}
       </View>
 
@@ -4093,10 +4947,25 @@ function ReviewDetailView({
       {detail.photoAttachments.length > 0 ? (
         detail.photoAttachments.map((photo) => (
           <View key={photo.evidenceId} style={styles.pendingCard}>
-            <Text style={styles.pendingTitle}>{photo.evidenceId}</Text>
+            {/* Story 8.8 D-02: contextSubtitle carries the sub-step label
+                (Instrumento / Calculo / Checklist / Ponto de loop X%) so the
+                supervisor knows where each photo was captured. Falls back to
+                "Sem etapa" for pre-8.8 photos. */}
+            <Text style={styles.pendingTitle}>{photo.contextSubtitle}</Text>
+            <Text style={styles.pendingText}>ID: {photo.evidenceId}</Text>
             <Text style={styles.pendingText}>Evidencia servidor: {photo.serverEvidenceId ?? 'Nenhuma'}</Text>
             <Text style={styles.pendingText}>Sync: {photo.syncState}</Text>
             <Text style={styles.pendingText}>Finalizada: {photo.finalizedLabel}</Text>
+            {/* Story 8.8 D-04: surface the technician's free-text observation
+                directly on the supervisor's photo card. Empty when none was
+                captured. */}
+            {photo.technicianNoteLabel.length > 0 ? (
+              <Text style={styles.pendingText}>
+                Observacao do tecnico: {photo.technicianNoteLabel}
+              </Text>
+            ) : (
+              <Text style={styles.pendingText}>Sem observacao do tecnico.</Text>
+            )}
           </View>
         ))
       ) : (
@@ -4491,6 +5360,226 @@ function NavigationAffordanceRow({
   );
 }
 
+// Story 8.8 D-02 / D-04: photo card for the technician report screen. Renders
+// the sub-step label (Instrumento / Calculo / Checklist / Ponto de loop X%),
+// the technician's free-text observation, and an inline "Editar observacao"
+// affordance so the technician can add or update the comment without leaving
+// the report screen. Kept inline (no new file) per the existing in-place
+// component pattern.
+function ReportPhotoCard({
+  attachment,
+  editable,
+  onRemove,
+  onUpdateTechnicianNote,
+}: {
+  attachment: SharedExecutionPhotoAttachment;
+  editable: boolean;
+  onRemove: () => void;
+  onUpdateTechnicianNote: (note: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(attachment.technicianNote ?? '');
+  const stepLabel = formatPhotoExecutionStepLabel(attachment.executionStepId);
+  const contextSubtitle = formatPhotoContextSubtitle({
+    contextNote: attachment.contextNote,
+    executionStepId: attachment.executionStepId,
+  });
+  const trimmedNote = (attachment.technicianNote ?? '').trim();
+
+  return (
+    <View style={styles.reportPhotoCard}>
+      <Image source={{ uri: attachment.previewUri }} style={styles.reportPhotoPreview} />
+      <Text style={styles.historyTitle}>{stepLabel}</Text>
+      <Text style={styles.historySubtitle}>{contextSubtitle}</Text>
+      <Text style={styles.historySubtitle}>
+        {attachment.source === 'camera' ? 'Camera' : 'Galeria'} - {attachment.syncState}
+      </Text>
+      {attachment.syncIssue ? (
+        <Text style={styles.pendingText}>
+          {/* Story 8.7 AC 12: classify per-attachment errors so the technician
+              sees an actionable PT-BR message rather than raw fetch failure
+              text. */}
+          {classifySyncError({ errorMessage: attachment.syncIssue }).copy}
+        </Text>
+      ) : null}
+
+      {editing ? (
+        <>
+          <TextInput
+            multiline
+            // Story 8.9 C-02: cap technician note at 2000 chars on the mobile
+            // input. Backend enforces the same bound in the validator chain.
+            maxLength={2000}
+            placeholder="Ex: Loop OK, cabos danificados na flange"
+            placeholderTextColor={colors.textSubtle}
+            style={styles.photoNoteInput}
+            value={draft}
+            onChangeText={setDraft}
+          />
+          <View style={styles.reportActionGrid}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                onUpdateTechnicianNote(draft.trim().length === 0 ? null : draft);
+                setEditing(false);
+              }}
+              style={styles.smallActionButton}
+            >
+              <Text style={styles.smallActionLabel}>Salvar observacao</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setDraft(attachment.technicianNote ?? '');
+                setEditing(false);
+              }}
+              style={styles.smallGhostButton}
+            >
+              <Text style={styles.smallGhostLabel}>Cancelar</Text>
+            </Pressable>
+          </View>
+        </>
+      ) : (
+        <>
+          <Text style={styles.pendingText}>
+            {trimmedNote.length > 0
+              ? `Observacao: ${trimmedNote}`
+              : 'Sem observacao do tecnico. Toque em "Editar observacao" para adicionar.'}
+          </Text>
+          <View style={styles.reportActionGrid}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!editable}
+              onPress={() => {
+                setDraft(attachment.technicianNote ?? '');
+                setEditing(true);
+              }}
+              style={[
+                styles.smallGhostButton,
+                !editable ? styles.disabledAction : null,
+              ]}
+            >
+              <Text style={styles.smallGhostLabel}>Editar observacao</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!editable}
+              onPress={onRemove}
+              style={[
+                styles.smallGhostButton,
+                !editable ? styles.disabledAction : null,
+              ]}
+            >
+              <Text style={styles.smallGhostLabel}>Remover</Text>
+            </Pressable>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+// Story 8.12 finding #3: read-only 0-100% sweep reference table for the
+// standalone Calculadora. Given a PV range and unit, renders the 5 standard
+// loop checkpoints with both the expected mA (4-20 mA convention) and the
+// expected PV value. Pure helper - never writes anywhere.
+function CalculatorSweepPanel({
+  processMinRaw,
+  processMaxRaw,
+  unit,
+}: {
+  processMinRaw: string;
+  processMaxRaw: string;
+  unit: string;
+}) {
+  const parsedMin = parseFloat(processMinRaw.replace(',', '.'));
+  const parsedMax = parseFloat(processMaxRaw.replace(',', '.'));
+  const ready =
+    Number.isFinite(parsedMin) &&
+    Number.isFinite(parsedMax) &&
+    parsedMax > parsedMin;
+  const rows = ready
+    ? [0, 25, 50, 75, 100].map((percent) => {
+        const milliamp = 4 + (percent / 100) * 16;
+        const processValue = parsedMin + (percent / 100) * (parsedMax - parsedMin);
+        return {
+          percent,
+          milliampLabel: `${milliamp.toFixed(2)} mA`,
+          processValueLabel: `${processValue.toFixed(3).replace(/\.?0+$/, '')}${unit ? ` ${unit}` : ''}`,
+        };
+      })
+    : [];
+  return (
+    <View style={styles.connectionCard}>
+      <Text style={styles.sectionTitle}>Tabela 0-100% (4-20 mA)</Text>
+      <Text style={styles.pendingText}>
+        Preencha a faixa PV (campos PV min e PV max acima no Modo Conversao) para ver os
+        cinco pontos padrao com a corrente esperada (4-20 mA) e o valor de processo
+        correspondente. Tabela de referencia: nao envia dados nem altera testes.
+      </Text>
+      {ready ? (
+        rows.map((row) => (
+          <View key={row.percent} style={styles.sweepRow}>
+            <Text style={styles.sweepPercent}>{row.percent}%</Text>
+            <Text style={styles.sweepValue}>{row.milliampLabel}</Text>
+            <Text style={styles.sweepValue}>{row.processValueLabel}</Text>
+          </View>
+        ))
+      ) : (
+        <InlineMessage text="Informe PV min, PV max e unidade no Modo Conversao para gerar a tabela." />
+      )}
+    </View>
+  );
+}
+
+// Story 8.12 finding #1: standalone thumbnail row used by the instrument
+// detail panel and the loop-test per-point block, so any place that
+// captures a photo can also display it. Filters by executionStepId or
+// contextNote so each surface only shows the photos relevant to its
+// context. Reuses the executionPhotoThumb* styles introduced in 8.10.
+function PhotoThumbnailRow({
+  photos,
+  filterStepKind,
+  filterContextNote,
+  fallbackCaption,
+}: {
+  photos: readonly SharedExecutionPhotoAttachment[];
+  filterStepKind?: SharedExecutionStepKind;
+  filterContextNote?: string | null;
+  fallbackCaption?: string;
+}) {
+  const visiblePhotos = photos.filter((photo) => {
+    if (filterStepKind && photo.executionStepId !== filterStepKind) {
+      return false;
+    }
+    if (filterContextNote !== undefined && photo.contextNote !== filterContextNote) {
+      return false;
+    }
+    return true;
+  });
+  if (visiblePhotos.length === 0) {
+    return null;
+  }
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.executionPhotoThumbRow}
+    >
+      {visiblePhotos.map((photo) => (
+        <View key={photo.evidenceId} style={styles.executionPhotoThumbCard}>
+          <Image source={{ uri: photo.previewUri }} style={styles.executionPhotoThumb} />
+          <Text style={styles.executionPhotoThumbCaption} numberOfLines={1}>
+            {photo.contextNote ??
+              fallbackCaption ??
+              formatPhotoExecutionStepLabel(photo.executionStepId)}
+          </Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
 // Story 8.7 AC 7: small inline camera/gallery row reusable across loop test,
 // single-point calculation, and checklist/guidance screens. The contextNote
 // (e.g. "Ponto de loop 50%") is carried on the photo so the report evidence
@@ -4501,12 +5590,26 @@ function ExecutionPhotoActions({
   editable = true,
   label,
   onAttach,
+  photos,
+  filterStepKind,
 }: {
   contextNote: string | null;
   editable?: boolean;
   label?: string;
   onAttach: (source: 'camera' | 'library', contextNote: string | null) => void;
+  // Story 8.10 finding #5: render thumbnails of already-attached photos so
+  // the technician immediately sees that the capture worked. The component
+  // filters the full attachment list by `filterStepKind` (when provided) so
+  // the calculation screen only shows calculation photos, the checklist
+  // screen only shows checklist photos, etc.
+  photos?: readonly SharedExecutionPhotoAttachment[];
+  filterStepKind?: SharedExecutionStepKind;
 }) {
+  const visiblePhotos = photos
+    ? filterStepKind
+      ? photos.filter((p) => p.executionStepId === filterStepKind)
+      : photos
+    : [];
   return (
     <View style={styles.nextActionPanel}>
       <Text style={styles.pendingTitle}>Foto da execucao</Text>
@@ -4532,6 +5635,22 @@ function ExecutionPhotoActions({
           <Text style={styles.smallGhostLabel}>Da galeria</Text>
         </Pressable>
       </View>
+      {visiblePhotos.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.executionPhotoThumbRow}
+        >
+          {visiblePhotos.map((photo) => (
+            <View key={photo.evidenceId} style={styles.executionPhotoThumbCard}>
+              <Image source={{ uri: photo.previewUri }} style={styles.executionPhotoThumb} />
+              <Text style={styles.executionPhotoThumbCaption} numberOfLines={1}>
+                {photo.contextNote ?? formatPhotoExecutionStepLabel(photo.executionStepId)}
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
+      ) : null}
     </View>
   );
 }
@@ -4969,15 +6088,33 @@ function StatusPill({
   );
 }
 
+// Story 8.8 D-05: `MetricLine` now accepts a `variant`. The legacy default is
+// 'horizontal' (label on the left, value on the right) for callers that depend
+// on the compact two-column layout (status pills, chip pairs). The new
+// 'vertical' variant renders the label above the value, full width, so long
+// values (asset references, dates, multi-word strings) do not wrap mid-row on
+// narrower Android phones. The instrument detail screen uses 'vertical'.
 function MetricLine({
   label,
   rightLabel,
   value,
+  variant = 'horizontal',
 }: {
   label: string;
   rightLabel?: string;
   value: string;
+  variant?: 'horizontal' | 'vertical';
 }) {
+  if (variant === 'vertical') {
+    return (
+      <View style={styles.metricLineVertical}>
+        <Text style={styles.metricLabelVertical}>{label}</Text>
+        <Text style={styles.metricValueVertical}>{value}</Text>
+        {rightLabel ? <Text style={styles.metricRightLabel}>{rightLabel}</Text> : null}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.metricLine}>
       <Text style={styles.metricLabel}>{label}</Text>
@@ -5029,17 +6166,42 @@ function GhostTile({ label }: { label: string }) {
   );
 }
 
+// Story 8.8 D-05: `SummaryLine` now accepts a `variant`. The legacy default is
+// 'horizontal' for compact short pairs (e.g., chip + status). The new
+// 'vertical' variant renders label above value so long sync detail strings,
+// long work-package IDs, and multi-word lifecycle labels stay readable on
+// narrow Android phones. Used by the technician report header and the
+// supervisor review queue/detail screens.
 function SummaryLine({
   danger = false,
   label,
   pill = false,
   value,
+  variant = 'horizontal',
 }: {
   danger?: boolean;
   label: string;
   pill?: boolean;
   value: string;
+  variant?: 'horizontal' | 'vertical';
 }) {
+  if (variant === 'vertical') {
+    return (
+      <View style={styles.summaryLineVertical}>
+        <Text style={styles.summaryLabelVertical}>{label}</Text>
+        {pill ? (
+          <StatusPill label={value} severity="medium" />
+        ) : (
+          <Text
+            style={[styles.summaryValueVertical, danger ? styles.summaryDanger : null]}
+          >
+            {value}
+          </Text>
+        )}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.summaryLine}>
       <Text style={styles.summaryLabel}>{label}</Text>
@@ -5108,9 +6270,14 @@ function toHistoryResultLabel(value: string | null | undefined): string {
     case 'pass':
     case 'passed':
     case 'ok':
-      return 'Aprovado';
     case 'pass-with-note':
-      return 'Aprovado com observacao';
+      // Story 8.14 finding #4: collapse pass-with-note to "Aprovado"
+      // here. The detail tile has no room to render the observation
+      // context, so the long-form label was confusing the technician.
+      // The actual supervisor / technician note is still surfaced
+      // inline in the Compare screen's priorReadings panel where it
+      // carries meaning.
+      return 'Aprovado';
     case 'fail':
     case 'failed':
       return 'Falha';
@@ -5154,6 +6321,14 @@ function reviewAccessStateLabel(value: string): string {
 
 function reviewLifecycleLabel(value: string): string {
   switch (value) {
+    // Story 8.8 PT-BR sweep: cover the technician-side draft lifecycle labels
+    // (In Progress / Ready to Submit) that were leaking as English when the
+    // technician report header reflected the local draft state. The
+    // server-side lifecycle labels remain mapped as before.
+    case 'In Progress':
+      return 'Em andamento';
+    case 'Ready to Submit':
+      return 'Pronto para enviar';
     case 'Submitted - Pending Supervisor Review':
       return 'Enviado - aguardando supervisor';
     case 'Submitted - Pending Sync':
@@ -6126,6 +7301,23 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: spacing.sm,
   },
+  metricLineVertical: {
+    minHeight: 56,
+    paddingVertical: spacing.xs,
+    gap: spacing.xs,
+  },
+  metricLabelVertical: {
+    color: colors.textMuted,
+    fontSize: 14,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  metricValueVertical: {
+    color: colors.text,
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: '900',
+  },
   metricLabel: {
     color: colors.textMuted,
     fontSize: 18,
@@ -6462,6 +7654,248 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.md,
   },
+  // Story 8.10 finding #2: vertical history row variant. Title + pill on the
+  // first line; the value (e.g. measured reading) on its own line below at
+  // full width; the state label as a small caption underneath. Prevents
+  // mid-row wrapping of long labels on narrow Android screens.
+  historyRowVertical: {
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+  historyRowVerticalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  historyValueVertical: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: '900',
+    lineHeight: 28,
+  },
+  // Story 8.12 finding #6: floating toast overlay. Absolute positioning
+  // anchors against the SafeAreaView (not the ScrollView), so the toast
+  // stays visible regardless of how far the user has scrolled. The
+  // wrapper is `pointerEvents=box-none` so taps pass through to the
+  // ScrollView except where the toast card itself sits.
+  toastOverlay: {
+    position: 'absolute',
+    bottom: 24,
+    left: 16,
+    right: 16,
+    alignItems: 'stretch',
+    zIndex: 100,
+  },
+  toastCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surfaceRaised,
+    borderColor: colors.borderStrong,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    gap: spacing.md,
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  toastMessage: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  toastDismiss: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfacePressed,
+  },
+  toastDismissLabel: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '900',
+    lineHeight: 16,
+  },
+  // Story 8.12 finding #2: invalidated-report banner on the Report
+  // screen. Red surface + bold title so the technician immediately sees
+  // the report can no longer be re-submitted.
+  invalidatedBanner: {
+    borderRadius: radius.md,
+    backgroundColor: colors.redSoft,
+    borderWidth: 1,
+    borderColor: colors.red,
+    padding: spacing.md,
+    marginVertical: spacing.md,
+    gap: spacing.xs,
+  },
+  invalidatedBannerTitle: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  invalidatedBannerBody: {
+    color: colors.text,
+    fontSize: 14,
+  },
+  invalidatedBannerReason: {
+    color: colors.text,
+    fontSize: 13,
+    fontStyle: 'italic',
+  },
+  // Story 8.15: per-point loop test results rendered inline in the
+  // Resumo da visita panel on the Report screen. Each row has the
+  // setpoint percent, the expected/measured pair, and a pass/fail
+  // pill so the technician can scan the curve at a glance.
+  loopResultTable: {
+    marginTop: spacing.sm,
+    gap: spacing.xs,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  loopResultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  loopResultPercent: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '800',
+    minWidth: 48,
+  },
+  loopResultValue: {
+    flex: 1,
+    color: colors.textMuted,
+    fontSize: 13,
+  },
+  // Story 8.12 finding #3: sweep table row inside the calculator's
+  // "Tabela 0-100%" panel. Three columns: percent, mA, PV value.
+  sweepRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    gap: spacing.sm,
+  },
+  sweepPercent: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '800',
+    minWidth: 56,
+  },
+  sweepValue: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+    flex: 1,
+    textAlign: 'right',
+  },
+  // Story 8.11 finding #10: per-visit template row inside the
+  // Resumo da visita panel on the Report screen.
+  visitTemplateRow: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
+    gap: spacing.xs,
+  },
+  visitTemplateHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  visitTemplateTitle: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  visitTemplateLine: {
+    color: colors.textMuted,
+    fontSize: 13,
+  },
+  visitTemplateNote: {
+    color: colors.textSubtle,
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  // Story 8.11 finding #7: prior reading cards stack vertically on the
+  // Compare screen, one card per past visit at the active measurement point.
+  priorReadingCard: {
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+  priorReadingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  priorReadingDate: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  priorReadingValue: {
+    color: colors.text,
+    fontSize: 20,
+    fontWeight: '900',
+    lineHeight: 26,
+  },
+  priorReadingSubtitle: {
+    color: colors.textMuted,
+    fontSize: 13,
+  },
+  priorReadingNote: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  // Story 8.10 finding #5: inline photo thumbnails on the per-step capture
+  // screens. The technician sees the photo right where they captured it.
+  executionPhotoThumbRow: {
+    gap: spacing.sm,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+  },
+  executionPhotoThumbCard: {
+    width: 100,
+    gap: spacing.xs,
+  },
+  executionPhotoThumb: {
+    width: 100,
+    height: 100,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+  },
+  executionPhotoThumbCaption: {
+    color: colors.textMuted,
+    fontSize: 11,
+    textAlign: 'center',
+  },
   historyTitle: {
     color: colors.text,
     fontSize: 24,
@@ -6658,6 +8092,24 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
     gap: spacing.md,
   },
+  summaryLineVertical: {
+    minHeight: 58,
+    paddingVertical: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: spacing.xs,
+  },
+  summaryLabelVertical: {
+    color: colors.textMuted,
+    fontSize: 14,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  summaryValueVertical: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+  },
   summaryLabel: {
     color: colors.textMuted,
     fontSize: 18,
@@ -6755,6 +8207,20 @@ const styles = StyleSheet.create({
     fontSize: 18,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
+  },
+  photoNoteInput: {
+    minHeight: 64,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.text,
+    fontSize: 15,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+    textAlignVertical: 'top',
   },
   uncheckedBox: {
     color: colors.textSubtle,

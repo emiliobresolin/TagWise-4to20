@@ -37,6 +37,64 @@ describe('ReportSubmissionService', () => {
     expect(repository.insertAcceptedOrGetExisting).toHaveBeenCalledOnce();
   });
 
+  it('rejects oversized contextNote with a structured malformed-report-payload reason (C-02)', async () => {
+    const request = buildRequest();
+    const oversizedRequest: ReportSubmissionRequest = {
+      ...request,
+      photoAttachments: [
+        {
+          evidenceId: 'photo-1',
+          serverEvidenceId: 'srv-1',
+          presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+          syncState: 'synced',
+          contextNote: 'x'.repeat(501),
+        },
+      ],
+    };
+    const service = new ReportSubmissionService(
+      buildRepository({ existingBeforeInsert: null, insertedOrExisting: buildRecord(oversizedRequest) }),
+      buildAssignedWorkPackageService(),
+      () => new Date('2026-04-23T14:30:00.000Z'),
+    );
+
+    const error = await captureReportSubmissionError(() =>
+      service.submitForValidation(technician, oversizedRequest),
+    );
+
+    expect(error.statusCode).toBe(400);
+    expect(error.syncIssue?.reasonCode).toBe('malformed-report-payload');
+    expect(error.syncIssue?.message).toContain('contextNote');
+  });
+
+  it('rejects oversized technicianNote with a structured malformed-report-payload reason (C-02)', async () => {
+    const request = buildRequest();
+    const oversizedRequest: ReportSubmissionRequest = {
+      ...request,
+      photoAttachments: [
+        {
+          evidenceId: 'photo-1',
+          serverEvidenceId: 'srv-1',
+          presenceFinalizedAt: '2026-04-23T14:12:00.000Z',
+          syncState: 'synced',
+          technicianNote: 'y'.repeat(2001),
+        },
+      ],
+    };
+    const service = new ReportSubmissionService(
+      buildRepository({ existingBeforeInsert: null, insertedOrExisting: buildRecord(oversizedRequest) }),
+      buildAssignedWorkPackageService(),
+      () => new Date('2026-04-23T14:30:00.000Z'),
+    );
+
+    const error = await captureReportSubmissionError(() =>
+      service.submitForValidation(technician, oversizedRequest),
+    );
+
+    expect(error.statusCode).toBe(400);
+    expect(error.syncIssue?.reasonCode).toBe('malformed-report-payload');
+    expect(error.syncIssue?.message).toContain('technicianNote');
+  });
+
   it('converts a concurrent different submitted version into a structured conflict', async () => {
     const request = buildRequest();
     const existingRecord = buildRecord({

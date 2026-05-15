@@ -211,21 +211,28 @@ export class SyncStateService {
   async refreshReportServerStatus(
     session: ActiveUserSession,
     shell: SharedExecutionShell,
-  ): Promise<SharedExecutionShell> {
+  ): Promise<{
+    shell: SharedExecutionShell;
+    // Story 8.9 D-01: the AI diagnosis projection that came back with the
+    // status fetch. `null` when offline or when the orchestrator could not
+    // reach the backend; callers should fall back to their existing in-memory
+    // AI state in that case.
+    aiDiagnosis: import('./evidenceUploadApiClient').ReportSubmissionAiDiagnosisProjection | null;
+  }> {
     if (session.connectionMode !== 'connected') {
-      return shell;
+      return { shell, aiDiagnosis: null };
     }
 
-    await this.dependencies.evidenceUploadOrchestrator.refreshReportServerStatus(session, shell);
+    const aiDiagnosis = await this.dependencies.evidenceUploadOrchestrator.refreshReportServerStatus(session, shell);
 
-    return (
+    const reloadedShell =
       (await this.dependencies.executionShellService.loadShell(
         session,
         shell.workPackageId,
         shell.tagId,
         shell.template.id,
-      )) ?? shell
-    );
+      )) ?? shell;
+    return { shell: reloadedShell, aiDiagnosis };
   }
 
   async retryEligibleReports(session: ActiveUserSession): Promise<SyncRetrySummary> {

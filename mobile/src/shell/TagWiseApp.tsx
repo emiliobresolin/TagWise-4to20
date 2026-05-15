@@ -1,8 +1,10 @@
 import { CameraView, type BarcodeScanningResult, useCameraPermissions } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
+  type AppStateStatus,
   Image,
   Pressable,
   SafeAreaView,
@@ -38,17 +40,23 @@ import {
   canProceedToExecutionShell,
   resolveExplicitExecutionTemplateSelection,
 } from '../features/execution/executionTemplateSelection';
-import { SharedExecutionShellService } from '../features/execution/sharedExecutionShellService';
+import {
+  SharedExecutionShellService,
+  type InstrumentVisitView,
+  type SharedExecutionTemplateStatus,
+} from '../features/execution/sharedExecutionShellService';
 import type {
   SharedExecutionChecklistItem,
   SharedExecutionChecklistOutcome,
   SharedExecutionField,
   SharedExecutionGuidanceItem,
   SharedExecutionLinkedGuidanceSnippet,
+  SharedExecutionLoopReadingPoint,
   SharedExecutionPhotoAttachment,
   SharedExecutionReportLifecycleState,
   SharedExecutionReportState,
   SharedExecutionShell,
+  SharedExecutionStepKind,
   SharedExecutionSyncState,
 } from '../features/execution/model';
 import { AssignedWorkPackageCatalogService } from '../features/work-packages/assignedWorkPackageCatalogService';
@@ -83,7 +91,10 @@ import type {
   SupervisorReviewQueueItem,
   SupervisorReviewReportDetail,
 } from '../features/review/model';
-import { createFetchEvidenceUploadApiClient } from '../features/sync/evidenceUploadApiClient';
+import {
+  createFetchEvidenceUploadApiClient,
+  EvidenceUploadApiError,
+} from '../features/sync/evidenceUploadApiClient';
 import { EvidenceUploadOrchestrator } from '../features/sync/evidenceUploadOrchestrator';
 import {
   buildSyncStateBadgeModel,
@@ -96,10 +107,13 @@ import {
   type ReportSyncDetail,
   type WorkPackageSyncSummary,
 } from '../features/sync/syncStateService';
+import { detectConnectivityRegain } from '../features/sync/syncConnectivityRegain';
 import { createEvidenceBinaryUploadBoundary } from '../platform/files/evidenceBinaryUploadBoundary';
 import { createSecureStorageBoundary } from '../platform/secure-storage/secureStorageBoundary';
 import { createPhotoAcquisitionBoundary } from '../platform/media/photoAcquisitionBoundary';
 import { preserveVisualCatalogAfterQrFailure } from '../features/visual-shell/serviceBackedNavigation';
+import type { VisualAiDiagnosisProjectionInput } from '../features/visual-shell/serviceBackedReport';
+import type { ReportSubmissionAiDiagnosisProjection } from '../features/sync/evidenceUploadApiClient';
 import {
   buildTechnicianReportSummaries,
   type VisualTechnicianReportRecord,
@@ -149,8 +163,25 @@ type BootstrapStatus =
       technicianReports: VisualTechnicianReportSummary[];
       selectedTag: LocalAssignedTagEntry | null;
       selectedTagContext: LocalTagContext | null;
+      // Story 8.11: per-template saved status for the currently-open tag so
+      // the detail screen can render "Concluido" / "Falha" / "Iniciar"
+      // badges next to each template option without opening every shell.
+      executionTemplateStatuses: SharedExecutionTemplateStatus[];
+      // Story 8.11 finding #10: per-visit aggregate view that the Report
+      // screen renders as ONE relatorio across the templates the
+      // technician has run on this tag.
+      instrumentVisit: InstrumentVisitView | null;
       executionShell: SharedExecutionShell | null;
       reportSyncDetail: ReportSyncDetail | null;
+      // Story 8.9 D-01: AI diagnosis projection for the currently-loaded
+      // technician execution shell. Refreshed by `refreshReportServerStatus`
+      // and by the manual "Solicitar diagnostico assistido" handler. `null`
+      // when no report is loaded or the backend has not provided a state.
+      executionAiDiagnosis: VisualAiDiagnosisProjectionInput | null;
+      // Story 8.9 D-01: AI diagnosis projection for the currently-open
+      // supervisor review report. Refreshed when the supervisor opens a
+      // report and via manual request.
+      supervisorAiDiagnosis: VisualAiDiagnosisProjectionInput | null;
       supervisorReviewQueue: SupervisorReviewQueueItem[];
       selectedSupervisorReviewReport: SupervisorReviewReportDetail | null;
       supervisorReturnComment: string;
@@ -319,10 +350,14 @@ export function TagWiseApp() {
           technicianReports,
           selectedTag: null,
           selectedTagContext: null,
+          executionTemplateStatuses: [],
+          instrumentVisit: null,
           executionShell: null,
           reportSyncDetail: null,
           supervisorReviewQueue: [],
           selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
           supervisorReturnComment: '',
           supervisorEscalationRationale: '',
           qrScannerVisible: false,
@@ -348,6 +383,72 @@ export function TagWiseApp() {
       void runtimeToClose?.database.closeAsync?.();
     };
   }, []);
+
+  // Story 8.8 D-06: wire `detectConnectivityRegain` into the production app
+  // path. When the app comes back to foreground while the cached session is
+  // 'offline', try to restore the session against the auth API. If that
+  // succeeds with connectionMode 'connected', retry eligible queued reports
+  // and update the visible session. Bounded: at most one regain attempt per
+  // 30 seconds so a foreground/background toggle storm cannot flood the API.
+  const regainBusyRef = useRef(false);
+  const lastRegainAttemptAtRef = useRef(0);
+  useEffect(() => {
+    if (status.type !== 'ready' || !status.session) {
+      return;
+    }
+    if (status.session.connectionMode === 'connected') {
+      // Already connected; nothing to regain. The handler still registers so
+      // that a future drop-and-recover within this session can be picked up
+      // when the foregrounded session has flipped to 'offline'.
+    }
+
+    const currentSession = status.session;
+    const sessionController = status.sessionController;
+    const syncStateService = status.syncStateService;
+
+    async function handleForeground(nextState: AppStateStatus) {
+      if (nextState !== 'active') return;
+      if (regainBusyRef.current) return;
+      const now = Date.now();
+      if (now - lastRegainAttemptAtRef.current < 30_000) return;
+      lastRegainAttemptAtRef.current = now;
+      regainBusyRef.current = true;
+
+      try {
+        const result = await detectConnectivityRegain({
+          currentSession,
+          restoreSession: () => sessionController.restoreSession(),
+          retryEligibleReports: (session) =>
+            syncStateService.retryEligibleReports(session),
+        });
+
+        if (result.state !== 'reconnected') {
+          return;
+        }
+
+        setStatus((current) => {
+          if (current.type !== 'ready') return current;
+          const summary = result.retrySummary;
+          const summaryMessage =
+            summary.attempted === 0
+              ? 'Conexao restaurada. Nada na fila local para sincronizar.'
+              : `Conexao restaurada. Sincronizados ${summary.succeeded} de ${summary.attempted} itens da fila local.`;
+          return {
+            ...current,
+            session: result.session,
+            authMessage: summaryMessage,
+          };
+        });
+      } finally {
+        regainBusyRef.current = false;
+      }
+    }
+
+    const subscription = AppState.addEventListener('change', handleForeground);
+    return () => {
+      subscription.remove();
+    };
+  }, [status]);
 
   if (status.type === 'loading') {
     return (
@@ -507,6 +608,8 @@ export function TagWiseApp() {
               reportSyncDetail: null,
               supervisorReviewQueue: [],
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               qrScannerVisible: false,
@@ -581,6 +684,8 @@ export function TagWiseApp() {
               reportSyncDetail: null,
               supervisorReviewQueue: [],
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               qrScannerVisible: false,
@@ -655,6 +760,8 @@ export function TagWiseApp() {
               executionShell: null,
               reportSyncDetail: null,
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               qrScannerVisible: false,
@@ -672,6 +779,76 @@ export function TagWiseApp() {
                 error instanceof Error
                   ? error.message
                   : 'Assigned package download failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  // Story 8.13: wipe local execution state for a single work package so
+  // the technician can re-download fresh data after a seed change. Run
+  // synchronously inside the catalog service; clear any in-memory
+  // references to the deleted package so the UI cannot try to read
+  // stale local rows.
+  async function handleDeleteLocalPackage(workPackageId: string) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            packageBusy: true,
+            authMessage: null,
+          },
+    );
+
+    try {
+      const summaries = await readyState.workPackageCatalog.deleteLocalPackage(
+        readyState.session,
+        workPackageId,
+      );
+      const packageSyncSummaries = await readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        summaries,
+      );
+      const wasActive = readyState.activeTagPackageId === workPackageId;
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              workPackages: summaries,
+              packageSyncSummaries,
+              packageBusy: false,
+              authMessage:
+                'Pacote local apagado. Toque em "Baixar" para sincronizar a versao mais recente.',
+              activeTagPackageId: wasActive ? null : current.activeTagPackageId,
+              tagSearchQuery: wasActive ? '' : current.tagSearchQuery,
+              visibleTags: wasActive ? [] : current.visibleTags,
+              selectedTag: wasActive ? null : current.selectedTag,
+              selectedTagContext: wasActive ? null : current.selectedTagContext,
+              selectedExecutionTemplateId: wasActive
+                ? null
+                : current.selectedExecutionTemplateId,
+              executionTemplateStatuses: wasActive ? [] : current.executionTemplateStatuses,
+              instrumentVisit: wasActive ? null : current.instrumentVisit,
+              executionShell: wasActive ? null : current.executionShell,
+              reportSyncDetail: wasActive ? null : current.reportSyncDetail,
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              packageBusy: false,
+              authMessage:
+                error instanceof Error
+                  ? error.message
+                  : 'Falha ao apagar o pacote local.',
             },
       );
     }
@@ -866,6 +1043,22 @@ export function TagWiseApp() {
       entry.workPackageId,
       entry.tagId,
     );
+    // Story 8.11: load any previously-saved test statuses for this tag so
+    // the detail screen can render per-template badges immediately,
+    // including those from earlier visits within this session.
+    const executionTemplateStatuses = await readyState.executionShellService.listTemplateStatusesForTag(
+      readyState.session,
+      entry.workPackageId,
+      entry.tagId,
+    );
+    // Story 8.11 finding #10: load the per-visit aggregate so the Report
+    // screen can render ONE relatorio across all templates the
+    // technician has run on this tag.
+    const instrumentVisit = await readyState.executionShellService.loadVisitForTag(
+      readyState.session,
+      entry.workPackageId,
+      entry.tagId,
+    );
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -876,6 +1069,8 @@ export function TagWiseApp() {
             selectedExecutionTemplateId: null,
             selectedTag: entry,
             selectedTagContext,
+            executionTemplateStatuses,
+            instrumentVisit,
             executionShell: null,
             authMessage: selectedTagContext
               ? `Tag context loaded locally for ${entry.tagCode}.`
@@ -1183,7 +1378,7 @@ export function TagWiseApp() {
       current.type !== 'ready' ||
       !current.executionShell ||
       !current.executionShell.calculation ||
-      !isTechnicianEditableReportState(current.executionShell.report.state)
+      !isTechnicianEditableReportState(current.executionShell.report)
         ? current
         : {
             ...current,
@@ -1208,7 +1403,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      !isTechnicianEditableReportState(current.executionShell.report.state)
+      !isTechnicianEditableReportState(current.executionShell.report)
         ? current
         : {
             ...current,
@@ -1225,7 +1420,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      !isTechnicianEditableReportState(current.executionShell.report.state)
+      !isTechnicianEditableReportState(current.executionShell.report)
         ? current
         : {
             ...current,
@@ -1241,7 +1436,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      !isTechnicianEditableReportState(current.executionShell.report.state)
+      !isTechnicianEditableReportState(current.executionShell.report)
         ? current
         : {
             ...current,
@@ -1258,7 +1453,7 @@ export function TagWiseApp() {
     setStatus((current) =>
       current.type !== 'ready' ||
       !current.executionShell ||
-      !isTechnicianEditableReportState(current.executionShell.report.state)
+      !isTechnicianEditableReportState(current.executionShell.report)
         ? current
         : {
             ...current,
@@ -1275,7 +1470,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell?.calculation ||
-      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+      !isTechnicianEditableReportState(readyState.executionShell.report)
     ) {
       return;
     }
@@ -1287,6 +1482,19 @@ export function TagWiseApp() {
         readyState.executionShell.calculation.rawInputs,
       );
       const technicianReports = await loadCurrentTechnicianReports(readyState);
+      // Story 8.11: refresh per-template status + per-visit aggregate so
+      // the detail screen reflects the new "Concluido" / "Falha" badge
+      // and the Report screen picks up the new test in the visit summary.
+      const executionTemplateStatuses = await readyState.executionShellService.listTemplateStatusesForTag(
+        readyState.session,
+        executionShell.workPackageId,
+        executionShell.tagId,
+      );
+      const instrumentVisit = await readyState.executionShellService.loadVisitForTag(
+        readyState.session,
+        executionShell.workPackageId,
+        executionShell.tagId,
+      );
 
       setStatus((current) =>
         current.type !== 'ready'
@@ -1294,6 +1502,8 @@ export function TagWiseApp() {
           : {
               ...current,
               executionShell,
+              executionTemplateStatuses,
+              instrumentVisit,
               technicianReports,
               authMessage: executionShell.calculation?.result
                 ? `Calculo salvo localmente para ${executionShell.tagCode}.`
@@ -1320,7 +1530,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+      !isTechnicianEditableReportState(readyState.executionShell.report)
     ) {
       return;
     }
@@ -1330,6 +1540,14 @@ export function TagWiseApp() {
       readyState.executionShell,
     );
     const technicianReports = await loadCurrentTechnicianReports(readyState);
+    // Story 8.11: keep the per-visit aggregate in sync so any newly
+    // added observation notes / risk justifications flow into the
+    // Report screen's visit summary.
+    const instrumentVisit = await readyState.executionShellService.loadVisitForTag(
+      readyState.session,
+      executionShell.workPackageId,
+      executionShell.tagId,
+    );
 
     setStatus((current) =>
       current.type !== 'ready'
@@ -1337,33 +1555,85 @@ export function TagWiseApp() {
         : {
             ...current,
             executionShell,
+            instrumentVisit,
             technicianReports,
             authMessage: `Checklist, observacoes e justificativas salvos localmente para ${executionShell.tagCode}.`,
           },
     );
   }
 
-  async function handleSaveLoopTestNote(note: string) {
+  // Story 8.15: persist the per-point loop test detail so the loop
+  // screen can rehydrate the curve on next visit and the Report
+  // screen can render a formatted results section.
+  async function handleSaveLoopTestEvidence(input: {
+    points: SharedExecutionLoopReadingPoint[];
+    inputMode: 'pv' | 'ma';
+    worstCase: { rawInputs: { expectedValue: string; observedValue: string } } | null;
+  }) {
     if (
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+      !isTechnicianEditableReportState(readyState.executionShell.report)
     ) {
       return;
     }
 
-    const existingNotes = readyState.executionShell.evidence.observationNotes.trim();
-    const mergedNotes = existingNotes
-      ? `${existingNotes}\n\n${note}`
-      : note;
-    const draftShell = readyState.executionShellService.updateObservationNotes(
+    const executionShell = await readyState.executionShellService.saveLoopTestEvidence(
+      readyState.session,
       readyState.executionShell,
-      mergedNotes,
+      input,
     );
+    const technicianReports = await loadCurrentTechnicianReports(readyState);
+    const executionTemplateStatuses =
+      await readyState.executionShellService.listTemplateStatusesForTag(
+        readyState.session,
+        executionShell.workPackageId,
+        executionShell.tagId,
+      );
+    const instrumentVisit = await readyState.executionShellService.loadVisitForTag(
+      readyState.session,
+      executionShell.workPackageId,
+      executionShell.tagId,
+    );
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+            executionTemplateStatuses,
+            instrumentVisit,
+            technicianReports,
+            authMessage: `Loop salvo com ${input.points.length} ponto(s) localmente.`,
+          },
+    );
+  }
+
+  async function handleSaveLoopTestNote(_note: string) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      !isTechnicianEditableReportState(readyState.executionShell.report)
+    ) {
+      return;
+    }
+
+    // Story 8.14 finding #7: the previous behavior merged a formatted
+    // loop-test text block into shell.evidence.observationNotes. The
+    // user reported that the "Observacoes do tecnico" field should be
+    // pure free-form technician comments only, not auto-injected test
+    // data. The loop test's per-point results are rendered live on
+    // LoopExecutionScreen during editing; the per-template calculation
+    // result still persists via the shell service (used by the visit
+    // aggregator on the Report screen). Persisting full per-point loop
+    // detail across screen visits requires a structured-readings
+    // evidence change deferred to a follow-up story.
     const executionShell = await readyState.executionShellService.saveGuidanceEvidence(
       readyState.session,
-      draftShell,
+      readyState.executionShell,
     );
     const technicianReports = await loadCurrentTechnicianReports(readyState);
 
@@ -1383,13 +1653,41 @@ export function TagWiseApp() {
   async function handleAttachExecutionPhoto(
     source: 'camera' | 'library',
     contextNote?: string | null,
+    options?: {
+      technicianNote?: string | null;
+      executionStepIdOverride?: SharedExecutionStepKind;
+    },
   ) {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+
+    // Story 8.10 finding #4: when the user taps "Foto do instrumento" on
+    // the detail screen and no template has been selected yet, auto-load
+    // the first available template's shell silently so the photo still
+    // attaches to the per-tag report. This decouples the instrument photo
+    // from explicit template selection without changing the underlying
+    // shell-per-template persistence model.
+    let workingShell = readyState.executionShell;
     if (
-      status.type !== 'ready' ||
-      !readyState.session ||
-      !readyState.executionShell ||
-      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+      !workingShell &&
+      options?.executionStepIdOverride === 'instrument' &&
+      readyState.selectedTag &&
+      readyState.selectedTagContext
     ) {
+      const firstTemplateId =
+        readyState.selectedTagContext.referencePointers.executionTemplates[0]?.id;
+      if (firstTemplateId) {
+        workingShell = await readyState.executionShellService.loadShell(
+          readyState.session,
+          readyState.selectedTag.workPackageId,
+          readyState.selectedTag.tagId,
+          firstTemplateId,
+        );
+      }
+    }
+
+    if (!workingShell || !isTechnicianEditableReportState(workingShell.report)) {
       return;
     }
 
@@ -1403,11 +1701,29 @@ export function TagWiseApp() {
         return;
       }
 
+      // Story 8.7 added `contextNote`; Story 8.8 adds optional
+      // `technicianNote` and `executionStepIdOverride` (D-03 instrument-level
+      // photos + D-04 technician comment). Pass through only the fields the
+      // caller explicitly provided to keep the legacy two-arg call sites
+      // unchanged.
+      const attachOptions:
+        | { contextNote?: string | null; technicianNote?: string | null; executionStepIdOverride?: SharedExecutionStepKind }
+        | undefined =
+        contextNote !== undefined || options?.technicianNote !== undefined || options?.executionStepIdOverride
+          ? {
+              ...(contextNote !== undefined ? { contextNote } : {}),
+              ...(options?.technicianNote !== undefined ? { technicianNote: options.technicianNote } : {}),
+              ...(options?.executionStepIdOverride
+                ? { executionStepIdOverride: options.executionStepIdOverride }
+                : {}),
+            }
+          : undefined;
+
       const executionShell = await readyState.executionShellService.attachPhotoEvidence(
         readyState.session,
-        readyState.executionShell,
+        workingShell,
         photo,
-        contextNote !== undefined ? { contextNote } : undefined,
+        attachOptions,
       );
       const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
         readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
@@ -1424,6 +1740,15 @@ export function TagWiseApp() {
           : {
               ...current,
               executionShell,
+              // Story 8.10 QA Pass 4 patch: when the auto-load-shell branch
+              // ran (instrument photo without prior template selection), the
+              // executionShell is now populated but selectedExecutionTemplateId
+              // was still null — making the detail screen's readiness tile
+              // say "Selecione um teste" even though a shell is loaded. Keep
+              // selectedExecutionTemplateId in sync with the loaded shell so
+              // the UI signal is consistent.
+              selectedExecutionTemplateId:
+                current.selectedExecutionTemplateId ?? executionShell.template.id,
               reportSyncDetail,
               packageSyncSummaries,
               technicianReports,
@@ -1450,7 +1775,7 @@ export function TagWiseApp() {
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+      !isTechnicianEditableReportState(readyState.executionShell.report)
     ) {
       return;
     }
@@ -1483,12 +1808,57 @@ export function TagWiseApp() {
     );
   }
 
+  // Story 8.8 D-04: update the technician's free-text observation on an
+  // existing photo. Mirrors the photo attach/remove handler shape: mutate via
+  // service, then refresh sync summaries and technician reports.
+  async function handleUpdatePhotoTechnicianNote(
+    evidenceId: string,
+    note: string | null,
+  ) {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      !isTechnicianEditableReportState(readyState.executionShell.report)
+    ) {
+      return;
+    }
+
+    const executionShell = await readyState.executionShellService.updatePhotoTechnicianNote(
+      readyState.session,
+      readyState.executionShell,
+      evidenceId,
+      note,
+    );
+    const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
+      readyState.syncStateService.getReportSyncDetail(readyState.session, executionShell),
+      readyState.syncStateService.listWorkPackageSyncSummaries(
+        readyState.session,
+        readyState.workPackages,
+      ),
+    ]);
+    const technicianReports = await loadCurrentTechnicianReports(readyState);
+
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            executionShell,
+            reportSyncDetail,
+            packageSyncSummaries,
+            technicianReports,
+            authMessage: 'Observacao da foto atualizada localmente.',
+          },
+    );
+  }
+
   async function handleSaveReportDraft() {
     if (
       status.type !== 'ready' ||
       !readyState.session ||
       !readyState.executionShell ||
-      !isTechnicianEditableReportState(readyState.executionShell.report.state)
+      !isTechnicianEditableReportState(readyState.executionShell.report)
     ) {
       return;
     }
@@ -1849,6 +2219,15 @@ export function TagWiseApp() {
       }
 
       try {
+        // Story 8.14 finding #7: removed the Story 8.11 visit-summary
+        // augmentation that injected a fenced block into the
+        // observation notes. The user's "Observacoes do tecnico" field
+        // is now reserved for free-form technician comments only; the
+        // per-visit aggregate is surfaced through the structured
+        // instrumentVisit projection on the Report screen's "Resumo da
+        // visita" panel and (for AI/supervisor context) through the
+        // submission DTO directly rather than via observation-note
+        // string concatenation.
         let executionShell = await readyState.executionShellService.submitReport(
           readyState.session,
           readyState.executionShell,
@@ -1870,10 +2249,59 @@ export function TagWiseApp() {
                 executionShell.template.id,
               )) ?? executionShell;
           } catch (error) {
-            authMessage =
-              error instanceof Error
-                ? `Relatorio ficou na fila local. Upload de evidencias encontrou problema e permanece no aparelho: ${error.message}`
-                : 'Relatorio ficou na fila local. Upload de evidencias encontrou problema e permanece no aparelho.';
+            // Story 8.13 finding #11: detect token-expired and try a
+            // silent refresh-and-retry once. The cached refresh token
+            // is good for longer than the access token, so most 401s
+            // resolve transparently. If the refresh fails the
+            // technician sees a clear PT-BR message instead of the raw
+            // "token expired" string from the backend.
+            if (error instanceof EvidenceUploadApiError && error.statusCode === 401) {
+              const refresh = await readyState.sessionController.restoreSession();
+              const renewedSession =
+                refresh.state === 'signed_in' &&
+                refresh.session &&
+                refresh.session.connectionMode === 'connected'
+                  ? refresh.session
+                  : null;
+              if (renewedSession) {
+                try {
+                  await readyState.evidenceUploadOrchestrator.syncSubmittedReportEvidence(
+                    renewedSession,
+                    executionShell,
+                  );
+                  executionShell =
+                    (await readyState.executionShellService.loadShell(
+                      renewedSession,
+                      executionShell.workPackageId,
+                      executionShell.tagId,
+                      executionShell.template.id,
+                    )) ?? executionShell;
+                  // Persist the renewed session into state so future
+                  // calls in this submission flow (sync detail refresh,
+                  // technician report list) use the fresh token.
+                  setStatus((current) =>
+                    current.type !== 'ready'
+                      ? current
+                      : { ...current, session: renewedSession },
+                  );
+                  authMessage =
+                    'Sessao renovada automaticamente e relatorio sincronizado com sucesso.';
+                } catch (retryError) {
+                  authMessage =
+                    retryError instanceof Error
+                      ? `Relatorio ficou na fila local apos renovar a sessao: ${retryError.message}`
+                      : 'Relatorio ficou na fila local apos renovar a sessao.';
+                }
+              } else {
+                authMessage =
+                  'Sua sessao expirou. Faca login novamente para concluir o envio. O relatorio permanece salvo localmente.';
+              }
+            } else {
+              authMessage =
+                error instanceof Error
+                  ? `Relatorio ficou na fila local. Upload de evidencias encontrou problema e permanece no aparelho: ${error.message}`
+                  : 'Relatorio ficou na fila local. Upload de evidencias encontrou problema e permanece no aparelho.';
+            }
           }
         }
         const [reportSyncDetail, packageSyncSummaries] = await Promise.all([
@@ -2019,10 +2447,17 @@ export function TagWiseApp() {
     );
 
     try {
-      const executionShell = await readyState.syncStateService.refreshReportServerStatus(
+      // Story 8.9 D-01: refresh returns both the reloaded execution shell
+      // AND the latest AI diagnosis projection from the same status fetch.
+      // We map the backend projection into the mobile `VisualAiDiagnosis`
+      // input shape and persist on the ready state so both projection sites
+      // pick it up on the next render.
+      const refreshed = await readyState.syncStateService.refreshReportServerStatus(
         readyState.session,
         readyState.executionShell,
       );
+      const executionShell = refreshed.shell;
+      const aiDiagnosisInput = mapAiDiagnosisProjection(refreshed.aiDiagnosis);
       const workPackages = await readyState.workPackageCatalog.loadLocalCatalog(
         readyState.session,
       );
@@ -2050,6 +2485,7 @@ export function TagWiseApp() {
               reportSyncDetail,
               packageSyncSummaries,
               technicianReports,
+              executionAiDiagnosis: aiDiagnosisInput ?? current.executionAiDiagnosis,
               authMessage: `Status do servidor atualizado para ${executionShell.tagCode}.`,
             },
       );
@@ -2064,6 +2500,64 @@ export function TagWiseApp() {
                 error instanceof Error
                   ? `Server status refresh failed: ${error.message}`
                   : 'Server status refresh failed without a detailed message.',
+            },
+      );
+    }
+  }
+
+  // Story 8.9 D-01: manual AI diagnosis request from the technician's report
+  // screen. The backend enqueues a worker job and returns the current AI
+  // state (typically 'pending'); the technician immediately sees "Em
+  // processamento" on the report. AI is assistive — errors here MUST NOT
+  // halt the report itself. We catch broadly and surface a non-blocking
+  // PT-BR message.
+  async function handleRequestExecutionAiDiagnosis() {
+    if (
+      status.type !== 'ready' ||
+      !readyState.session ||
+      !readyState.executionShell ||
+      readyState.session.connectionMode !== 'connected'
+    ) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage: 'Reconecte para solicitar diagnostico assistido.',
+            },
+      );
+      return;
+    }
+    try {
+      const response = await readyState.evidenceUploadOrchestrator.requestAiDiagnosis(
+        readyState.session,
+        readyState.executionShell.report.reportId,
+      );
+      const aiDiagnosisInput = mapAiDiagnosisProjection(response.aiDiagnosis);
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              executionAiDiagnosis: aiDiagnosisInput ?? current.executionAiDiagnosis,
+              authMessage:
+                aiDiagnosisInput?.state === 'pending'
+                  ? 'Diagnostico assistido em processamento. Atualize o status para ver o resultado.'
+                  : aiDiagnosisInput?.state === 'available'
+                    ? 'Diagnostico assistido disponivel neste relatorio.'
+                    : 'Diagnostico assistido solicitado. Verifique novamente em instantes.',
+            },
+      );
+    } catch (error) {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage:
+                error instanceof Error
+                  ? `Diagnostico assistido nao disponivel agora: ${error.message}`
+                  : 'Diagnostico assistido nao disponivel agora. O relatorio nao foi afetado.',
             },
       );
     }
@@ -2098,6 +2592,8 @@ export function TagWiseApp() {
               reviewBusy: false,
               supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               authMessage: `${supervisorReviewQueue.length} relatorio(s) de revisao carregado(s).`,
@@ -2146,6 +2642,14 @@ export function TagWiseApp() {
               reportId,
             );
 
+      // Story 8.9 D-01: the supervisor review detail response now carries
+      // an `aiDiagnosis` projection. Map it into the mobile shape so the
+      // supervisor screen renders the assistive state alongside the
+      // technician's report.
+      const supervisorAiDiagnosisInput = mapAiDiagnosisProjection(
+        selectedSupervisorReviewReport?.aiDiagnosis ?? null,
+      );
+
       setStatus((current) =>
         current.type !== 'ready'
           ? current
@@ -2153,6 +2657,7 @@ export function TagWiseApp() {
               ...current,
               reviewBusy: false,
               selectedSupervisorReviewReport,
+              supervisorAiDiagnosis: supervisorAiDiagnosisInput,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               authMessage: `Detalhe de revisao carregado para ${selectedSupervisorReviewReport.tagId}.`,
@@ -2181,6 +2686,8 @@ export function TagWiseApp() {
         : {
             ...current,
             selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
             supervisorReturnComment: '',
             supervisorEscalationRationale: '',
           },
@@ -2247,6 +2754,8 @@ export function TagWiseApp() {
               reviewBusy: false,
               supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               authMessage: `Relatorio ${decision.reportId} aprovado e registrado na trilha de auditoria.`,
@@ -2308,6 +2817,8 @@ export function TagWiseApp() {
               reviewBusy: false,
               supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               authMessage: `Relatorio ${decision.reportId} devolvido ao tecnico com comentario.`,
@@ -2361,6 +2872,8 @@ export function TagWiseApp() {
               reviewBusy: false,
               supervisorReviewQueue,
               selectedSupervisorReviewReport: null,
+          executionAiDiagnosis: null,
+          supervisorAiDiagnosis: null,
               supervisorReturnComment: '',
               supervisorEscalationRationale: '',
               authMessage: `Relatorio ${decision.reportId} escalonado para gerente.`,
@@ -2397,6 +2910,10 @@ export function TagWiseApp() {
       reviewBusy={readyState.reviewBusy}
       selectedExecutionTemplateId={readyState.selectedExecutionTemplateId}
       executionShell={readyState.executionShell}
+      executionTemplateStatuses={readyState.executionTemplateStatuses}
+      instrumentVisit={readyState.instrumentVisit}
+      executionAiDiagnosis={readyState.executionAiDiagnosis}
+      supervisorAiDiagnosis={readyState.supervisorAiDiagnosis}
       selectedSupervisorReviewReport={readyState.selectedSupervisorReviewReport}
       selectedTag={readyState.selectedTag}
       selectedTagContext={readyState.selectedTagContext}
@@ -2411,8 +2928,11 @@ export function TagWiseApp() {
       onApproveSupervisorReviewReport={(reportId) =>
         handleApproveSupervisorReviewReport(reportId)
       }
-      onAttachReportPhoto={(source, contextNote) =>
-        handleAttachExecutionPhoto(source, contextNote)
+      onAttachReportPhoto={(source, contextNote, options) =>
+        handleAttachExecutionPhoto(source, contextNote, options)
+      }
+      onUpdatePhotoTechnicianNote={(evidenceId, note) =>
+        handleUpdatePhotoTechnicianNote(evidenceId, note)
       }
       onBarcodeScanned={(event) => void handleBarcodeScanned(event)}
       onBrowsePackageTags={(workPackageId) => handleBrowsePackageTags(workPackageId)}
@@ -2422,6 +2942,7 @@ export function TagWiseApp() {
       onCloseSupervisorReviewReport={handleCloseSupervisorReviewReport}
       onCreateManualInstrument={(input) => handleCreateManualInstrument(input)}
       onDownloadPackage={(workPackageId) => handleDownloadAssignedPackage(workPackageId)}
+      onDeleteLocalPackage={(workPackageId) => handleDeleteLocalPackage(workPackageId)}
       onEmailChange={setEmail}
       onEscalateSupervisorReviewReport={(reportId) =>
         handleEscalateSupervisorReviewReport(reportId)
@@ -2435,6 +2956,7 @@ export function TagWiseApp() {
       onQrManualPayloadChange={handleQrPayloadChange}
       onRefreshPackages={() => void handleRefreshAssignedPackages()}
       onRefreshReportServerStatus={() => handleRefreshExecutionReportServerStatus()}
+      onRequestExecutionAiDiagnosis={() => handleRequestExecutionAiDiagnosis()}
       onRefreshSupervisorReviewQueue={() => handleRefreshSupervisorReviewQueue()}
       onRemoveReportPhoto={(evidenceId) => handleRemoveExecutionPhoto(evidenceId)}
       onReportReviewNotesChange={handleReportReviewNotesChange}
@@ -2445,6 +2967,7 @@ export function TagWiseApp() {
       onSaveCalculation={() => handleSaveExecutionCalculation()}
       onSaveGuidanceEvidence={() => handleSaveExecutionEvidence()}
       onSaveLoopTestNote={(note) => handleSaveLoopTestNote(note)}
+      onSaveLoopTestEvidence={(input) => handleSaveLoopTestEvidence(input)}
       onSaveReportDraft={() => handleSaveReportDraft()}
       onSelectExecutionTemplate={handleSelectExecutionTemplate}
       onSignIn={() => void handleSignIn()}
@@ -3449,6 +3972,27 @@ export function TagWiseApp() {
   );
 }
 */
+
+// Story 8.9 D-01: map the backend's `ReportSubmissionAiDiagnosisProjection`
+// into the mobile `VisualAiDiagnosisProjectionInput` shape. The fields align
+// 1:1; this helper just narrows the optionality and drops backend-only
+// fields the projection doesn't need.
+function mapAiDiagnosisProjection(
+  projection: ReportSubmissionAiDiagnosisProjection | null | undefined,
+): VisualAiDiagnosisProjectionInput | null {
+  if (!projection) return null;
+  return {
+    state: projection.state,
+    summary: projection.summary,
+    detail: projection.detail,
+    providerLabel: projection.providerLabel,
+    generatedAt: projection.generatedAt,
+    // Story 8.12 finding #5: forward the provider failure reason so
+    // the visual projection can render it explicitly when the AI
+    // request failed (instead of a generic "Nao foi possivel..." line).
+    failureReason: projection.failureReason ?? null,
+  };
+}
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
@@ -4688,8 +5232,18 @@ function isSharedExecutionReportState(value: unknown): value is SharedExecutionR
   );
 }
 
-function isTechnicianEditableReportState(value: SharedExecutionReportState): boolean {
-  return value === 'technician-owned-draft' || value === 'submitted-pending-sync';
+function isTechnicianEditableReportState(
+  report: { state: SharedExecutionReportState; invalidated?: boolean },
+): boolean {
+  // Story 8.12 finding #2: a supervisor-returned draft is marked
+  // `invalidated: true`. Even though its server state is still
+  // technically a technician-owned-draft (since the supervisor sent it
+  // back), the technician must NOT keep editing it - they have to start
+  // a fresh visit, and the invalidated row stays as read-only history.
+  if (report.invalidated) {
+    return false;
+  }
+  return report.state === 'technician-owned-draft' || report.state === 'submitted-pending-sync';
 }
 
 function isSharedExecutionLifecycleState(
@@ -4739,6 +5293,64 @@ function buildRetrySummaryMessage(summary: {
   failed: number;
 }) {
   return `Sync retry checked ${summary.attempted} queued report(s): ${summary.succeeded} succeeded, ${summary.failed} kept queued.`;
+}
+
+// Story 8.11 finding #10 / #8: marker fences a visit-summary block inside
+// the canonical report's observation notes. Re-submission detects the
+// fence and rewrites the block in place so the notes never accumulate
+// duplicate summaries.
+const VISIT_SUMMARY_FENCE_START = '---VISIT-SUMMARY-START---';
+const VISIT_SUMMARY_FENCE_END = '---VISIT-SUMMARY-END---';
+
+function applyVisitSummaryAugmentation(
+  existingNotes: string,
+  visitSummary: string,
+): string {
+  const trimmedExisting = existingNotes ?? '';
+  const fenceStart = trimmedExisting.indexOf(VISIT_SUMMARY_FENCE_START);
+  const fenceEnd = trimmedExisting.indexOf(VISIT_SUMMARY_FENCE_END);
+
+  const block = `${VISIT_SUMMARY_FENCE_START}\n${visitSummary}\n${VISIT_SUMMARY_FENCE_END}`;
+
+  if (fenceStart !== -1 && fenceEnd !== -1 && fenceEnd > fenceStart) {
+    const before = trimmedExisting.slice(0, fenceStart).trimEnd();
+    const after = trimmedExisting
+      .slice(fenceEnd + VISIT_SUMMARY_FENCE_END.length)
+      .trimStart();
+    return [before, block, after].filter((piece) => piece.length > 0).join('\n\n');
+  }
+
+  return trimmedExisting.length > 0 ? `${trimmedExisting.trimEnd()}\n\n${block}` : block;
+}
+
+function formatVisitSummaryForObservationNotes(view: InstrumentVisitView): string {
+  const lines = [`Tag ${view.tagCode}: ${view.templates.length} teste(s) nesta visita.`];
+  for (const entry of view.templates) {
+    const status =
+      entry.acceptance === 'pass'
+        ? 'OK'
+        : entry.acceptance === 'fail'
+        ? 'FALHA'
+        : 'em andamento';
+    const expected = entry.expectedValueLabel || '-';
+    const observed = entry.observedValueLabel || '-';
+    const unit = entry.unit ? ` ${entry.unit}` : '';
+    const deviation =
+      entry.signedDeviation !== null
+        ? ` desvio ${entry.signedDeviation > 0 ? '+' : ''}${entry.signedDeviation.toFixed(3).replace(/\.?0+$/, '')}${unit}`
+        : '';
+    const span =
+      entry.percentOfSpan !== null
+        ? ` (${entry.percentOfSpan > 0 ? '+' : ''}${entry.percentOfSpan.toFixed(2)}% span)`
+        : '';
+    lines.push(
+      `- ${entry.templateTitle} [${status}]: esperado ${expected}${unit}, medido ${observed}${unit}${deviation}${span}`,
+    );
+    if (entry.acceptanceReason) {
+      lines.push(`    motivo: ${entry.acceptanceReason}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 function formatDeviation(value: number, unit: string | null) {

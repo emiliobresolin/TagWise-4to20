@@ -2,6 +2,7 @@ import type { ActiveUserSession } from '../auth/model';
 import type { UserPartitionedLocalStoreFactory } from '../../data/local/repositories/userPartitionedLocalStoreFactory';
 import type {
   AssignedWorkPackageGuidanceSnapshot,
+  AssignedWorkPackagePriorTestReadingSnapshot,
   AssignedWorkPackageSnapshot,
   AssignedWorkPackageTagSnapshot,
   AssignedWorkPackageTemplateSnapshot,
@@ -10,6 +11,7 @@ import type {
   LocalTagContext,
   LocalTagContextField,
   LocalTagHistoryPreview,
+  LocalTagPriorTestReading,
   LocalTagReferencePointers,
 } from './model';
 import { ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS } from './assignedWorkPackageReadiness';
@@ -63,9 +65,44 @@ export class LocalTagContextService {
       criticality: mapCriticalityField(tag.criticality),
       dueIndicator: mapDueIndicator(snapshot, this.now()),
       historyPreview: mapHistoryPreview(snapshot, tag, packageSummary, this.now()),
+      priorReadings: mapPriorReadings(snapshot, tag),
       referencePointers: mapReferencePointers(snapshot, tag),
     };
   }
+}
+
+function mapPriorReadings(
+  snapshot: AssignedWorkPackageSnapshot,
+  tag: AssignedWorkPackageTagSnapshot,
+): LocalTagPriorTestReading[] {
+  // Story 8.11 finding #7: surface 6+ prior multi-point readings per tag.
+  // The list is intentionally returned sorted by observedAt DESC so the
+  // Compare screen renders the most recent past test first.
+  const raw = snapshot.priorTestReadings ?? [];
+  return raw
+    .filter((entry) => entry.tagId === tag.id)
+    .map(toLocalPriorReading)
+    .sort((a, b) => (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0));
+}
+
+function toLocalPriorReading(
+  entry: AssignedWorkPackagePriorTestReadingSnapshot,
+): LocalTagPriorTestReading {
+  return {
+    id: entry.id,
+    templateId: entry.templateId,
+    observedAt: entry.observedAt,
+    pointPercent: entry.pointPercent,
+    pointLabel: entry.pointLabel,
+    expectedValue: entry.expectedValue,
+    observedValue: entry.observedValue,
+    unit: entry.unit,
+    signedDeviation: entry.signedDeviation,
+    percentOfSpan: entry.percentOfSpan,
+    result: entry.result,
+    technicianNote: entry.technicianNote,
+    supervisorNote: entry.supervisorNote,
+  };
 }
 
 function mapField(label: string, value: string | null | undefined): LocalTagContextField {

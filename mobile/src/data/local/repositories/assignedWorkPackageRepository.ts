@@ -309,6 +309,23 @@ export class AssignedWorkPackageRepository {
     return row ? mapAssignedWorkPackageSummaryRow(row) : null;
   }
 
+  // Story 8.13: drop the locally-cached snapshot for a single work
+  // package so the technician can re-download fresh data after a seed
+  // change. Summary row remains so the package still appears in the
+  // dashboard catalog; the snapshot will be repopulated on next
+  // download via saveDownloadedSnapshot. Approved/submitted reports
+  // live in the drafts table and are intentionally preserved here.
+  async deleteSnapshot(workPackageId: string): Promise<void> {
+    await this.database.runAsync(
+      `
+        DELETE FROM assigned_work_package_snapshots
+        WHERE owner_user_id = ?
+          AND work_package_id = ?;
+      `,
+      [this.ownerUserId, workPackageId],
+    );
+  }
+
   async getSnapshot(workPackageId: string): Promise<AssignedWorkPackageSnapshot | null> {
     const row = await this.database.getFirstAsync<AssignedWorkPackageSnapshotRow>(
       `

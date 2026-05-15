@@ -1,5 +1,6 @@
 import type { AuthenticatedUser } from '../auth/model';
 import type {
+  ReportSubmissionAiDiagnosisProjection,
   ReportSubmissionEvidenceReference,
   ReportSubmissionLifecycleState,
   ReportSubmissionPhotoAttachment,
@@ -69,6 +70,12 @@ export interface SupervisorReviewReportDetail extends SupervisorReviewQueueItem 
     items: SupervisorReviewApprovalHistoryItem[];
     placeholder: string;
   };
+  /**
+   * Story 8.9 D-01: assistive AI diagnosis surface on supervisor review.
+   * Always present (defaults to state='unavailable' when no row exists).
+   * Never blocks the supervisor decision — assistive only.
+   */
+  aiDiagnosis: ReportSubmissionAiDiagnosisProjection;
 }
 
 export interface SupervisorReviewReportResponse {

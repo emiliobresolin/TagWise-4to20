@@ -384,6 +384,44 @@ const postgresMigrations: PostgresMigration[] = [
       ON worker_job_drill_events (job_id, processed_at ASC);
     `,
   },
+  {
+    // Story 8.9 D-01: per-report AI diagnosis persistence. Keyed by the
+    // canonical (owner_user_id, report_id) tuple so the supervisor / technician
+    // / manager projections can all read the same row. The state mirrors the
+    // mobile VisualAiDiagnosisProjectionInput union; the structured result
+    // payload is persisted as JSON when available. Failures are nonblocking by
+    // design — a 'failed-nonblocking' row is the canonical signal that the
+    // provider rejected the request without halting the report itself.
+    id: '0014_ai_diagnoses',
+    sql: `
+      CREATE TABLE IF NOT EXISTS ai_diagnoses (
+        owner_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+        report_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (
+          state IN ('pending', 'available', 'unavailable', 'failed-nonblocking')
+        ),
+        result_json JSONB,
+        provider_label TEXT,
+        summary TEXT,
+        detail TEXT,
+        failure_reason TEXT,
+        last_requested_at TEXT NOT NULL,
+        last_request_source TEXT NOT NULL CHECK (
+          last_request_source IN ('auto-on-submit', 'manual')
+        ),
+        generated_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_user_id, report_id),
+        FOREIGN KEY (owner_user_id, report_id)
+          REFERENCES report_submission_records(owner_user_id, report_id)
+          ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_diagnoses_state
+      ON ai_diagnoses (state, last_requested_at ASC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

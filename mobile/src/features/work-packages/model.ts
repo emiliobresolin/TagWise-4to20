@@ -121,6 +121,28 @@ export interface AssignedWorkPackageHistorySummarySnapshot {
   trendHint: string;
 }
 
+export type AssignedWorkPackagePriorTestReadingResult =
+  | 'pass'
+  | 'pass-with-note'
+  | 'fail';
+
+export interface AssignedWorkPackagePriorTestReadingSnapshot {
+  id: string;
+  tagId: string;
+  templateId: string | null;
+  observedAt: string;
+  pointPercent: number | null;
+  pointLabel: string;
+  expectedValue: number;
+  observedValue: number;
+  unit: string;
+  signedDeviation: number;
+  percentOfSpan: number | null;
+  result: AssignedWorkPackagePriorTestReadingResult;
+  technicianNote: string | null;
+  supervisorNote: string | null;
+}
+
 export interface AssignedWorkPackageSnapshot {
   contractVersion: string;
   generatedAt: string;
@@ -129,6 +151,7 @@ export interface AssignedWorkPackageSnapshot {
   templates: AssignedWorkPackageTemplateSnapshot[];
   guidance: AssignedWorkPackageGuidanceSnapshot[];
   historySummaries: AssignedWorkPackageHistorySummarySnapshot[];
+  priorTestReadings?: AssignedWorkPackagePriorTestReadingSnapshot[];
 }
 
 export interface LocalAssignedTagEntry {
@@ -193,6 +216,22 @@ export interface LocalTagDueIndicator {
   overdue: boolean;
 }
 
+export interface LocalTagPriorTestReading {
+  id: string;
+  templateId: string | null;
+  observedAt: string;
+  pointPercent: number | null;
+  pointLabel: string;
+  expectedValue: number;
+  observedValue: number;
+  unit: string;
+  signedDeviation: number;
+  percentOfSpan: number | null;
+  result: AssignedWorkPackagePriorTestReadingResult;
+  technicianNote: string | null;
+  supervisorNote: string | null;
+}
+
 export interface LocalTagContext {
   workPackageId: string;
   workPackageTitle: string;
@@ -210,5 +249,6 @@ export interface LocalTagContext {
   criticality: LocalTagContextField;
   dueIndicator: LocalTagDueIndicator;
   historyPreview: LocalTagHistoryPreview;
+  priorReadings: LocalTagPriorTestReading[];
   referencePointers: LocalTagReferencePointers;
 }

@@ -1,4 +1,5 @@
 import type { AuthenticatedUser } from '../auth/model';
+import type { AiDiagnosisService } from '../ai-diagnosis/aiDiagnosisService';
 import type { AssignedWorkPackageService } from '../work-packages/assignedWorkPackageService';
 import type { ReportSubmissionRepository } from './reportSubmissionRepository';
 import {
@@ -14,12 +15,36 @@ import {
   type ReportSubmissionSyncIssue,
 } from './model';
 
+export interface ReportSubmissionServiceOptions {
+  /**
+   * Story 8.9 D-01: when provided, `submitForValidation` enqueues an AI
+   * diagnosis job after acceptance. Optional so existing tests can inject a
+   * service without the AI subsystem; in production it is wired in
+   * `api/main.ts`. Errors enqueueing AI must NEVER bubble up — AI is assistive
+   * and non-blocking.
+   */
+  aiDiagnosisService?: AiDiagnosisService;
+  /**
+   * Optional logger callback for AI enqueue failures so production code can
+   * surface them in structured logs without coupling this module to the
+   * logger.
+   */
+  onAiEnqueueError?: (error: unknown, reportId: string) => void;
+}
+
 export class ReportSubmissionService {
+  private readonly aiDiagnosisService?: AiDiagnosisService;
+  private readonly onAiEnqueueError?: (error: unknown, reportId: string) => void;
+
   constructor(
     private readonly repository: ReportSubmissionRepository,
     private readonly assignedWorkPackageService: AssignedWorkPackageService,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+    options: ReportSubmissionServiceOptions = {},
+  ) {
+    this.aiDiagnosisService = options.aiDiagnosisService;
+    this.onAiEnqueueError = options.onAiEnqueueError;
+  }
 
   async submitForValidation(
     user: AuthenticatedUser,
@@ -52,6 +77,7 @@ export class ReportSubmissionService {
           );
         }
 
+        await this.enqueueAiDiagnosisAfterAcceptance(user, accepted.reportId);
         return toAcceptedResult(accepted);
       }
 
@@ -82,7 +108,33 @@ export class ReportSubmissionService {
       );
     }
 
+    await this.enqueueAiDiagnosisAfterAcceptance(user, accepted.reportId);
     return toAcceptedResult(accepted);
+  }
+
+  /**
+   * Story 8.9 D-01: enqueue an AI diagnosis job for the just-accepted report.
+   * AI is assistive — provider, repository, or queue failures must never
+   * propagate to the technician submission path. The report submission has
+   * already succeeded by this point; the AI job is best-effort background
+   * work. Errors are logged via the optional callback.
+   */
+  private async enqueueAiDiagnosisAfterAcceptance(
+    user: AuthenticatedUser,
+    reportId: string,
+  ): Promise<void> {
+    if (!this.aiDiagnosisService) {
+      return;
+    }
+    try {
+      await this.aiDiagnosisService.requestForReport({
+        user,
+        reportId,
+        requestSource: 'auto-on-submit',
+      });
+    } catch (error) {
+      this.onAiEnqueueError?.(error, reportId);
+    }
   }
 
   async getReportStatus(
@@ -97,7 +149,12 @@ export class ReportSubmissionService {
     }
 
     const approvalHistoryItems = await this.repository.listReportApprovalHistory(reportId);
-    return toStatusResult(existing, approvalHistoryItems);
+    // Story 8.9 D-01: read the per-report AI diagnosis state. Missing rows
+    // map to `'unavailable'` so the mobile projection has a stable default.
+    const aiDiagnosisRecord = this.aiDiagnosisService
+      ? await this.aiDiagnosisService.getByReportId(user.id, reportId)
+      : null;
+    return toStatusResult(existing, approvalHistoryItems, aiDiagnosisRecord);
   }
 
   private async validateAcceptedSubmission(
@@ -109,6 +166,11 @@ export class ReportSubmissionService {
     validateMinimumEvidence(request);
     validateRequiredJustifications(request);
     validateEvidenceArrival(request);
+    // Story 8.9 C-02: bound the optional per-photo context label and
+    // technician observation so a malicious or accidental large note does
+    // not balloon the persisted JSON payload nor break the supervisor
+    // render. Bounds match the mobile TextInput maxLength.
+    validateOptionalPhotoMetadata(request);
   }
 
   private async validateScope(user: AuthenticatedUser, request: ReportSubmissionRequest): Promise<void> {
@@ -226,6 +288,44 @@ function validateEvidenceArrival(request: ReportSubmissionRequest): void {
   }
 }
 
+/**
+ * Story 8.9 C-02: cap the optional per-photo `contextNote` (sub-step label
+ * set by the mobile client at attach time) and `technicianNote` (free-text
+ * observation) so a malicious or accidental large note cannot balloon the
+ * persisted JSON payload or break the supervisor render. Bounds:
+ * - contextNote: <= 500 chars (sub-step labels are short by design)
+ * - technicianNote: <= 2000 chars (free-text observations should fit in
+ *   roughly one paragraph of field notes).
+ * Violations are reported as malformed payload so the mobile client knows
+ * to surface a validation error rather than treat it as a sync issue.
+ */
+export const CONTEXT_NOTE_MAX_LENGTH = 500;
+export const TECHNICIAN_NOTE_MAX_LENGTH = 2000;
+function validateOptionalPhotoMetadata(request: ReportSubmissionRequest): void {
+  for (const attachment of request.photoAttachments ?? []) {
+    if (
+      typeof attachment.contextNote === 'string' &&
+      attachment.contextNote.length > CONTEXT_NOTE_MAX_LENGTH
+    ) {
+      throw structuredIssue(
+        'malformed-report-payload',
+        `Photo contextNote exceeds the ${CONTEXT_NOTE_MAX_LENGTH}-character limit.`,
+        400,
+      );
+    }
+    if (
+      typeof attachment.technicianNote === 'string' &&
+      attachment.technicianNote.length > TECHNICIAN_NOTE_MAX_LENGTH
+    ) {
+      throw structuredIssue(
+        'malformed-report-payload',
+        `Photo technicianNote exceeds the ${TECHNICIAN_NOTE_MAX_LENGTH}-character limit.`,
+        400,
+      );
+    }
+  }
+}
+
 function structuredIssue(
   reasonCode: ReportSubmissionIssueReasonCode,
   message: string,
@@ -265,6 +365,7 @@ function toAcceptedResult(record: {
 function toStatusResult(
   record: Parameters<typeof toAcceptedResult>[0],
   approvalHistoryItems: ReportSubmissionApprovalHistoryItem[],
+  aiDiagnosisRecord: import('../ai-diagnosis/model').AiDiagnosisRecord | null,
 ): ReportSubmissionStatusResult {
   return {
     ...toAcceptedResult(record),
@@ -275,6 +376,32 @@ function toStatusResult(
           ? 'No approval decisions have been recorded for this report yet.'
           : '',
     },
+    aiDiagnosis: toAiDiagnosisProjection(aiDiagnosisRecord),
+  };
+}
+
+export function toAiDiagnosisProjection(
+  record: import('../ai-diagnosis/model').AiDiagnosisRecord | null,
+): import('./model').ReportSubmissionAiDiagnosisProjection {
+  if (!record) {
+    return {
+      state: 'unavailable',
+      summary: null,
+      detail: null,
+      providerLabel: null,
+      generatedAt: null,
+      failureReason: null,
+      lastRequestedAt: null,
+    };
+  }
+  return {
+    state: record.state,
+    summary: record.summary,
+    detail: record.detail,
+    providerLabel: record.providerLabel,
+    generatedAt: record.generatedAt,
+    failureReason: record.failureReason,
+    lastRequestedAt: record.lastRequestedAt,
   };
 }
 
