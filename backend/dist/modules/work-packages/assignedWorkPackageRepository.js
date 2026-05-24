@@ -96,7 +96,10 @@ class AssignedWorkPackageRepository {
           due_ends_at ASC NULLS LAST,
           id ASC;
       `, [userId]);
-        return result.rows.map(mapAssignedWorkPackageSummaryRow);
+        return Promise.all(result.rows.map(async (row) => {
+            const summary = mapAssignedWorkPackageSummaryRow(row);
+            return this.withDerivedRollupStatus(userId, summary);
+        }));
     }
     async getAssignedSnapshotForUser(userId, workPackageId) {
         const result = await this.database.query(`
@@ -112,9 +115,46 @@ class AssignedWorkPackageRepository {
         if (!raw) {
             return null;
         }
-        return typeof raw === 'string'
+        const snapshot = typeof raw === 'string'
             ? JSON.parse(raw)
             : raw;
+        return {
+            ...snapshot,
+            summary: await this.withDerivedRollupStatus(userId, snapshot.summary),
+        };
+    }
+    async withDerivedRollupStatus(ownerUserId, summary) {
+        const status = await this.deriveRollupStatus(ownerUserId, summary.id, summary.tagCount);
+        return status === summary.status ? summary : { ...summary, status };
+    }
+    async deriveRollupStatus(ownerUserId, workPackageId, expectedTagCount) {
+        const result = await this.database.query(`
+        SELECT tag_id, lifecycle_state
+        FROM report_submission_records
+        WHERE owner_user_id = $1
+          AND work_package_id = $2;
+      `, [ownerUserId, workPackageId]);
+        const rows = result.rows;
+        if (rows.length === 0) {
+            return 'assigned';
+        }
+        if (rows.some((row) => row.lifecycle_state === 'Returned by Supervisor' ||
+            row.lifecycle_state === 'Returned by Manager')) {
+            return 'attention_needed';
+        }
+        const approvedTags = new Set(rows
+            .filter((row) => row.lifecycle_state === 'Approved')
+            .map((row) => row.tag_id));
+        if (expectedTagCount > 0 && approvedTags.size >= expectedTagCount) {
+            return 'completed';
+        }
+        const submittedTags = new Set(rows.map((row) => row.tag_id));
+        const hasReviewableReport = rows.some((row) => row.lifecycle_state === 'Submitted - Pending Supervisor Review' ||
+            row.lifecycle_state === 'Escalated - Pending Manager Review');
+        if (expectedTagCount > 0 && submittedTags.size >= expectedTagCount && hasReviewableReport) {
+            return 'pending_review';
+        }
+        return 'in_progress';
     }
 }
 exports.AssignedWorkPackageRepository = AssignedWorkPackageRepository;

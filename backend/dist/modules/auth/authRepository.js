@@ -52,6 +52,27 @@ class AuthRepository {
       `, [email]);
         return mapAuthUser(result.rows[0]);
     }
+    async listByRole(role) {
+        const result = await this.database.query(`
+        SELECT
+          id,
+          email,
+          display_name,
+          role,
+          password_hash,
+          password_salt,
+          session_version
+        FROM auth_users
+        WHERE role = $1
+        ORDER BY display_name ASC, email ASC;
+      `, [role]);
+        return result.rows.map((row) => ({
+            id: row.id,
+            email: row.email,
+            displayName: row.display_name,
+            role: row.role,
+        }));
+    }
     async findById(id) {
         const result = await this.database.query(`
         SELECT

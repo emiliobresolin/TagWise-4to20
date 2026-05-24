@@ -235,6 +235,54 @@ export class SyncStateService {
     return { shell: reloadedShell, aiDiagnosis };
   }
 
+  // Story 10.1: walk every locally-stored submitted report whose lifecycle
+  // could have flipped server-side (technician submitted → supervisor
+  // approved/returned/escalated) and refresh each one's server status. Called
+  // after a package list refresh so the rollup status the technician sees
+  // ("Em revisao" / "Atencao" / "Concluido") reflects supervisor decisions
+  // taken since the last sync.
+  async refreshInflightReportStatuses(
+    session: ActiveUserSession,
+  ): Promise<{ attempted: number; refreshed: number }> {
+    if (session.connectionMode !== 'connected') {
+      return { attempted: 0, refreshed: 0 };
+    }
+
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const drafts = await store.drafts.listDrafts();
+    const inflightReports = drafts
+      .map(parseStoredReportSyncPayload)
+      .filter(
+        (report): report is StoredReportSyncPayload =>
+          report !== null &&
+          report.state === 'submitted-pending-review' &&
+          (report.lifecycleState === 'Submitted - Pending Supervisor Review' ||
+            report.lifecycleState === 'Escalated - Pending Manager Review'),
+      );
+
+    let refreshed = 0;
+    for (const report of inflightReports) {
+      const shell = await this.dependencies.executionShellService.loadShell(
+        session,
+        report.workPackageId,
+        report.tagId,
+        report.templateId,
+      );
+      if (!shell) {
+        continue;
+      }
+      try {
+        await this.refreshReportServerStatus(session, shell);
+        refreshed += 1;
+      } catch {
+        // intentional: a single report failure must not block the rest of
+        // the refresh sweep
+      }
+    }
+
+    return { attempted: inflightReports.length, refreshed };
+  }
+
   async retryEligibleReports(session: ActiveUserSession): Promise<SyncRetrySummary> {
     if (session.connectionMode !== 'connected') {
       return {

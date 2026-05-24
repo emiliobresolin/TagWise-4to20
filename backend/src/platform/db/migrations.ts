@@ -422,6 +422,46 @@ const postgresMigrations: PostgresMigration[] = [
       ON ai_diagnoses (state, last_requested_at ASC);
     `,
   },
+  {
+    // Story 9.1: canonical instruments catalog. Supervisors compose work
+    // packages by selecting from this pool; each row references a default
+    // template + guidance that already exist in the work-packages template
+    // registry, so authored snapshots use the same execution shape as seed
+    // packages.
+    id: '0015_instruments_catalog',
+    sql: `
+      CREATE TABLE IF NOT EXISTS instruments (
+        id TEXT PRIMARY KEY,
+        tag_code TEXT NOT NULL UNIQUE,
+        short_description TEXT NOT NULL,
+        area TEXT NOT NULL,
+        parent_asset_reference TEXT NOT NULL,
+        instrument_family TEXT NOT NULL CHECK (instrument_family IN (
+          'pressure transmitter',
+          'temperature transmitter / RTD input',
+          'level transmitter',
+          'control valve with positioner',
+          'analog 4-20 mA loop'
+        )),
+        instrument_subtype TEXT NOT NULL,
+        measured_variable TEXT NOT NULL,
+        signal_type TEXT NOT NULL,
+        range_min DOUBLE PRECISION NOT NULL,
+        range_max DOUBLE PRECISION NOT NULL,
+        range_unit TEXT NOT NULL,
+        tolerance TEXT NOT NULL,
+        criticality TEXT NOT NULL CHECK (criticality IN ('medium', 'high')),
+        default_template_id TEXT NOT NULL,
+        default_guidance_reference_id TEXT NOT NULL,
+        default_history_summary_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_instruments_family
+      ON instruments (instrument_family, tag_code ASC);
+    `,
+  },
 ];
 
 export async function runPostgresMigrations(

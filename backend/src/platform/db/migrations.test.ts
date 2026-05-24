@@ -28,6 +28,9 @@ describe('runPostgresMigrations', () => {
     const aiDiagnosisRows = (await pool.query(
       `SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ai_diagnoses';`,
     )) as { rows: Array<{ count: string }> };
+    const instrumentsRows = (await pool.query(
+      `SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'instruments';`,
+    )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([
       '0001_service_foundation',
@@ -44,14 +47,16 @@ describe('runPostgresMigrations', () => {
       '0012_evidence_access_retention_guardrails',
       '0013_worker_job_resilience',
       '0014_ai_diagnoses',
+      '0015_instruments_catalog',
     ]);
-    expect(summary.currentSchemaVersion).toBe(14);
+    expect(summary.currentSchemaVersion).toBe(15);
     expect(Number(rows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(managerRouteRows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(mobileRuntimeErrorRows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(workerJobRows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(workerJobDrillRows.rows[0]?.count ?? 0)).toBe(1);
     expect(Number(aiDiagnosisRows.rows[0]?.count ?? 0)).toBe(1);
+    expect(Number(instrumentsRows.rows[0]?.count ?? 0)).toBe(1);
 
     await pool.end();
   });
@@ -68,7 +73,7 @@ describe('runPostgresMigrations', () => {
     )) as { rows: Array<{ count: string }> };
 
     expect(summary.appliedMigrationIds).toEqual([]);
-    expect(Number(rows.rows[0]?.count ?? 0)).toBe(14);
+    expect(Number(rows.rows[0]?.count ?? 0)).toBe(15);
 
     await pool.end();
   });

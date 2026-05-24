@@ -1243,9 +1243,18 @@ describe('createApiRequestHandler', () => {
       },
     });
     expect(queue.status).toBe(200);
-    expect((await queue.json()) as unknown).toEqual({
-      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
-      items: [],
+    // Story 10.1: after a decision (approve / return / escalate) the report
+    // stays visible to the supervisor in the decided state so the mobile
+    // grouping can render the "Aprovados / Devolvidos / Escalados" tabs.
+    const queueJson = (await queue.json()) as {
+      contractVersion: string;
+      items: Array<{ reportId: string; lifecycleState: string }>;
+    };
+    expect(queueJson.contractVersion).toBe(SUPERVISOR_REVIEW_API_CONTRACT_VERSION);
+    expect(queueJson.items).toHaveLength(1);
+    expect(queueJson.items[0]).toMatchObject({
+      reportId: 'tag-report:wp-seed-1001:tag-pt-101',
+      lifecycleState: 'Approved',
     });
 
     const auditEvents = await auditRepository.listEventsByTarget(
@@ -1776,9 +1785,17 @@ describe('createApiRequestHandler', () => {
       },
     });
     expect(queue.status).toBe(200);
-    expect(await queue.json()).toEqual({
-      contractVersion: SUPERVISOR_REVIEW_API_CONTRACT_VERSION,
-      items: [],
+    // Story 10.1: escalated reports stay visible in the supervisor queue
+    // (just in 'Escalated - Pending Manager Review' state) so the mobile
+    // "Escalados" group is non-empty after escalation.
+    const queueJson = (await queue.json()) as {
+      contractVersion: string;
+      items: Array<{ reportId: string; lifecycleState: string }>;
+    };
+    expect(queueJson.contractVersion).toBe(SUPERVISOR_REVIEW_API_CONTRACT_VERSION);
+    expect(queueJson.items).toHaveLength(1);
+    expect(queueJson.items[0]).toMatchObject({
+      lifecycleState: 'Escalated - Pending Manager Review',
     });
 
     const reportRows = (await pool.query(

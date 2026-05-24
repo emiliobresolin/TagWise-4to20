@@ -97,6 +97,29 @@ export class UserPartitionedExecutionCalculationRepository {
     );
   }
 
+  // Story 11.3 (issue #1): per-tuple delete used when a report is
+  // returned by supervisor/manager. We clear ONLY the rows for the
+  // returned (workPackageId, tagId, templateId, templateVersion) tuple
+  // so other tags / templates in the same package keep their state.
+  async deleteForTagTemplate(
+    workPackageId: string,
+    tagId: string,
+    templateId: string,
+    templateVersion: string,
+  ): Promise<void> {
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_execution_calculations
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?
+          AND template_version = ?;
+      `,
+      [this.ownerUserId, workPackageId, tagId, templateId, templateVersion],
+    );
+  }
+
   async saveCalculation(record: StoredExecutionCalculationRecord): Promise<void> {
     await this.database.runAsync(
       `

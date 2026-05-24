@@ -1,7 +1,12 @@
 import type { ActiveUserSession } from '../auth/model';
+import {
+  EVIDENCE_SYNC_API_CONTRACT_VERSION,
+  type EvidenceUploadApiClient,
+} from '../sync/evidenceUploadApiClient';
 import type {
   ManagerReviewDecisionResponse,
   SupervisorReviewDecisionResponse,
+  SupervisorReviewPhotoAttachment,
   SupervisorReviewQueueItem,
   SupervisorReviewReportDetail,
 } from './model';
@@ -15,7 +20,15 @@ export class SupervisorReviewAccessError extends Error {
 }
 
 export class SupervisorReviewService {
-  constructor(private readonly apiClient: SupervisorReviewApiClient) {}
+  constructor(
+    private readonly apiClient: SupervisorReviewApiClient,
+    // Story 10.2 (issue #4): optional evidence access client used to fetch
+    // pre-signed download URLs for finalized photo attachments so the
+    // review detail screen can render the actual images instead of only
+    // metadata. Optional so legacy test harnesses that build the service
+    // without an evidence client still typecheck.
+    private readonly evidenceClient?: EvidenceUploadApiClient,
+  ) {}
 
   async refreshQueue(session: ActiveUserSession): Promise<SupervisorReviewQueueItem[]> {
     assertConnectedSupervisor(session);
@@ -31,7 +44,37 @@ export class SupervisorReviewService {
     assertConnectedSupervisor(session);
 
     const response = await this.apiClient.getSupervisorReportDetail(reportId);
-    return response.report;
+    return this.attachPhotoDownloadUrls(response.report);
+  }
+
+  private async attachPhotoDownloadUrls(
+    detail: SupervisorReviewReportDetail,
+  ): Promise<SupervisorReviewReportDetail> {
+    if (!this.evidenceClient || detail.photoAttachments.length === 0) {
+      return detail;
+    }
+
+    const enriched = await Promise.all(
+      detail.photoAttachments.map(async (attachment) => {
+        if (!attachment.serverEvidenceId || !attachment.presenceFinalizedAt) {
+          return attachment;
+        }
+        try {
+          const authorization = await this.evidenceClient!.authorizeEvidenceBinaryAccess({
+            contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+            serverEvidenceId: attachment.serverEvidenceId,
+          });
+          return { ...attachment, downloadUrl: authorization.downloadUrl };
+        } catch {
+          // Story 10.2: a single failed authorization must not block the
+          // rest of the detail render. The image just falls back to the
+          // metadata-only card.
+          return { ...attachment, downloadUrl: null } satisfies SupervisorReviewPhotoAttachment;
+        }
+      }),
+    );
+
+    return { ...detail, photoAttachments: enriched };
   }
 
   async approveReport(
@@ -89,7 +132,7 @@ export class SupervisorReviewService {
     assertConnectedManager(session);
 
     const response = await this.apiClient.getManagerReportDetail(reportId);
-    return response.report;
+    return this.attachPhotoDownloadUrls(response.report);
   }
 
   async approveManagerReport(

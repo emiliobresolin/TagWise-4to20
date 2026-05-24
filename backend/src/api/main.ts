@@ -9,6 +9,9 @@ import { AuthRepository } from '../modules/auth/authRepository';
 import { AuthService } from '../modules/auth/authService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
+import { SupervisorAuthoringService } from '../modules/work-packages/supervisorAuthoringService';
+import { InstrumentsRepository } from '../modules/instruments/instrumentsRepository';
+import { InstrumentsService } from '../modules/instruments/instrumentsService';
 import { MobileDiagnosticsRepository } from '../modules/diagnostics/mobileDiagnosticsRepository';
 import { MobileDiagnosticsService } from '../modules/diagnostics/mobileDiagnosticsService';
 import { EvidenceSyncRepository } from '../modules/evidence-sync/evidenceSyncRepository';
@@ -57,11 +60,19 @@ async function main() {
   if (!manager) {
     throw new Error('Seed manager account is missing after auth bootstrap.');
   }
+  const assignedWorkPackageRepository = new AssignedWorkPackageRepository(pool);
   const assignedWorkPackageService = new AssignedWorkPackageService(
-    new AssignedWorkPackageRepository(pool),
+    assignedWorkPackageRepository,
   );
   await assignedWorkPackageService.ensureSeedPackages(technician.id);
   const seededWorkPackages = await assignedWorkPackageService.listAssignedPackages(technician);
+  const instrumentsService = new InstrumentsService(new InstrumentsRepository(pool));
+  await instrumentsService.ensureSeedInstruments();
+  const supervisorAuthoringService = new SupervisorAuthoringService(
+    instrumentsService,
+    authRepository,
+    assignedWorkPackageRepository,
+  );
   const evidenceSyncService = new EvidenceSyncService(
     new EvidenceSyncRepository(pool),
     createS3EvidenceObjectStorageClient(environment.objectStorage),
@@ -121,7 +132,10 @@ async function main() {
     logger,
     handleRequest: createApiRequestHandler({
       authService,
+      authRepository,
       assignedWorkPackageService,
+      instrumentsService,
+      supervisorAuthoringService,
       evidenceSyncService,
       mobileDiagnosticsService,
       managerReviewService,

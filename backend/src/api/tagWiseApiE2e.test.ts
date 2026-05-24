@@ -19,6 +19,9 @@ import { SupervisorReviewRepository } from '../modules/review/supervisorReviewRe
 import { ManagerReviewService, SupervisorReviewService } from '../modules/review/supervisorReviewService';
 import { AssignedWorkPackageRepository } from '../modules/work-packages/assignedWorkPackageRepository';
 import { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
+import { SupervisorAuthoringService } from '../modules/work-packages/supervisorAuthoringService';
+import { InstrumentsRepository } from '../modules/instruments/instrumentsRepository';
+import { InstrumentsService } from '../modules/instruments/instrumentsService';
 import { runPostgresMigrations } from '../platform/db/migrations';
 import { createStructuredLogger } from '../platform/diagnostics/structuredLogger';
 import type {
@@ -373,6 +376,98 @@ describe('TagWise API E2E workflow', () => {
     await pool.end();
   });
 
+  // Story 9.5: cross-cutting smoke - supervisor authors a package, technician
+  // sees and downloads it through the existing /work-packages flow.
+  it('lets a supervisor compose a work package from the instruments catalog and the assigned technician download it', async () => {
+    const { port } = await startApiRuntime();
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    const supervisorLogin = await postJson<{ tokens: { accessToken: string } }>(
+      baseUrl,
+      '/auth/login',
+      {
+        email: authConfig.seedUsers.supervisor.email,
+        password: authConfig.seedUsers.supervisor.password,
+      },
+    );
+    expect(supervisorLogin.response.status).toBe(200);
+    const supervisorAuth = {
+      authorization: `Bearer ${supervisorLogin.body.tokens.accessToken}`,
+    };
+
+    const technicianLogin = await postJson<{
+      tokens: { accessToken: string };
+    }>(baseUrl, '/auth/login', {
+      email: authConfig.seedUsers.technician.email,
+      password: authConfig.seedUsers.technician.password,
+    });
+    expect(technicianLogin.response.status).toBe(200);
+    const technicianAuth = {
+      authorization: `Bearer ${technicianLogin.body.tokens.accessToken}`,
+    };
+
+    const instruments = await getJson<{
+      items: Array<{ id: string; tagCode: string; instrumentFamily: string }>;
+    }>(baseUrl, '/supervisor/instruments', supervisorAuth);
+    expect(instruments.response.status).toBe(200);
+    expect(instruments.body.items.length).toBe(20);
+
+    const technicianListed = await getJson<{
+      items: Array<{ id: string; email: string }>;
+    }>(baseUrl, '/supervisor/technicians', supervisorAuth);
+    expect(technicianListed.response.status).toBe(200);
+    const techRecord = technicianListed.body.items.find(
+      (item) => item.email === authConfig.seedUsers.technician.email,
+    );
+    expect(techRecord).toBeDefined();
+
+    // Technician cannot reach the supervisor catalog.
+    const forbidden = await getJson(baseUrl, '/supervisor/instruments', technicianAuth);
+    expect(forbidden.response.status).toBe(403);
+
+    const pickedInstruments = instruments.body.items.slice(0, 2);
+    const createResponse = await postJson<{
+      summary: { id: string; tagCount: number; title: string };
+      tags: Array<{ tagCode: string; templateIds: string[] }>;
+      templates: Array<{ id: string }>;
+    }>(baseUrl, '/supervisor/work-packages', {
+      title: 'Smoke - autoria do supervisor',
+      assignedTeam: 'Instrumentation Smoke',
+      priority: 'routine',
+      dueWindow: {
+        startsAt: '2026-05-20T08:00:00.000Z',
+        endsAt: '2026-05-20T17:00:00.000Z',
+      },
+      assignedUserId: techRecord!.id,
+      instrumentIds: pickedInstruments.map((instrument) => instrument.id),
+    }, supervisorAuth);
+
+    expect(createResponse.response.status).toBe(201);
+    const newPackageId = createResponse.body.summary.id;
+    expect(newPackageId.startsWith('pkg-sup-')).toBe(true);
+    expect(createResponse.body.summary.tagCount).toBe(2);
+    expect(createResponse.body.tags.map((tag) => tag.tagCode).sort()).toEqual(
+      pickedInstruments.map((instrument) => instrument.tagCode).sort(),
+    );
+    expect(createResponse.body.templates.length).toBeGreaterThan(0);
+
+    const technicianPackages = await getJson<{
+      items: Array<{ id: string; tagCount: number }>;
+    }>(baseUrl, '/work-packages', technicianAuth);
+    expect(technicianPackages.response.status).toBe(200);
+    expect(
+      technicianPackages.body.items.some((item) => item.id === newPackageId),
+    ).toBe(true);
+
+    const downloaded = await getJson<{
+      summary: { id: string; tagCount: number };
+      tags: Array<{ id: string; tagCode: string }>;
+    }>(baseUrl, `/work-packages/${encodeURIComponent(newPackageId)}/download`, technicianAuth);
+    expect(downloaded.response.status).toBe(200);
+    expect(downloaded.body.summary.id).toBe(newPackageId);
+    expect(downloaded.body.tags.length).toBe(2);
+  });
+
   it('rejects unauthenticated access and malformed report submissions over HTTP', async () => {
     const { port, pool } = await startApiRuntime();
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -432,11 +527,20 @@ async function startApiRuntime() {
     throw new Error('Expected seeded users to exist after auth bootstrap.');
   }
 
+  const assignedWorkPackageRepository = new AssignedWorkPackageRepository(pool);
   const assignedWorkPackageService = new AssignedWorkPackageService(
-    new AssignedWorkPackageRepository(pool),
+    assignedWorkPackageRepository,
   );
   await assignedWorkPackageService.ensureSeedPackages(technician.id);
   const seededWorkPackages = await assignedWorkPackageService.listAssignedPackages(technician);
+  // Story 9.1 / 9.3: instruments catalog + supervisor authoring service.
+  const instrumentsService = new InstrumentsService(new InstrumentsRepository(pool));
+  await instrumentsService.ensureSeedInstruments();
+  const supervisorAuthoringService = new SupervisorAuthoringService(
+    instrumentsService,
+    authRepository,
+    assignedWorkPackageRepository,
+  );
 
   const uploadedObjects = new Map<string, EvidenceStoredObjectMetadata>();
   const evidenceSyncService = new EvidenceSyncService(
@@ -475,7 +579,10 @@ async function startApiRuntime() {
     ),
     handleRequest: createApiRequestHandler({
       authService,
+      authRepository,
       assignedWorkPackageService,
+      instrumentsService,
+      supervisorAuthoringService,
       evidenceSyncService,
       mobileDiagnosticsService: new MobileDiagnosticsService(
         new MobileDiagnosticsRepository(pool),

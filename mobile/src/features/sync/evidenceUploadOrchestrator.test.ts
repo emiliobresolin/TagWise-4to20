@@ -119,6 +119,7 @@ describe('EvidenceUploadOrchestrator', () => {
         submitReportForValidation: vi.fn(),
         getReportSubmissionStatus: vi.fn(),
         requestAiDiagnosis: vi.fn(),
+        authorizeEvidenceBinaryAccess: vi.fn(),
       },
       binaryUploadBoundary: { uploadBinary },
       now: () => new Date('2026-04-23T14:11:00.000Z'),

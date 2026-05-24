@@ -113,6 +113,28 @@ export class UserPartitionedExecutionEvidenceRepository {
     );
   }
 
+  // Story 11.3 (issue #1): per-tuple delete for the returned-report
+  // reset. Scoped tightly so untouched (tag, template) tuples in the
+  // same work package keep their evidence.
+  async deleteForTagTemplate(
+    workPackageId: string,
+    tagId: string,
+    templateId: string,
+    templateVersion: string,
+  ): Promise<void> {
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_execution_evidence
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?
+          AND template_version = ?;
+      `,
+      [this.ownerUserId, workPackageId, tagId, templateId, templateVersion],
+    );
+  }
+
   async saveEvidence(record: StoredExecutionEvidenceRecord): Promise<void> {
     await this.database.runAsync(
       `

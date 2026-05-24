@@ -217,6 +217,11 @@ export interface VisualProductShellProps {
   onSignIn: () => void;
   onSwitchUser: () => void;
   onRefreshPackages: () => void;
+  // Story 10.7 (issue follow-up): one-tap "Sincronizar com servidor" that
+  // refreshes everything that could be stale (packages + in-flight reports
+  // + supervisor queue when applicable). Optional so test harnesses that
+  // build the shell without this handler still typecheck.
+  onSyncWithServer?: () => void;
   onDownloadPackage: (workPackageId: string) => Promise<void>;
   // Story 8.13: delete a single locally-cached package so the
   // technician can re-download fresh data. Used after seed changes.
@@ -287,6 +292,10 @@ export interface VisualProductShellProps {
   onEscalateSupervisorReviewReport: (reportId: string) => Promise<void>;
   onSupervisorReturnCommentChange: (value: string) => void;
   onSupervisorEscalationRationaleChange: (value: string) => void;
+  // Story 9.4: open the supervisor authoring overlay (Create work package).
+  // Optional so existing tests / harnesses that build a shell without the
+  // authoring service still typecheck.
+  onOpenSupervisorAuthoring?: () => void;
 }
 
 export function VisualProductShell({
@@ -323,6 +332,7 @@ export function VisualProductShell({
   onSignIn,
   onSwitchUser,
   onRefreshPackages,
+  onSyncWithServer,
   onDownloadPackage,
   onDeleteLocalPackage,
   onBrowsePackageTags,
@@ -362,6 +372,7 @@ export function VisualProductShell({
   onEscalateSupervisorReviewReport,
   onSupervisorReturnCommentChange,
   onSupervisorEscalationRationaleChange,
+  onOpenSupervisorAuthoring,
 }: VisualProductShellProps) {
   const scrollRef = useRef<ScrollView>(null);
   const [route, setRoute] = useState<VisualRoute>('dashboard');
@@ -964,7 +975,9 @@ export function VisualProductShell({
             onDownloadPackage={(workPackageId) => void onDownloadPackage(workPackageId)}
             onDeleteLocalPackage={(workPackageId) => void onDeleteLocalPackage(workPackageId)}
             onRefreshPackages={onRefreshPackages}
+            onSyncWithServer={onSyncWithServer}
             onOpenReview={() => void handleOpenReviewRoute()}
+            onOpenSupervisorAuthoring={onOpenSupervisorAuthoring}
             onResolveQrManualPayload={() => void handleResolveQrManualPayload()}
             onQrManualPayloadChange={onQrManualPayloadChange}
             onSearchChange={setSearchQuery}
@@ -1093,15 +1106,15 @@ export function VisualProductShell({
               onOpenStage={handleOpenStageRoute}
               onInputChange={onCalculationInputChange}
               onSaveCalculation={async () => {
-                // Story 8.10 findings #1 + #9: after saving, return to the
-                // instrument detail hub via popRoute() so the navigation
-                // history stays clean (the 'calculation' route is removed
-                // from the stack instead of stacking up). The user can pick
-                // another test or proceed to the Comparison phase from the
-                // detail hub.
+                // Story 10.4b (issue #2): after saving, stay on the test
+                // screen so the technician can see the calculated result
+                // card (acceptance, signed deviation, percent of span)
+                // BEFORE deciding to navigate back. Previous behavior
+                // auto-popped the route which hid the result. The user
+                // pops the route themselves via the Voltar / back button
+                // when ready.
                 await onSaveCalculation();
-                setShellMessage('Calculo salvo localmente. Volte ao instrumento para escolher outro teste ou avancar para Comparacao.');
-                popRoute();
+                setShellMessage('Calculo salvo localmente. Confira o resultado abaixo antes de voltar.');
               }}
             />
           ) : (
@@ -1343,7 +1356,9 @@ function DashboardScreen({
   onQrManualPayloadChange,
   onOpenReports,
   onOpenReview,
+  onOpenSupervisorAuthoring,
   onOpenStandaloneCalculator,
+  onSyncWithServer,
   onResolveQrManualPayload,
   onRefreshPackages,
   onSearchChange,
@@ -1386,7 +1401,9 @@ function DashboardScreen({
   onQrManualPayloadChange: (value: string) => void;
   onOpenReports: () => void;
   onOpenReview: () => void;
+  onOpenSupervisorAuthoring?: () => void;
   onOpenStandaloneCalculator: () => void;
+  onSyncWithServer?: () => void;
   onResolveQrManualPayload: () => void;
   onRefreshPackages: () => void;
   onSearchChange: (value: string) => void;
@@ -1410,9 +1427,12 @@ function DashboardScreen({
       {session ? (
         <DashboardActionPanel
           reports={technicianReports}
+          packageBusy={packageBusy}
+          reviewBusy={reviewBusy}
           onOpenManualInstrument={onOpenManualInstrument}
           onOpenReports={onOpenReports}
           onOpenStandaloneCalculator={onOpenStandaloneCalculator}
+          onSyncWithServer={onSyncWithServer}
         />
       ) : null}
 
@@ -1529,6 +1549,10 @@ function DashboardScreen({
           queueCount={reviewQueueCount}
           onOpenReview={onOpenReview}
         />
+      ) : null}
+      {/* Story 9.4: supervisor / manager tile to open the create-package flow. */}
+      {reviewAccess.state === 'available' && onOpenSupervisorAuthoring ? (
+        <SupervisorAuthoringAccessCard onOpen={onOpenSupervisorAuthoring} />
       ) : null}
 
       <TagSection
@@ -1956,21 +1980,48 @@ function ManualInstrumentScreen({
 
 function DashboardActionPanel({
   reports,
+  packageBusy,
+  reviewBusy,
   onOpenManualInstrument,
   onOpenReports,
   onOpenStandaloneCalculator,
+  onSyncWithServer,
 }: {
   reports: VisualTechnicianReportSummary[];
+  packageBusy: boolean;
+  reviewBusy: boolean;
   onOpenManualInstrument: () => void;
   onOpenReports: () => void;
   onOpenStandaloneCalculator: () => void;
+  onSyncWithServer?: () => void;
 }) {
   const pendingSync = reports.filter((report) => report.status === 'pending-sync').length;
   const returned = reports.filter((report) => report.status === 'returned').length;
+  // Story 10.7 (issue follow-up): the sync button is the single affordance
+  // that refreshes everything the user might be waiting on from the
+  // server (packages + in-flight report decisions + review queue for
+  // supervisors). Disabled while any of the underlying refreshes is busy
+  // so taps are not stacked.
+  const syncBusy = packageBusy || reviewBusy;
 
   return (
     <View style={styles.quickActionPanel}>
       <Text style={styles.sectionTitle}>O que fazer agora?</Text>
+      {onSyncWithServer ? (
+        <Pressable
+          accessibilityRole="button"
+          disabled={syncBusy}
+          onPress={onSyncWithServer}
+          style={[
+            styles.fullWidthPrimary,
+            syncBusy ? styles.disabledAction : null,
+          ]}
+        >
+          <Text style={styles.fullWidthPrimaryLabel}>
+            {syncBusy ? 'Sincronizando...' : 'Sincronizar com servidor'}
+          </Text>
+        </Pressable>
+      ) : null}
       <View style={styles.quickActionGrid}>
         <Pressable accessibilityRole="button" onPress={onOpenStandaloneCalculator} style={styles.quickActionButton}>
           <Text style={styles.quickActionTitle}>Calculadora</Text>
@@ -1986,10 +2037,21 @@ function DashboardActionPanel({
           <Text style={styles.quickActionTitle}>Novo instrumento</Text>
           <Text style={styles.quickActionBody}>Cadastro manual local.</Text>
         </Pressable>
-        <View style={styles.quickActionButton}>
+        {/* Story 10.7: the "Correcoes" tile is now tappable and routes to
+            the technician reports list so the user can find the returned
+            reports right away instead of guessing where they live. */}
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenReports}
+          style={styles.quickActionButton}
+        >
           <Text style={styles.quickActionTitle}>Correcoes</Text>
-          <Text style={styles.quickActionBody}>{returned} devolvido(s) para retrabalho.</Text>
-        </View>
+          <Text style={styles.quickActionBody}>
+            {returned > 0
+              ? `${returned} devolvido(s) para retrabalho.`
+              : 'Nenhum relatorio devolvido.'}
+          </Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -2089,6 +2151,10 @@ function FieldCalculatorScreen({
         </Pressable>
       ) : null}
 
+      {/* Story 10.5 (issue #6): renamed chip labels so the loop-test helper
+          is discoverable as "Teste de loop" instead of the cryptic
+          "Modo: Loop". The "Modo:" prefix is dropped because the row itself
+          IS the mode selector and the prefix was wasting horizontal space. */}
       <View style={styles.pickerChipRow}>
         <Pressable
           accessibilityRole="button"
@@ -2104,7 +2170,7 @@ function FieldCalculatorScreen({
               helperMode === 'conversion' ? styles.pickerChipTextActive : null,
             ]}
           >
-            Modo: Conversao
+            Conversao
           </Text>
         </Pressable>
         <Pressable
@@ -2121,13 +2187,9 @@ function FieldCalculatorScreen({
               helperMode === 'loop' ? styles.pickerChipTextActive : null,
             ]}
           >
-            Modo: Loop
+            Teste de loop
           </Text>
         </Pressable>
-        {/* Story 8.12 finding #3: quick-reference "Tabela 0-100%" mode that
-            shows 0/25/50/75/100% with the corresponding 4-20 mA and PV
-            values for the configured range. Read-only sweep table; no
-            inputs other than the range itself. */}
         <Pressable
           accessibilityRole="button"
           onPress={() => setHelperMode('sweep')}
@@ -2142,7 +2204,7 @@ function FieldCalculatorScreen({
               helperMode === 'sweep' ? styles.pickerChipTextActive : null,
             ]}
           >
-            Modo: Tabela 0-100%
+            Tabela 0-100%
           </Text>
         </Pressable>
       </View>
@@ -2730,6 +2792,30 @@ function ConnectionCard({
   );
 }
 
+// Story 9.4: supervisor / manager tile that opens the create-package overlay.
+// Rendered next to ReviewAccessCard on the supervisor dashboard.
+function SupervisorAuthoringAccessCard({ onOpen }: { onOpen: () => void }) {
+  return (
+    <View style={styles.connectionCard}>
+      <View style={styles.connectionHeader}>
+        <View>
+          <Text style={styles.connectionTitle}>Criar pacote de trabalho</Text>
+          <Text style={styles.connectionBody}>
+            Selecione instrumentos do catalogo e atribua um pacote a um tecnico.
+          </Text>
+        </View>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onOpen}
+        style={styles.smallActionButton}
+      >
+        <Text style={styles.smallActionLabel}>Criar pacote</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function ReviewAccessCard({
   access,
   busy,
@@ -2761,7 +2847,7 @@ function ReviewAccessCard({
           style={[styles.smallActionButton, busy ? styles.disabledAction : null]}
         >
           <Text style={styles.smallActionLabel}>
-            {busy ? 'Loading review...' : 'Open review queue'}
+            {busy ? 'Carregando revisao...' : 'Abrir fila de revisao'}
           </Text>
         </Pressable>
       ) : (
@@ -3174,23 +3260,11 @@ function ServiceCalculationScreen({
         photos={photoAttachments}
         filterStepKind="calculation"
       />
-      <View style={styles.nextActionPanel}>
-        <Text style={styles.pendingTitle}>Proximo passo</Text>
-        <Text style={styles.pendingText}>
-          Salve a medicao, compare com o historico ou abra o checklist tecnico.
-        </Text>
-        <View style={styles.reportActionGrid}>
-          <Pressable accessibilityRole="button" onPress={onOpenCalculator} style={styles.smallGhostButton}>
-            <Text style={styles.smallGhostLabel}>Calculadora</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={() => onOpenStage('history')} style={styles.smallActionButton}>
-            <Text style={styles.smallActionLabel}>Comparar</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" onPress={() => onOpenStage('diagnosis')} style={styles.smallActionButton}>
-            <Text style={styles.smallActionLabel}>Checklist</Text>
-          </Pressable>
-        </View>
-      </View>
+      {/* Story 11.2 (issue #2 follow-up): the "Proximo passo" panel was
+          fully removed from the test execution screen. Comparison,
+          checklist and calculator are reachable from the instrument hub
+          (the tag detail screen) and from the home dashboard. The test
+          screen is single-purpose: enter values, calculate, save. */}
 
       <Text style={styles.sectionTitle}>Conversao offline</Text>
       <Text style={styles.pendingText}>{calculation.conversion.reason}</Text>
@@ -4615,8 +4689,19 @@ function ServiceReportScreen({
             is not 'available' (no prior result yet, or a prior result was
             replaced/failed). Tap enqueues a worker job server-side and
             refreshes the local AI projection. AI is assistive — disabled
-            state surfaces a hint but does NOT block report submission. */}
-        {report.aiDiagnosis.state !== 'available' ? (
+            state surfaces a hint but does NOT block report submission.
+            Story 11.6 (issue #5): the AI diagnosis service is keyed on the
+            server-side `report_submission_records` row, which only exists
+            AFTER the technician submits the report. While the report is
+            still a 'technician-owned-draft', the request returns 404
+            "Report submission was not found for this technician". Hide
+            the button in that state and surface a clear hint so the
+            technician understands the order of operations. */}
+        {report.reportSubmissionState === 'technician-owned-draft' ? (
+          <Text style={styles.pendingText}>
+            Envie o relatorio primeiro para solicitar diagnostico assistido.
+          </Text>
+        ) : report.aiDiagnosis.state !== 'available' ? (
           <Pressable
             accessibilityRole="button"
             onPress={() => void onRequestExecutionAiDiagnosis()}
@@ -4952,9 +5037,24 @@ function ReviewDetailView({
                 supervisor knows where each photo was captured. Falls back to
                 "Sem etapa" for pre-8.8 photos. */}
             <Text style={styles.pendingTitle}>{photo.contextSubtitle}</Text>
-            <Text style={styles.pendingText}>ID: {photo.evidenceId}</Text>
-            <Text style={styles.pendingText}>Evidencia servidor: {photo.serverEvidenceId ?? 'Nenhuma'}</Text>
-            <Text style={styles.pendingText}>Sync: {photo.syncState}</Text>
+            {/* Story 10.2 (issue #4): render the actual photo image via the
+                pre-signed downloadUrl that the supervisor review service
+                fetched at detail-load time. Falls back to the metadata card
+                when finalization is not complete or the access auth call
+                failed. */}
+            {photo.downloadUrl ? (
+              <Image
+                source={{ uri: photo.downloadUrl }}
+                style={styles.supervisorPhotoImage}
+                resizeMode="cover"
+              />
+            ) : (
+              <Text style={styles.pendingText}>
+                {photo.presenceFinalizedAt
+                  ? 'Imagem indisponivel no momento. Verifique a conexao e reabra o detalhe.'
+                  : 'Foto ainda nao finalizada no servidor.'}
+              </Text>
+            )}
             <Text style={styles.pendingText}>Finalizada: {photo.finalizedLabel}</Text>
             {/* Story 8.8 D-04: surface the technician's free-text observation
                 directly on the supervisor's photo card. Empty when none was
@@ -6081,7 +6181,15 @@ function StatusPill({
 }) {
   return (
     <View style={[styles.statusPill, pillStyle(severity), large ? styles.statusPillLarge : null]}>
-      <Text style={[styles.statusPillText, large ? styles.statusPillTextLarge : null]}>
+      {/* Story 11.5 (issue #3B): cap the label to a single line and let
+          the layout truncate with an ellipsis. Combined with the pill's
+          maxWidth this guarantees long PT-BR words (e.g. "Desatualizado")
+          never overflow the title row on narrow phones. */}
+      <Text
+        style={[styles.statusPillText, large ? styles.statusPillTextLarge : null]}
+        numberOfLines={1}
+        ellipsizeMode="tail"
+      >
         {label}
       </Text>
     </View>
@@ -7220,6 +7328,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
+    // Story 11.5 (issue #3B): cap the pill width and let the text shrink
+    // so long PT-BR labels (e.g. "Desatualizado", 13 chars) cannot push
+    // off the right edge of a narrow Android phone screen. The minWidth
+    // keeps short labels (e.g. "OK") from collapsing.
+    maxWidth: 140,
+    minWidth: 56,
+    flexShrink: 0,
   },
   statusPillLarge: {
     minHeight: 56,
@@ -8172,6 +8287,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: colors.surface,
     marginBottom: spacing.md,
+  },
+  // Story 10.2 (issue #4): inline photo preview for the supervisor review
+  // detail screen, sourced from the pre-signed download URL fetched by
+  // SupervisorReviewService.loadReportDetail.
+  supervisorPhotoImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
   },
   reportInlineButton: {
     alignSelf: 'flex-start',

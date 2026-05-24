@@ -17,7 +17,9 @@
       "Bash(curl -sS -m 5 http://192.168.1.7:4100/health/ready)",
       "Bash(curl -sS -m 10 -X POST http://127.0.0.1:4100/auth/login -H \"Content-Type: application/json\" -d \"{\\\\\"email\\\\\":\\\\\"supervisor@tagwise.local\\\\\",\\\\\"password\\\\\":\\\\\"TagWise123!\\\\\"}\")",
       "Bash(curl -sS -m 10 -X POST http://127.0.0.1:4100/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"supervisor@tagwise.local\",\"password\":\"TagWise123!\"}')",
-      "Bash(python -m json.tool)"
+      "Bash(python -m json.tool)",
+      "Bash(git commit -m ' *)",
+      "Bash(dir C:\\\\Users\\\\emili\\\\Desktop\\\\Projets\\\\TagWise4to20 /B)"
     ],
     "additionalDirectories": [
       "c:\\Users\\emili\\Desktop\\Projets\\TagWise4to20\\_bmad-output\\implementation-artifacts\\tests"

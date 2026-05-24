@@ -30,11 +30,33 @@ import type {
   SupervisorReviewService,
 } from '../modules/review/supervisorReviewService';
 import type { AssignedWorkPackageService } from '../modules/work-packages/assignedWorkPackageService';
+import {
+  SupervisorAuthoringError,
+  type CreateSupervisorPackageInput,
+  type SupervisorAuthoringService,
+} from '../modules/work-packages/supervisorAuthoringService';
+import { InstrumentsError } from '../modules/instruments/model';
+import type { InstrumentsService } from '../modules/instruments/instrumentsService';
+import type { AuthRepository } from '../modules/auth/authRepository';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
 export interface ApiRequestHandlerDependencies {
   authService: AuthService;
+  /**
+   * Story 9.2: required only when the supervisor authoring endpoints are
+   * wired. Optional for legacy bootstraps and unrelated handler tests.
+   */
+  authRepository?: AuthRepository;
   assignedWorkPackageService: AssignedWorkPackageService;
+  /**
+   * Story 9.1: instruments catalog service used by the supervisor authoring
+   * endpoints. Optional for handler tests that do not exercise the catalog.
+   */
+  instrumentsService?: InstrumentsService;
+  /**
+   * Story 9.3: optional. When missing, /supervisor/work-packages returns 503.
+   */
+  supervisorAuthoringService?: SupervisorAuthoringService;
   evidenceSyncService: EvidenceSyncService;
   mobileDiagnosticsService?: MobileDiagnosticsService;
   reportSubmissionService: ReportSubmissionService;
@@ -580,6 +602,136 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       return true;
     }
 
+    // Story 9.2: supervisor instruments catalog. Used by the mobile authoring
+    // flow to render the instrument-picker step. Role-gated to supervisor /
+    // manager; technicians get 403.
+    if (method === 'GET' && url === '/supervisor/instruments') {
+      try {
+        if (!dependencies.instrumentsService) {
+          writeJson(response, 503, { message: 'Instruments catalog is not configured.' });
+          return true;
+        }
+        const user = await authenticateSupervisorOrManager(
+          request,
+          dependencies.authService,
+        );
+        const items = await dependencies.instrumentsService.listInstruments();
+        context.logger.info('supervisor-authoring.instruments.list.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          count: items.length,
+        });
+        writeJson(response, 200, { items });
+      } catch (error) {
+        context.logger.warn('supervisor-authoring.instruments.list.failed', {
+          statusCode:
+            error instanceof InstrumentsError
+              ? error.statusCode
+              : error instanceof AuthenticationError
+                ? error.statusCode
+                : 500,
+        });
+        writeSupervisorAuthoringError(
+          response,
+          error,
+          'Instruments catalog failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
+    // Story 9.2: supervisor-visible technicians directory. Limited to
+    // (id, displayName, email) so other user fields are never exposed.
+    if (method === 'GET' && url === '/supervisor/technicians') {
+      try {
+        if (!dependencies.authRepository) {
+          writeJson(response, 503, { message: 'Auth repository is not configured.' });
+          return true;
+        }
+        const user = await authenticateSupervisorOrManager(
+          request,
+          dependencies.authService,
+        );
+        const technicians = await dependencies.authRepository.listByRole('technician');
+        const items = technicians.map((technician) => ({
+          id: technician.id,
+          displayName: technician.displayName,
+          email: technician.email,
+        }));
+        context.logger.info('supervisor-authoring.technicians.list.succeeded', {
+          actorId: user.id,
+          actorRole: user.role,
+          count: items.length,
+        });
+        writeJson(response, 200, { items });
+      } catch (error) {
+        context.logger.warn('supervisor-authoring.technicians.list.failed', {
+          statusCode:
+            error instanceof AuthenticationError ? error.statusCode : 500,
+        });
+        writeSupervisorAuthoringError(
+          response,
+          error,
+          'Technicians directory failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
+    // Story 9.3: supervisor-authored work package creation. The body lists
+    // instrument ids from the catalog; the server assembles a full snapshot
+    // (tags + templates + guidance) and persists it via the same tables that
+    // back seeded packages, so the chosen technician sees it on their next
+    // refresh and downloads it through the existing GET /work-packages flow.
+    if (method === 'POST' && url === '/supervisor/work-packages') {
+      try {
+        if (!dependencies.supervisorAuthoringService) {
+          writeJson(response, 503, {
+            message: 'Supervisor authoring service is not configured.',
+          });
+          return true;
+        }
+        const user = await authenticateSupervisorOrManager(
+          request,
+          dependencies.authService,
+        );
+        const body = await readJsonBody<Record<string, unknown>>(request);
+        const input = parseCreateSupervisorPackageBody(body);
+        const snapshot = await dependencies.supervisorAuthoringService.createWorkPackage(
+          user,
+          input,
+        );
+
+        context.logger.info('supervisor-authoring.work-package.created', {
+          actorId: user.id,
+          actorRole: user.role,
+          workPackageId: snapshot.summary.id,
+          tagCount: snapshot.summary.tagCount,
+        });
+        writeJson(response, 201, snapshot);
+      } catch (error) {
+        context.logger.warn('supervisor-authoring.work-package.create.failed', {
+          statusCode:
+            error instanceof SupervisorAuthoringError
+              ? error.statusCode
+              : error instanceof InstrumentsError
+                ? error.statusCode
+                : error instanceof AuthenticationError
+                  ? error.statusCode
+                  : 500,
+        });
+        writeSupervisorAuthoringError(
+          response,
+          error,
+          'Work package creation failed. Please retry while connected.',
+        );
+      }
+
+      return true;
+    }
+
     if (method === 'GET' && url === '/review/supervisor/reports') {
       try {
         const user = await authenticateRequest(request, dependencies.authService);
@@ -821,6 +973,91 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
 
     return false;
   };
+}
+
+async function authenticateSupervisorOrManager(
+  request: IncomingMessage,
+  authService: AuthService,
+) {
+  const user = await authenticateRequest(request, authService);
+  if (user.role !== 'supervisor' && user.role !== 'manager') {
+    throw new AuthenticationError(
+      'Supervisor or manager role is required for this resource.',
+      403,
+    );
+  }
+  return user;
+}
+
+function parseCreateSupervisorPackageBody(
+  body: Record<string, unknown>,
+): CreateSupervisorPackageInput {
+  const title = typeof body.title === 'string' ? body.title : '';
+  const assignedTeam = typeof body.assignedTeam === 'string' ? body.assignedTeam : '';
+  const priorityRaw = typeof body.priority === 'string' ? body.priority : '';
+  if (priorityRaw !== 'routine' && priorityRaw !== 'high') {
+    throw new SupervisorAuthoringError(
+      "Priority must be 'routine' or 'high'.",
+    );
+  }
+  const assignedUserId =
+    typeof body.assignedUserId === 'string' ? body.assignedUserId : '';
+  if (assignedUserId.length === 0) {
+    throw new SupervisorAuthoringError('assignedUserId is required.');
+  }
+  const instrumentIdsRaw = Array.isArray(body.instrumentIds)
+    ? (body.instrumentIds as unknown[])
+    : [];
+  const instrumentIds = instrumentIdsRaw.filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  );
+  const dueWindowRaw = isRecord(body.dueWindow) ? body.dueWindow : {};
+  const startsAt =
+    typeof dueWindowRaw.startsAt === 'string' && dueWindowRaw.startsAt.length > 0
+      ? dueWindowRaw.startsAt
+      : null;
+  const endsAt =
+    typeof dueWindowRaw.endsAt === 'string' && dueWindowRaw.endsAt.length > 0
+      ? dueWindowRaw.endsAt
+      : null;
+
+  return {
+    title,
+    assignedTeam,
+    priority: priorityRaw,
+    dueWindow: { startsAt, endsAt },
+    assignedUserId,
+    instrumentIds,
+  };
+}
+
+function writeSupervisorAuthoringError(
+  response: ServerResponse,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  if (error instanceof AuthenticationError) {
+    writeAuthError(response, error);
+    return;
+  }
+
+  if (error instanceof SupervisorAuthoringError) {
+    writeJson(response, error.statusCode, {
+      message: error.message,
+      ...(error.missingIds ? { missingInstrumentIds: error.missingIds } : {}),
+    });
+    return;
+  }
+
+  if (error instanceof InstrumentsError) {
+    writeJson(response, error.statusCode, {
+      message: error.message,
+      ...(error.missingIds ? { missingInstrumentIds: error.missingIds } : {}),
+    });
+    return;
+  }
+
+  writeJson(response, 500, { message: fallbackMessage });
 }
 
 async function authenticateRequest(request: IncomingMessage, authService: AuthService) {

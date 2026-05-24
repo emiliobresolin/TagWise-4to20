@@ -1,10 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadServiceEnvironment = loadServiceEnvironment;
+exports.loadAiConfig = loadAiConfig;
 function loadServiceEnvironment(serviceRole, source = process.env) {
-    return {
+    const nodeEnv = source.TAGWISE_NODE_ENV?.trim() || 'development';
+    const deploymentEnvironment = parseDeploymentEnvironment(source.TAGWISE_DEPLOYMENT_ENV, nodeEnv);
+    const environment = {
         serviceRole,
-        nodeEnv: source.TAGWISE_NODE_ENV?.trim() || 'development',
+        deploymentEnvironment,
+        nodeEnv,
         host: source.TAGWISE_HOST?.trim() || '127.0.0.1',
         port: parsePort(serviceRole === 'api' ? source.TAGWISE_API_PORT : source.TAGWISE_WORKER_PORT, serviceRole === 'api' ? 4100 : 4101, serviceRole),
         databaseUrl: requireValue(source.TAGWISE_DATABASE_URL, 'TAGWISE_DATABASE_URL'),
@@ -17,7 +21,35 @@ function loadServiceEnvironment(serviceRole, source = process.env) {
             forcePathStyle: parseBoolean(source.TAGWISE_STORAGE_FORCE_PATH_STYLE, false),
             autoCreateBucket: parseBoolean(source.TAGWISE_STORAGE_AUTO_CREATE_BUCKET, false),
         },
+        ai: loadAiConfig(source),
         auth: serviceRole === 'api' ? loadAuthConfig(source) : undefined,
+    };
+    assertReleaseSafeEnvironment(environment, source);
+    return environment;
+}
+function loadAiConfig(source = process.env) {
+    const enabled = parseBoolean(source.TAGWISE_AI_ENABLED, false);
+    const provider = parseAiProvider(source.TAGWISE_AI_PROVIDER);
+    const requestTimeoutMs = parsePositiveInteger(source.TAGWISE_AI_REQUEST_TIMEOUT_MS, 30000, 'TAGWISE_AI_REQUEST_TIMEOUT_MS');
+    if (!enabled || provider !== 'openai') {
+        return {
+            enabled,
+            provider,
+            requestTimeoutMs,
+        };
+    }
+    const apiKey = requireValue(source.OPENAI_API_KEY, 'OPENAI_API_KEY');
+    const model = requireValue(source.OPENAI_MODEL, 'OPENAI_MODEL');
+    assertNoReleasePlaceholder(apiKey, 'OPENAI_API_KEY');
+    assertNoReleasePlaceholder(model, 'OPENAI_MODEL');
+    return {
+        enabled,
+        provider,
+        requestTimeoutMs,
+        openAi: {
+            apiKey,
+            model,
+        },
     };
 }
 function loadAuthConfig(source) {
@@ -69,11 +101,116 @@ function parsePort(raw, fallback, serviceRole) {
     }
     return value;
 }
+function parseDeploymentEnvironment(raw, nodeEnv) {
+    const normalized = raw?.trim().toLowerCase();
+    if (!normalized) {
+        return nodeEnv.trim().toLowerCase() === 'production' ? 'production' : 'development';
+    }
+    if (normalized === 'development' ||
+        normalized === 'staging' ||
+        normalized === 'production') {
+        return normalized;
+    }
+    throw new Error(`Invalid deployment environment: ${raw}`);
+}
 function parseBoolean(raw, fallback) {
     if (!raw || raw.trim().length === 0) {
         return fallback;
     }
     return raw.trim().toLowerCase() === 'true';
+}
+function parseAiProvider(raw) {
+    const normalized = raw?.trim().toLowerCase() || 'mock';
+    if (normalized === 'mock' || normalized === 'openai') {
+        return normalized;
+    }
+    throw new Error(`Invalid AI provider for TAGWISE_AI_PROVIDER: ${raw}`);
+}
+function assertReleaseSafeEnvironment(environment, source) {
+    if (environment.deploymentEnvironment === 'development' &&
+        environment.nodeEnv.trim().toLowerCase() === 'production') {
+        throw new Error('TAGWISE_NODE_ENV=production must not run with TAGWISE_DEPLOYMENT_ENV=development.');
+    }
+    if (environment.deploymentEnvironment === 'development') {
+        return;
+    }
+    if (environment.nodeEnv.trim().toLowerCase() !== 'production') {
+        throw new Error('Release environments require TAGWISE_NODE_ENV=production.');
+    }
+    assertReleaseDatabaseUrl(environment.databaseUrl);
+    assertReleaseConfiguredValue(environment.objectStorage.bucket, 'TAGWISE_STORAGE_BUCKET');
+    assertReleaseConfiguredValue(environment.objectStorage.region, 'TAGWISE_STORAGE_REGION');
+    if (environment.objectStorage.endpoint) {
+        assertReleaseStorageEndpoint(environment.objectStorage.endpoint);
+    }
+    assertReleaseConfiguredValue(environment.objectStorage.accessKeyId, 'TAGWISE_STORAGE_ACCESS_KEY_ID', ['minioadmin']);
+    assertReleaseConfiguredValue(environment.objectStorage.secretAccessKey, 'TAGWISE_STORAGE_SECRET_ACCESS_KEY', ['minioadmin']);
+    if (environment.objectStorage.autoCreateBucket) {
+        throw new Error('Release environments must not auto-create object storage buckets.');
+    }
+    if (environment.serviceRole !== 'api' || !environment.auth) {
+        return;
+    }
+    assertReleaseConfiguredValue(source.TAGWISE_AUTH_TOKEN_SECRET, 'TAGWISE_AUTH_TOKEN_SECRET', ['replace-me-in-real-environments', 'development-secret'], 16);
+    assertReleaseConfiguredValue(source.TAGWISE_SEED_TECHNICIAN_EMAIL, 'TAGWISE_SEED_TECHNICIAN_EMAIL', ['tech@tagwise.local']);
+    assertReleaseConfiguredValue(source.TAGWISE_SEED_TECHNICIAN_PASSWORD, 'TAGWISE_SEED_TECHNICIAN_PASSWORD', ['TagWise123!'], 16);
+    assertReleaseConfiguredValue(source.TAGWISE_SEED_SUPERVISOR_EMAIL, 'TAGWISE_SEED_SUPERVISOR_EMAIL', ['supervisor@tagwise.local']);
+    assertReleaseConfiguredValue(source.TAGWISE_SEED_SUPERVISOR_PASSWORD, 'TAGWISE_SEED_SUPERVISOR_PASSWORD', ['TagWise123!'], 16);
+    assertReleaseConfiguredValue(source.TAGWISE_SEED_MANAGER_EMAIL, 'TAGWISE_SEED_MANAGER_EMAIL', ['manager@tagwise.local']);
+    assertReleaseConfiguredValue(source.TAGWISE_SEED_MANAGER_PASSWORD, 'TAGWISE_SEED_MANAGER_PASSWORD', ['TagWise123!'], 16);
+}
+function isLocalDatabaseUrl(databaseUrl) {
+    return /(@|\b)(localhost|127\.0\.0\.1)(:|\/|$)/i.test(databaseUrl);
+}
+function assertReleaseDatabaseUrl(databaseUrl) {
+    assertNoReleasePlaceholder(databaseUrl, 'TAGWISE_DATABASE_URL');
+    let parsed;
+    try {
+        parsed = new URL(databaseUrl);
+    }
+    catch {
+        throw new Error('Release environments require a parseable PostgreSQL database URL.');
+    }
+    if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+        throw new Error('Release environments require a PostgreSQL database URL.');
+    }
+    assertReleaseConfiguredValue(parsed.hostname, 'TAGWISE_DATABASE_URL host');
+    assertReleaseConfiguredValue(parsed.username, 'TAGWISE_DATABASE_URL username');
+    assertReleaseConfiguredValue(parsed.password, 'TAGWISE_DATABASE_URL password');
+    if (isLocalDatabaseUrl(databaseUrl) || isLocalHost(parsed.hostname)) {
+        throw new Error('Release environments must use a managed database URL, not localhost or 127.0.0.1.');
+    }
+    if (parsed.username === 'tagwise' && parsed.password === 'tagwise') {
+        throw new Error('Release environments must not use the development database credentials.');
+    }
+}
+function assertReleaseStorageEndpoint(endpoint) {
+    assertNoReleasePlaceholder(endpoint, 'TAGWISE_STORAGE_ENDPOINT');
+    let parsed;
+    try {
+        parsed = new URL(endpoint);
+    }
+    catch {
+        throw new Error('Release environments require a parseable object storage endpoint.');
+    }
+    if (isLocalHost(parsed.hostname)) {
+        throw new Error('Release environments must not use a local object storage endpoint.');
+    }
+}
+function isLocalHost(hostname) {
+    return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|host\.docker\.internal)$/i.test(hostname);
+}
+function assertReleaseConfiguredValue(raw, key, forbiddenValues = [], minimumLength = 1) {
+    const value = requireValue(raw, key);
+    assertNoReleasePlaceholder(value, key);
+    if (value.length < minimumLength || forbiddenValues.includes(value)) {
+        throw new Error(`Release environments require a non-development value for ${key}.`);
+    }
+}
+function assertNoReleasePlaceholder(value, key) {
+    if (/[<>]/.test(value) || /\b(set-in-secret-manager|placeholder|replace-me)\b/i.test(value)) {
+        throw new Error(`Release environments require a real non-placeholder value for ${key}.`);
+    }
 }
 function parsePositiveInteger(raw, fallback, key) {
     if (!raw || raw.trim().length === 0) {

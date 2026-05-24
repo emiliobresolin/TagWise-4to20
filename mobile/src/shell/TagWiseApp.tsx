@@ -87,6 +87,9 @@ import type {
 import { createFetchAssignedWorkPackageApiClient } from '../features/work-packages/workPackageApiClient';
 import { createFetchSupervisorReviewApiClient } from '../features/review/supervisorReviewApiClient';
 import { SupervisorReviewService } from '../features/review/supervisorReviewService';
+import { createFetchSupervisorAuthoringApiClient } from '../features/supervisor-authoring/supervisorAuthoringApiClient';
+import { SupervisorAuthoringService } from '../features/supervisor-authoring/supervisorAuthoringService';
+import { SupervisorAuthoringScreen } from '../features/supervisor-authoring/SupervisorAuthoringScreen';
 import type {
   SupervisorReviewQueueItem,
   SupervisorReviewReportDetail,
@@ -147,6 +150,7 @@ type BootstrapStatus =
       evidenceUploadOrchestrator: EvidenceUploadOrchestrator;
       syncStateService: SyncStateService;
       supervisorReviewService: SupervisorReviewService;
+      supervisorAuthoringService: SupervisorAuthoringService;
       manualInstrumentService: ManualInstrumentService;
       session: ActiveUserSession | null;
       localOwnership: LocalOwnershipProofSnapshot | null;
@@ -204,6 +208,11 @@ export function TagWiseApp() {
   const [email, setEmail] = useState('tech@tagwise.local');
   const [password, setPassword] = useState('TagWise123!');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  // Story 9.4: supervisor authoring overlay visibility. Kept as a separate
+  // top-level state instead of threading through readyState because the
+  // screen is a self-contained modal flow that only depends on the
+  // supervisor session + the authoring service.
+  const [supervisorAuthoringVisible, setSupervisorAuthoringVisible] = useState(false);
 
   useEffect(() => {
     let isActive = true;
@@ -251,12 +260,13 @@ export function TagWiseApp() {
           tagContextService: localTagContextService,
           localWorkState: runtime.repositories.localWorkState,
         });
+        const evidenceUploadApiClient = createFetchEvidenceUploadApiClient({
+          baseUrl: getDefaultAuthApiBaseUrl(),
+          secureStorage,
+        });
         const evidenceUploadOrchestrator = new EvidenceUploadOrchestrator({
           userPartitions: runtime.repositories.userPartitions,
-          apiClient: createFetchEvidenceUploadApiClient({
-            baseUrl: getDefaultAuthApiBaseUrl(),
-            secureStorage,
-          }),
+          apiClient: evidenceUploadApiClient,
           binaryUploadBoundary: evidenceBinaryUploadBoundary,
           localWorkState: runtime.repositories.localWorkState,
         });
@@ -267,6 +277,16 @@ export function TagWiseApp() {
         });
         const supervisorReviewService = new SupervisorReviewService(
           createFetchSupervisorReviewApiClient({
+            baseUrl: getDefaultAuthApiBaseUrl(),
+            secureStorage,
+          }),
+          // Story 10.2 (issue #4): pass the evidence client so loadReportDetail
+          // can fetch pre-signed download URLs for the technician's photos
+          // and the supervisor can SEE them in the review detail screen.
+          evidenceUploadApiClient,
+        );
+        const supervisorAuthoringService = new SupervisorAuthoringService(
+          createFetchSupervisorAuthoringApiClient({
             baseUrl: getDefaultAuthApiBaseUrl(),
             secureStorage,
           }),
@@ -327,6 +347,7 @@ export function TagWiseApp() {
           evidenceUploadOrchestrator,
           syncStateService,
           supervisorReviewService,
+          supervisorAuthoringService,
           manualInstrumentService,
           session,
           localOwnership,
@@ -340,7 +361,7 @@ export function TagWiseApp() {
               : retrySummary.attempted > 0
               ? buildRetrySummaryMessage(retrySummary)
               : restoredSession.state === 'signed_in' && session?.connectionMode === 'offline'
-              ? 'Offline session restored from cached role metadata.'
+              ? 'Sessao offline restaurada a partir do cache local.'
               : null,
           packageSyncSummaries,
           activeTagPackageId: null,
@@ -522,7 +543,7 @@ export function TagWiseApp() {
         : {
             ...current,
             localOwnership,
-            authMessage: 'Owned local draft, evidence metadata, queue placeholder, and sandbox file updated.',
+            authMessage: 'Rascunho local, metadata de evidencia, fila e arquivo sandbox atualizados.',
           },
     );
   }
@@ -549,11 +570,11 @@ export function TagWiseApp() {
       });
       const localOwnership = await loadLocalOwnershipProof(readyState.runtime, session);
       let workPackages = await readyState.workPackageCatalog.loadLocalCatalog(session);
-      let authMessage = 'Connected session established and cached for offline restore.';
+      let authMessage = 'Sessao online estabelecida e armazenada em cache para uso offline.';
 
       try {
         workPackages = await readyState.workPackageCatalog.refreshConnectedCatalog(session);
-        authMessage = `Connected session established and ${workPackages.length} assigned package(s) loaded.`;
+        authMessage = `Sessao online estabelecida; ${workPackages.length} pacote(s) atribuido(s) carregado(s).`;
       } catch (packageError) {
         authMessage = `${authMessage} Assigned packages could not be refreshed: ${
           packageError instanceof Error ? packageError.message : 'Unknown package refresh error.'
@@ -625,7 +646,7 @@ export function TagWiseApp() {
               ...current,
               authBusy: false,
               authMessage:
-                error instanceof Error ? error.message : 'Connected authentication failed.',
+                error instanceof Error ? error.message : 'Autenticacao online falhou.',
             },
       );
     }
@@ -647,6 +668,12 @@ export function TagWiseApp() {
     );
 
     try {
+      // Story 10.1: before fetching the new catalog, pull down the latest
+      // server-side lifecycle for every in-flight report so any supervisor
+      // approvals / returns / escalations the technician hasn't seen yet
+      // are reflected in both the rollup status (Em revisao -> Atencao /
+      // Concluido) and the per-template state on tap-in.
+      await readyState.syncStateService.refreshInflightReportStatuses(readyState.session);
       const workPackages = await readyState.workPackageCatalog.refreshConnectedCatalog(
         readyState.session,
       );
@@ -672,7 +699,7 @@ export function TagWiseApp() {
               workPackages,
               packageSyncSummaries,
               packageBusy: false,
-              authMessage: `${workPackages.length} assigned package(s) refreshed for offline use.`,
+              authMessage: `${workPackages.length} pacote(s) atribuido(s) atualizado(s) para uso offline.`,
               activeTagPackageId: null,
               selectedExecutionTemplateId: null,
               tagSearchQuery: '',
@@ -702,10 +729,50 @@ export function TagWiseApp() {
               authMessage:
                 error instanceof Error
                   ? error.message
-                  : 'Assigned package refresh failed without a detailed message.',
+                  : 'Falha ao atualizar os pacotes atribuidos.',
             },
       );
     }
+  }
+
+  // Story 10.7 (follow-up to issue #5): one-tap "Sincronizar com servidor"
+  // affordance on the dashboard. Pulls everything that could be stale in a
+  // single action so the technician / supervisor does not have to remember
+  // which sub-screen has the refresh button.
+  //
+  // For all roles: refresh the package catalog + every in-flight report's
+  // server lifecycle (so supervisor decisions land instantly).
+  // For supervisor / manager: also refresh the review queue.
+  async function handleSyncWithServer() {
+    if (status.type !== 'ready' || !readyState.session) {
+      return;
+    }
+    if (readyState.session.connectionMode !== 'connected') {
+      setStatus((current) =>
+        current.type !== 'ready'
+          ? current
+          : {
+              ...current,
+              authMessage: 'Reconecte antes de sincronizar com o servidor.',
+            },
+      );
+      return;
+    }
+    await handleRefreshAssignedPackages();
+    if (
+      readyState.session.role === 'supervisor' ||
+      readyState.session.role === 'manager'
+    ) {
+      await handleRefreshSupervisorReviewQueue();
+    }
+    setStatus((current) =>
+      current.type !== 'ready'
+        ? current
+        : {
+            ...current,
+            authMessage: 'Sincronizacao com o servidor concluida.',
+          },
+    );
   }
 
   async function handleDownloadAssignedPackage(workPackageId: string) {
@@ -960,7 +1027,7 @@ export function TagWiseApp() {
               packageSyncSummaries,
               packageBusy: false,
               authMessage:
-                'Manual instrument stored locally. It is pending reconciliation and will not be treated as an official backend asset.',
+                'Instrumento manual salvo localmente. Aguarda reconciliacao e nao sera tratado como ativo oficial do backend.',
               activeTagPackageId: result.workPackageId,
               selectedExecutionTemplateId,
               tagSearchQuery: '',
@@ -1102,7 +1169,7 @@ export function TagWiseApp() {
               selectedTagContext: null,
               selectedExecutionTemplateId: null,
               executionShell: null,
-              authMessage: 'Selected tag is no longer available in local package scope.',
+              authMessage: 'A tag selecionada nao esta mais disponivel no pacote local.',
             },
       );
       return false;
@@ -1136,7 +1203,7 @@ export function TagWiseApp() {
               selectedTagContext: null,
               selectedExecutionTemplateId: null,
               executionShell: null,
-              authMessage: 'Selected visual tag is no longer available in local package scope.',
+              authMessage: 'A tag selecionada nao esta mais disponivel no pacote local.',
             },
       );
       return false;
@@ -1933,7 +2000,7 @@ export function TagWiseApp() {
               rawPayload: '',
               message: 'Camera permission is required to scan a tag QR code on this device.',
               guidance:
-                'Grant camera access or paste the QR payload below to resolve it locally.',
+                'Conceda acesso a camera ou cole o conteudo do QR abaixo para resolver localmente.',
             },
           },
     );
@@ -2174,7 +2241,7 @@ export function TagWiseApp() {
             authMessage:
               result.state === 'cleared'
                 ? 'Session cleared. Connected sign-in is required for the next user.'
-                : result.message ?? 'User switch blocked.',
+                : result.message ?? 'Troca de usuario bloqueada.',
           },
       );
   }
@@ -2896,6 +2963,7 @@ export function TagWiseApp() {
   }
 
   return (
+    <>
     <VisualProductShell
       apiBaseUrl={getDefaultAuthApiBaseUrl()}
       authBusy={readyState.authBusy}
@@ -2955,6 +3023,7 @@ export function TagWiseApp() {
       onProceedToExecutionShell={() => handleProceedToExecutionShell()}
       onQrManualPayloadChange={handleQrPayloadChange}
       onRefreshPackages={() => void handleRefreshAssignedPackages()}
+      onSyncWithServer={() => void handleSyncWithServer()}
       onRefreshReportServerStatus={() => handleRefreshExecutionReportServerStatus()}
       onRequestExecutionAiDiagnosis={() => handleRequestExecutionAiDiagnosis()}
       onRefreshSupervisorReviewQueue={() => handleRefreshSupervisorReviewQueue()}
@@ -2977,7 +3046,27 @@ export function TagWiseApp() {
       onSubmitReport={() => handleSubmitExecutionReport()}
       onRetryReportSync={() => handleRetryExecutionReportSync()}
       onSwitchUser={() => void handleSwitchUser()}
+      onOpenSupervisorAuthoring={() => setSupervisorAuthoringVisible(true)}
     />
+    {supervisorAuthoringVisible && readyState.session ? (
+      <SupervisorAuthoringScreen
+        service={readyState.supervisorAuthoringService}
+        session={readyState.session}
+        onClose={() => setSupervisorAuthoringVisible(false)}
+        onCreated={(result) => {
+          setSupervisorAuthoringVisible(false);
+          setStatus((current) =>
+            current.type !== 'ready'
+              ? current
+              : {
+                  ...current,
+                  authMessage: `Pacote criado: ${result.title} (${result.tagCount} instrumento(s)).`,
+                },
+          );
+        }}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -3004,7 +3093,7 @@ export function TagWiseApp() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.heroCard}>
           <Text style={styles.badge}>
-            {readyState.session ? 'Authenticated local shell' : 'Connected sign-in required'}
+            {readyState.session ? 'Aplicativo autenticado localmente' : 'Login online obrigatorio'}
           </Text>
           <Text style={styles.heroTitle}>
             {readyState.session ? readyState.session.displayName : 'TagWise session bootstrap'}
@@ -3024,7 +3113,7 @@ export function TagWiseApp() {
 
         {!readyState.session ? (
           <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Connected sign-in</Text>
+            <Text style={styles.panelTitle}>Login online</Text>
             <Text style={styles.panelBody}>
               Only connected login is allowed in v1. After the first successful sign-in, the same
               device session can reopen offline.
@@ -3055,7 +3144,7 @@ export function TagWiseApp() {
               style={[styles.primaryButton, readyState.authBusy ? styles.buttonDisabled : null]}
             >
               <Text style={styles.primaryButtonLabel}>
-                {readyState.authBusy ? 'Signing in...' : 'Sign in'}
+                {readyState.authBusy ? 'Entrando...' : 'Entrar'}
               </Text>
             </Pressable>
 
@@ -3117,7 +3206,7 @@ export function TagWiseApp() {
                 style={[styles.secondaryButton, readyState.authBusy ? styles.buttonDisabled : null]}
               >
                 <Text style={styles.secondaryButtonLabel}>
-                  {readyState.authBusy ? 'Checking session...' : 'Switch user'}
+                  {readyState.authBusy ? 'Verificando sessao...' : 'Trocar usuario'}
                 </Text>
               </Pressable>
 
@@ -3216,14 +3305,14 @@ export function TagWiseApp() {
                   ]}
                 >
                   <Text style={styles.primaryButtonLabel}>
-                    {readyState.packageBusy ? 'Refreshing packages...' : 'Refresh assigned packages'}
+                    {readyState.packageBusy ? 'Atualizando pacotes...' : 'Atualizar pacotes atribuidos'}
                   </Text>
                 </Pressable>
 
                 <Text style={styles.helperText}>
                   {readyState.session.connectionMode === 'connected'
-                    ? 'Connected mode can refresh the assigned package list and download snapshots.'
-                    : 'Offline mode can open downloaded packages later, but refresh/download remains unavailable until reconnection.'}
+                    ? 'No modo online voce pode atualizar a lista de pacotes e baixar os snapshots.'
+                    : 'No modo offline voce pode abrir pacotes ja baixados, mas atualizar/baixar so funciona apos reconectar.'}
                 </Text>
 
                 <View style={styles.listCard}>
@@ -3292,7 +3381,7 @@ export function TagWiseApp() {
 
                 {readyState.workPackages.length === 0 ? (
                   <Text style={styles.helperText}>
-                    No assigned packages are cached on this device yet. Refresh while connected to
+                    Nenhum pacote atribuido esta em cache neste dispositivo ainda. Atualize enquanto estiver online para
                     load your bounded working set.
                   </Text>
                 ) : null}
@@ -3768,7 +3857,7 @@ export function TagWiseApp() {
                             onPress={() => void handleOpenTag(tag.tagId)}
                             style={styles.secondaryButton}
                           >
-                            <Text style={styles.secondaryButtonLabel}>Open tag</Text>
+                            <Text style={styles.secondaryButtonLabel}>Abrir tag</Text>
                           </Pressable>
                         </View>
                       ))
@@ -3868,7 +3957,7 @@ export function TagWiseApp() {
                         !workPackage.hasSnapshot ? styles.buttonDisabled : null,
                       ]}
                     >
-                      <Text style={styles.secondaryButtonLabel}>Browse cached tags</Text>
+                      <Text style={styles.secondaryButtonLabel}>Explorar tags em cache</Text>
                     </Pressable>
                     </View>
                   );
@@ -4062,7 +4151,7 @@ function SupervisorReviewPanel({
         <MetricCard label="Queued reports" value={String(queue.length)} />
         <MetricCard
           label="Review access"
-          value={canRefresh ? 'Connected' : 'Unavailable'}
+          value={canRefresh ? 'Online' : 'Indisponivel'}
         />
       </View>
 
@@ -4073,7 +4162,7 @@ function SupervisorReviewPanel({
         style={[styles.primaryButton, !canRefresh || busy ? styles.buttonDisabled : null]}
       >
         <Text style={styles.primaryButtonLabel}>
-          {busy ? 'Loading review queue...' : 'Refresh review queue'}
+          {busy ? 'Carregando fila de revisao...' : 'Atualizar fila de revisao'}
         </Text>
       </Pressable>
 
@@ -4124,7 +4213,7 @@ function SupervisorReviewPanel({
               onPress={() => onOpenReport(item.reportId)}
               style={[styles.secondaryButton, !canRefresh || busy ? styles.buttonDisabled : null]}
             >
-              <Text style={styles.secondaryButtonLabel}>Open report detail</Text>
+              <Text style={styles.secondaryButtonLabel}>Abrir detalhe do relatorio</Text>
             </Pressable>
           </View>
         ))
@@ -4186,7 +4275,7 @@ function SupervisorReviewDetailPanel({
       <View style={styles.metricGrid}>
         <MetricCard
           label="Official actions"
-          value={session?.reviewActionsAvailable ? 'Connected' : 'Unavailable'}
+          value={session?.reviewActionsAvailable ? 'Online' : 'Indisponivel'}
         />
         <MetricCard label="Evidence" value={report.evidenceStatus.state} />
       </View>
@@ -4285,7 +4374,7 @@ function SupervisorReviewDetailPanel({
         >
           <Text style={styles.primaryButtonLabel}>
             {busy
-              ? 'Submitting...'
+              ? 'Enviando...'
               : isManagerReview
               ? 'Approve escalated case'
               : 'Approve standard case'}
@@ -4300,7 +4389,7 @@ function SupervisorReviewDetailPanel({
             !canAct || busy || !returnCommentReady ? styles.buttonDisabled : null,
           ]}
         >
-          <Text style={styles.secondaryButtonLabel}>Return with comment</Text>
+          <Text style={styles.secondaryButtonLabel}>Devolver com comentario</Text>
         </Pressable>
       </View>
       {canEscalate ? (
@@ -4462,7 +4551,7 @@ function ExecutionReportDraftPanel({
       </View>
 
       <View style={styles.metricCard}>
-        <Text style={styles.metricLabel}>Sync detail</Text>
+        <Text style={styles.metricLabel}>Detalhe da sincronizacao</Text>
         <SyncStateBadge label={syncBadge.label} tone={syncBadge.tone} />
         <Text style={styles.helperText}>{syncBadge.detail}</Text>
         {syncDetail ? (
@@ -4494,7 +4583,7 @@ function ExecutionReportDraftPanel({
           ]}
         >
           <Text style={styles.secondaryButtonLabel}>
-            {syncBusy ? 'Refreshing status...' : 'Refresh server status'}
+            {syncBusy ? 'Atualizando status...' : 'Atualizar status do servidor'}
           </Text>
         </Pressable>
       </View>
@@ -4604,7 +4693,7 @@ function ExecutionReportDraftPanel({
             ]}
           >
             <Text style={styles.metricLabel}>
-              {item.severity === 'submit-block' ? 'Submit-blocking risk' : 'Visible risk'}
+              {item.severity === 'submit-block' ? 'Risco que bloqueia envio' : 'Risco visivel'}
             </Text>
             <Text
               style={[
@@ -4650,7 +4739,7 @@ function ExecutionReportDraftPanel({
         onPress={onSaveReportDraft}
         style={[styles.primaryButton, !editable ? styles.buttonDisabled : null]}
       >
-        <Text style={styles.primaryButtonLabel}>Save draft report review</Text>
+        <Text style={styles.primaryButtonLabel}>Salvar revisao do rascunho</Text>
       </Pressable>
 
       <Pressable
@@ -4659,7 +4748,7 @@ function ExecutionReportDraftPanel({
         onPress={onSubmitReport}
         style={[styles.secondaryButton, !canSubmit ? styles.buttonDisabled : null]}
       >
-        <Text style={styles.secondaryButtonLabel}>Submit locally for sync</Text>
+        <Text style={styles.secondaryButtonLabel}>Enviar localmente para sincronizar</Text>
       </Pressable>
     </View>
   );
@@ -4734,7 +4823,7 @@ function ExecutionGuidancePanel({
           guidance.submitReadiness === 'blocked' ? styles.missingMetricCard : null,
         ]}
       >
-        <Text style={styles.metricLabel}>Submit readiness hooks</Text>
+        <Text style={styles.metricLabel}>Pendencias antes do envio</Text>
         <Text
           style={[
             styles.metricValue,
@@ -4742,7 +4831,7 @@ function ExecutionGuidancePanel({
           ]}
         >
           {guidance.submitReadiness === 'blocked'
-            ? 'Submit-blocking hooks are still active'
+            ? 'Existem riscos que bloqueiam o envio'
             : 'No submit-blocking hooks are active'}
         </Text>
         <Text style={styles.helperText}>
@@ -4752,7 +4841,7 @@ function ExecutionGuidancePanel({
         </Text>
       </View>
 
-      <Text style={styles.sectionTitle}>Visible risks and justifications</Text>
+      <Text style={styles.sectionTitle}>Riscos visiveis e justificativas</Text>
       {guidance.riskItems.length > 0 ? (
         guidance.riskItems.map((item) => (
           <ExecutionRiskItemCard
@@ -4841,7 +4930,7 @@ function ExecutionGuidancePanel({
         onPress={onSaveEvidence}
         style={[styles.primaryButton, !editable ? styles.buttonDisabled : null]}
       >
-        <Text style={styles.primaryButtonLabel}>Save notes, checklist, and justifications</Text>
+        <Text style={styles.primaryButtonLabel}>Salvar notas, checklist e justificativas</Text>
       </Pressable>
 
       <Text style={styles.sectionTitle}>Checklist steps</Text>
@@ -5014,7 +5103,7 @@ function ExecutionRiskItemCard({
       ]}
     >
       <Text style={styles.metricLabel}>
-        {item.severity === 'submit-block' ? 'Submit-blocking risk' : 'Visible risk'}
+        {item.severity === 'submit-block' ? 'Risco que bloqueia envio' : 'Risco visivel'}
       </Text>
       <Text
         style={[
@@ -5378,7 +5467,7 @@ function toChecklistOutcomeLabel(value: SharedExecutionChecklistOutcome) {
     case 'skipped':
       return 'Skipped';
     default:
-      return 'Pending';
+      return 'Pendente';
   }
 }
 

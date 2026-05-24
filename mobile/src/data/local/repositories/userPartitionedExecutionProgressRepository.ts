@@ -62,6 +62,28 @@ export class UserPartitionedExecutionProgressRepository {
     );
   }
 
+  // Story 11.3 (issue #1): per-tuple delete for the returned-report
+  // reset path so a returned (tag, template) goes back to "no progress"
+  // without affecting siblings in the same package.
+  async deleteForTagTemplate(
+    workPackageId: string,
+    tagId: string,
+    templateId: string,
+    templateVersion: string,
+  ): Promise<void> {
+    await this.database.runAsync(
+      `
+        DELETE FROM user_partitioned_execution_progress
+        WHERE owner_user_id = ?
+          AND work_package_id = ?
+          AND tag_id = ?
+          AND template_id = ?
+          AND template_version = ?;
+      `,
+      [this.ownerUserId, workPackageId, tagId, templateId, templateVersion],
+    );
+  }
+
   async saveProgress(record: StoredExecutionProgressRecord): Promise<void> {
     await this.database.runAsync(
       `

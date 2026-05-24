@@ -131,6 +131,17 @@ export class EvidenceUploadOrchestrator {
       invalidationReason,
       updatedAt: status.acceptedAt || this.now().toISOString(),
     });
+    // Story 11.3 (issue #1): when the report flips to a returned state,
+    // purge the local execution rows for this (tag, template) tuple so
+    // the technician starts from scratch on re-open. The draft record
+    // itself stays (it carries `invalidated:true`, the supervisor's
+    // return comment and the approval history as context), but the
+    // calculation result, evidence step rows, progress pointer and the
+    // per-tag photo metadata are all wiped. The mobile shell rehydrates
+    // from empty stores on the next loadShell call.
+    if (invalidated) {
+      await purgeLocalExecutionStateForTuple(store, shell);
+    }
     // Story 8.9 D-01: return the AI diagnosis projection so TagWiseApp can
     // refresh its in-memory state. AI flows back via the same status fetch.
     return status.aiDiagnosis;
@@ -481,6 +492,56 @@ async function loadPhotoSubmissionAttachments(
   }
 
   return attachments;
+}
+
+// Story 11.3 (issue #1): clear every local execution-state row for the
+// returned (workPackageId, tagId, templateId, templateVersion) tuple so
+// the next loadShell rehydrates an "empty" shell as if the test was
+// never run. The draft itself is preserved upstream (it carries the
+// supervisor's return comment + the approval history). Per-tag photo
+// metadata is wiped via the businessObjectId 'tag-report:{wp}:{tag}'
+// pattern so the supervisor's previously-attached evidence does not
+// linger on the re-execution screen.
+async function purgeLocalExecutionStateForTuple(
+  store: ReturnType<UserPartitionedLocalStoreFactory['forUser']>,
+  shell: SharedExecutionShell,
+): Promise<void> {
+  const { workPackageId, tagId, template } = shell;
+  await Promise.all([
+    store.executionCalculations.deleteForTagTemplate(
+      workPackageId,
+      tagId,
+      template.id,
+      template.version,
+    ),
+    store.executionEvidence.deleteForTagTemplate(
+      workPackageId,
+      tagId,
+      template.id,
+      template.version,
+    ),
+    store.executionProgress.deleteForTagTemplate(
+      workPackageId,
+      tagId,
+      template.id,
+      template.version,
+    ),
+  ]);
+
+  // Photo metadata is per-tag (not per-template); we wipe every
+  // attachment tied to this tag's report so the re-execution screen
+  // starts with zero photos. The technician re-takes whatever the
+  // supervisor's comment asks for.
+  const businessObjectId = `tag-report:${workPackageId}:${tagId}`;
+  const photoRecords = await store.evidenceMetadata.listEvidenceByBusinessObject({
+    businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+    businessObjectId,
+  });
+  await Promise.all(
+    photoRecords.map((record) =>
+      store.evidenceMetadata.deleteEvidenceMetadata(record.evidenceId),
+    ),
+  );
 }
 
 async function updateReportDraftRecord(

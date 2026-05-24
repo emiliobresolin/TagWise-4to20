@@ -85,6 +85,12 @@ export class SupervisorReviewRepository {
   }
 
   async listSupervisorQueue(supervisorUserId: string): Promise<ReviewableReportRecord[]> {
+    // Story 10.1: include all lifecycle states the supervisor has touched
+    // (Pending review, Returned, Escalated, Approved) so the mobile grouping
+    // can render the "Pendentes / Devolvidos / Escalados / Aprovados" tabs.
+    // Previously this only returned 'Submitted - Pending Supervisor Review'
+    // which left the "Devolvidos" tab empty even after the supervisor
+    // returned reports.
     const result = await this.database.query<ReviewableReportRow>(
       `
         SELECT
@@ -106,7 +112,12 @@ export class SupervisorReviewRepository {
           ON route.work_package_id = report.work_package_id
         WHERE route.supervisor_user_id = $1
           AND route.route_state = 'active'
-          AND report.lifecycle_state = 'Submitted - Pending Supervisor Review'
+          AND report.lifecycle_state IN (
+            'Submitted - Pending Supervisor Review',
+            'Returned by Supervisor',
+            'Escalated - Pending Manager Review',
+            'Approved'
+          )
         ORDER BY report.accepted_at ASC, report.report_id ASC;
       `,
       [supervisorUserId],
@@ -141,7 +152,12 @@ export class SupervisorReviewRepository {
         WHERE route.supervisor_user_id = $1
           AND route.route_state = 'active'
           AND report.report_id = $2
-          AND report.lifecycle_state = 'Submitted - Pending Supervisor Review'
+          AND report.lifecycle_state IN (
+            'Submitted - Pending Supervisor Review',
+            'Returned by Supervisor',
+            'Escalated - Pending Manager Review',
+            'Approved'
+          )
         LIMIT 1;
       `,
       [supervisorUserId, reportId],

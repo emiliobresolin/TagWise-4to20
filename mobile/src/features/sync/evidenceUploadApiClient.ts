@@ -50,6 +50,20 @@ export interface EvidenceBinaryUploadAuthorization {
   expiresAt: string;
 }
 
+// Story 10.2 (issue #4): supervisor + manager need pre-signed download URLs
+// for finalized photo evidence so the review detail screen can render the
+// images that the technician attached.
+export interface EvidenceBinaryAccessAuthorization {
+  contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
+  serverEvidenceId: string;
+  reportId: string;
+  evidenceId: string;
+  downloadUrl: string;
+  downloadMethod: 'GET';
+  requiredHeaders: Record<string, string>;
+  expiresAt: string;
+}
+
 export interface EvidenceBinaryFinalizationResponse {
   contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
   serverEvidenceId: string;
@@ -187,6 +201,12 @@ export interface EvidenceUploadApiClient {
     reportId: string;
     evidenceId: string;
   }): Promise<EvidenceBinaryUploadAuthorization>;
+  // Story 10.2 (issue #4): authorize the supervisor / manager to fetch a
+  // finalized photo so the review detail screen can render the image.
+  authorizeEvidenceBinaryAccess(input: {
+    contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
+    serverEvidenceId: string;
+  }): Promise<EvidenceBinaryAccessAuthorization>;
   finalizeEvidenceBinaryUpload(input: {
     contractVersion: typeof EVIDENCE_SYNC_API_CONTRACT_VERSION;
     serverEvidenceId: string;
@@ -243,6 +263,15 @@ export function createFetchEvidenceUploadApiClient(options: {
     authorizeEvidenceBinaryUpload(request) {
       return postJson<EvidenceBinaryUploadAuthorization>(
         buildUrl(options.baseUrl, '/sync/evidence-upload-authorizations'),
+        request,
+        options.secureStorage,
+        fetchImplementation,
+        timeoutMs,
+      );
+    },
+    authorizeEvidenceBinaryAccess(request) {
+      return postJson<EvidenceBinaryAccessAuthorization>(
+        buildUrl(options.baseUrl, '/sync/evidence-access-authorizations'),
         request,
         options.secureStorage,
         fetchImplementation,

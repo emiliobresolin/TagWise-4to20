@@ -27,7 +27,7 @@ function buildNumericCaptureFields(
   ];
 }
 
-function buildTemplate(definition: {
+export function buildTemplate(definition: {
   id: string;
   instrumentFamily: string;
   testPattern: string;
@@ -91,7 +91,7 @@ function buildGuidanceItem(
   };
 }
 
-function buildPressureChecklistSteps() {
+export function buildPressureChecklistSteps() {
   return [
     buildGuidanceItem(
       'pressure-path-check',
@@ -110,7 +110,7 @@ function buildPressureChecklistSteps() {
   ];
 }
 
-function buildPressureDiagnosisPrompts() {
+export function buildPressureDiagnosisPrompts() {
   return [
     buildGuidanceItem(
       'pressure-diagnosis-loop',
@@ -129,7 +129,7 @@ function buildPressureDiagnosisPrompts() {
   ];
 }
 
-function buildTemperatureChecklistSteps() {
+export function buildTemperatureChecklistSteps() {
   return [
     buildGuidanceItem(
       'temperature-stability-check',
@@ -148,7 +148,7 @@ function buildTemperatureChecklistSteps() {
   ];
 }
 
-function buildTemperatureDiagnosisPrompts() {
+export function buildTemperatureDiagnosisPrompts() {
   return [
     buildGuidanceItem(
       'temperature-diagnosis-noise',
@@ -167,7 +167,7 @@ function buildTemperatureDiagnosisPrompts() {
   ];
 }
 
-function buildLevelChecklistSteps() {
+export function buildLevelChecklistSteps() {
   return [
     buildGuidanceItem(
       'level-reference-check',
@@ -186,7 +186,7 @@ function buildLevelChecklistSteps() {
   ];
 }
 
-function buildLevelDiagnosisPrompts() {
+export function buildLevelDiagnosisPrompts() {
   return [
     buildGuidanceItem(
       'level-diagnosis-high-end',
@@ -205,7 +205,7 @@ function buildLevelDiagnosisPrompts() {
   ];
 }
 
-function buildLoopChecklistSteps() {
+export function buildLoopChecklistSteps() {
   return [
     buildGuidanceItem(
       'loop-supply-check',
@@ -224,7 +224,7 @@ function buildLoopChecklistSteps() {
   ];
 }
 
-function buildLoopDiagnosisPrompts() {
+export function buildLoopDiagnosisPrompts() {
   return [
     buildGuidanceItem(
       'loop-diagnosis-mid-range',
@@ -243,7 +243,7 @@ function buildLoopDiagnosisPrompts() {
   ];
 }
 
-function buildValveChecklistSteps() {
+export function buildValveChecklistSteps() {
   return [
     buildGuidanceItem(
       'valve-path-check',
@@ -262,7 +262,7 @@ function buildValveChecklistSteps() {
   ];
 }
 
-function buildValveDiagnosisPrompts() {
+export function buildValveDiagnosisPrompts() {
   return [
     buildGuidanceItem(
       'valve-diagnosis-travel-lag',
@@ -720,6 +720,23 @@ function buildPackageTwoPriorReadings(): AssignedWorkPackagePriorTestReadingSnap
 export function buildSeedAssignedWorkPackages(
   technicianUserId: string,
 ): SeededAssignedWorkPackageRecord[] {
+  // Story 11.4 (issues #3A / #4A): make seed timestamps relative to the
+  // current server boot so the 24h-staleness check in the mobile shell
+  // (localTagContextService + history risk item) does not fire for demo
+  // packages. Previously the timestamps were hard-coded to 2026-04-19,
+  // which is older than 24h on every boot after that day. The
+  // technician then saw "Desatualizado" / "Historico local desatualizado"
+  // immediately after a fresh download, which contradicts the demo
+  // intent.
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const startOfToday = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 8, 0, 0),
+  ).toISOString();
+  const endOfToday = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 17, 0, 0),
+  ).toISOString();
+
   const packageOne = {
     id: 'wp-seed-1001',
     sourceReference: 'seed-cmms-1001',
@@ -727,20 +744,14 @@ export function buildSeedAssignedWorkPackages(
     assignedTeam: 'Instrumentation Alpha',
     priority: 'high' as const,
     status: 'assigned' as const,
-    // Story 8.13: bump packageVersion so the technician's next refresh
-    // pulls the new templates (renamed AI-330 entries). The
-    // snapshotContractVersion is the DTO/template-payload contract
-    // version and is kept stable so server-side report validation
-    // continues to accept submissions produced against the same
-    // template-payload shape.
-    packageVersion: 2,
+    packageVersion: 4,
     snapshotContractVersion: '2026-04-v1',
     tagCount: 3,
     dueWindow: {
-      startsAt: '2026-04-20T08:00:00.000Z',
-      endsAt: '2026-04-20T17:00:00.000Z',
+      startsAt: startOfToday,
+      endsAt: endOfToday,
     },
-    updatedAt: '2026-04-19T10:00:00.000Z',
+    updatedAt: nowIso,
   };
 
   const packageTwo = {
@@ -750,20 +761,14 @@ export function buildSeedAssignedWorkPackages(
     assignedTeam: 'Instrumentation Alpha',
     priority: 'routine' as const,
     status: 'assigned' as const,
-    // Story 8.13: bump packageVersion so the technician's next refresh
-    // pulls the new templates (renamed AI-330 entries). The
-    // snapshotContractVersion is the DTO/template-payload contract
-    // version and is kept stable so server-side report validation
-    // continues to accept submissions produced against the same
-    // template-payload shape.
-    packageVersion: 2,
+    packageVersion: 4,
     snapshotContractVersion: '2026-04-v1',
     tagCount: 2,
     dueWindow: {
-      startsAt: '2026-04-21T11:00:00.000Z',
-      endsAt: '2026-04-21T20:00:00.000Z',
+      startsAt: startOfToday,
+      endsAt: endOfToday,
     },
-    updatedAt: '2026-04-19T11:00:00.000Z',
+    updatedAt: nowIso,
   };
 
   return [
@@ -772,7 +777,7 @@ export function buildSeedAssignedWorkPackages(
       summary: packageOne,
       snapshot: {
         contractVersion: packageOne.snapshotContractVersion,
-        generatedAt: '2026-04-19T10:00:00.000Z',
+        generatedAt: nowIso,
         summary: packageOne,
         tags: [
           {
@@ -809,10 +814,14 @@ export function buildSeedAssignedWorkPackages(
             range: { min: 0, max: 250, unit: 'C' },
             tolerance: '+/-0.3C',
             criticality: 'medium',
+            // Story 10.3 (issue #3): trimmed to 3 templates per instrument
+            // (Comparacao no campo, Injecao via calibrador para SCADA,
+            // Teste de loop). Dropped tpl-temperature-range-check because
+            // it duplicated the expected-vs-measured single-point pattern
+            // that tpl-temperature-calibration-verification already covers.
             templateIds: [
-              'tpl-temperature-input-simulation',
               'tpl-temperature-calibration-verification',
-              'tpl-temperature-range-check',
+              'tpl-temperature-input-simulation',
               'tpl-temperature-loop-range',
             ],
             guidanceReferenceIds: ['guide-rtd-input-check'],
@@ -831,9 +840,14 @@ export function buildSeedAssignedWorkPackages(
             range: { min: 0, max: 100, unit: '%' },
             tolerance: '+/-1% span',
             criticality: 'high',
+            // Story 10.3 (issue #3): trimmed to 2 templates for the 4-20 mA
+            // loop family because the family IS itself the loop (so there
+            // is no separate "Teste de loop" entry). Dropped
+            // tpl-loop-signal-validation because it duplicated the
+            // expected-vs-measured single-point pattern that the other two
+            // already provide.
             templateIds: [
               'tpl-loop-integrity-check',
-              'tpl-loop-signal-validation',
               'tpl-loop-current-vs-process',
             ],
             guidanceReferenceIds: ['guide-loop-integrity-check'],
@@ -845,7 +859,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-pressure-as-found',
             instrumentFamily: 'pressure transmitter',
             testPattern: 'as-found calibration check',
-            title: 'Pressure transmitter as-found calibration',
+            title: 'Comparacao no campo',
             calculationMode: 'point deviation by span',
             acceptanceStyle: 'within tolerance by point and overall span',
             captureSummary:
@@ -862,7 +876,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-pressure-as-left',
             instrumentFamily: 'pressure transmitter',
             testPattern: 'as-left calibration check',
-            title: 'Pressure transmitter as-left calibration',
+            title: 'Injecao via calibrador para SCADA',
             calculationMode: 'point deviation by span',
             acceptanceStyle: 'within tolerance by point and overall span',
             captureSummary:
@@ -879,7 +893,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-pressure-loop-range',
             instrumentFamily: 'pressure transmitter',
             testPattern: 'loop verification against expected range',
-            title: 'Pressure loop verification',
+            title: 'Teste de loop',
             calculationMode: 'expected range vs measured loop output',
             acceptanceStyle: 'within tolerance across expected range checkpoints',
             captureSummary:
@@ -896,7 +910,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-temperature-input-simulation',
             instrumentFamily: 'temperature transmitter / RTD input',
             testPattern: 'input simulation check',
-            title: 'RTD input simulation check',
+            title: 'Injecao via calibrador para SCADA',
             calculationMode: 'simulated input vs reported output',
             acceptanceStyle: 'point deviation across expected RTD inputs',
             captureSummary:
@@ -913,7 +927,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-temperature-calibration-verification',
             instrumentFamily: 'temperature transmitter / RTD input',
             testPattern: 'calibration verification',
-            title: 'Temperature calibration verification',
+            title: 'Comparacao no campo',
             calculationMode: 'expected temperature vs measured output',
             acceptanceStyle: 'tolerance-based pass/fail with clear deviation display',
             captureSummary:
@@ -950,7 +964,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-temperature-loop-range',
             instrumentFamily: 'temperature transmitter / RTD input',
             testPattern: 'loop verification across configured range',
-            title: 'Temperature loop verification',
+            title: 'Teste de loop',
             calculationMode: 'expected output vs measured output across loop range',
             acceptanceStyle: 'within tolerance at each loop checkpoint',
             captureSummary:
@@ -973,7 +987,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-loop-integrity-check',
             instrumentFamily: 'analog 4-20 mA loop',
             testPattern: 'continuity verification at zero point',
-            title: 'Analog continuity check',
+            title: 'Continuidade no campo',
             calculationMode: 'expected current vs measured current at zero point',
             acceptanceStyle: 'within tolerance at the zero checkpoint',
             captureSummary:
@@ -1022,7 +1036,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-loop-current-vs-process',
             instrumentFamily: 'analog 4-20 mA loop',
             testPattern: 'expected current versus process value verification',
-            title: 'Analog loop expected current verification',
+            title: 'Injecao via calibrador para SCADA',
             calculationMode: 'expected current vs measured current',
             acceptanceStyle: 'deviation and tolerance outcome against the configured conversion basis',
             captureSummary:
@@ -1116,7 +1130,7 @@ export function buildSeedAssignedWorkPackages(
       summary: packageTwo,
       snapshot: {
         contractVersion: packageTwo.snapshotContractVersion,
-        generatedAt: '2026-04-19T11:00:00.000Z',
+        generatedAt: nowIso,
         summary: packageTwo,
         tags: [
           {
@@ -1132,8 +1146,11 @@ export function buildSeedAssignedWorkPackages(
             range: { min: 0, max: 8, unit: 'm' },
             tolerance: '+/-0.2% calibrated span',
             criticality: 'high',
+            // Story 10.3 (issue #3): trimmed to 3 templates per instrument.
+            // Dropped tpl-level-range-check because it duplicated the
+            // expected-vs-measured single-point pattern that
+            // tpl-level-basic-calibration already covers.
             templateIds: [
-              'tpl-level-range-check',
               'tpl-level-basic-calibration',
               'tpl-level-output-verification',
               'tpl-level-loop-range',
@@ -1184,7 +1201,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-level-basic-calibration',
             instrumentFamily: 'level transmitter',
             testPattern: 'basic calibration check',
-            title: 'Level transmitter basic calibration',
+            title: 'Comparacao no campo',
             calculationMode: 'expected level vs measured output',
             acceptanceStyle: 'tolerance/pass-fail classification against configured operating range',
             captureSummary:
@@ -1201,7 +1218,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-level-output-verification',
             instrumentFamily: 'level transmitter',
             testPattern: 'expected-versus-measured output verification',
-            title: 'Level transmitter expected-versus-measured verification',
+            title: 'Injecao via calibrador para SCADA',
             calculationMode: 'expected value vs measured output',
             acceptanceStyle: 'tolerance/pass-fail classification against configured operating range',
             captureSummary:
@@ -1221,7 +1238,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-level-loop-range',
             instrumentFamily: 'level transmitter',
             testPattern: 'loop verification across configured range',
-            title: 'Level loop verification',
+            title: 'Teste de loop',
             calculationMode: 'expected level vs measured output across loop range',
             acceptanceStyle: 'within tolerance at each loop checkpoint',
             captureSummary:
@@ -1238,7 +1255,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-valve-stroke-test',
             instrumentFamily: 'control valve with positioner',
             testPattern: 'stroke test',
-            title: 'Valve stroke test',
+            title: 'Teste de stroke',
             calculationMode: 'commanded position vs observed travel',
             acceptanceStyle: 'pass/fail classification at commanded movement checkpoints',
             captureSummary:
@@ -1260,7 +1277,7 @@ export function buildSeedAssignedWorkPackages(
             id: 'tpl-valve-position-feedback-verification',
             instrumentFamily: 'control valve with positioner',
             testPattern: 'position feedback verification',
-            title: 'Valve position feedback verification',
+            title: 'Feedback do posicionador',
             calculationMode: 'commanded position vs observed travel',
             acceptanceStyle: 'pass/fail classification at commanded feedback checkpoints',
             captureSummary:

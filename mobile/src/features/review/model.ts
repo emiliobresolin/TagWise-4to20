@@ -40,6 +40,13 @@ export interface SupervisorReviewPhotoAttachment {
    * reports do not carry this field.
    */
   technicianNote?: string | null;
+  /**
+   * Story 10.2 (issue #4): pre-signed download URL for the finalized photo
+   * binary so the supervisor / manager review detail screen can render the
+   * image inline. Null when the photo has not been finalized yet or when
+   * the access authorization could not be obtained (offline / forbidden).
+   */
+  downloadUrl?: string | null;
 }
 
 export interface SupervisorReviewEvidenceStatus {

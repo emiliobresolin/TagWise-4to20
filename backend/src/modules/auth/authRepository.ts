@@ -88,6 +88,32 @@ export class AuthRepository {
     return mapAuthUser(result.rows[0]);
   }
 
+  async listByRole(role: UserRole): Promise<AuthenticatedUser[]> {
+    const result = await this.database.query<AuthUserRow>(
+      `
+        SELECT
+          id,
+          email,
+          display_name,
+          role,
+          password_hash,
+          password_salt,
+          session_version
+        FROM auth_users
+        WHERE role = $1
+        ORDER BY display_name ASC, email ASC;
+      `,
+      [role],
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      email: row.email,
+      displayName: row.display_name,
+      role: row.role,
+    }));
+  }
+
   async findById(id: string): Promise<StoredAuthUser | null> {
     const result = await this.database.query<AuthUserRow>(
       `

@@ -761,12 +761,13 @@ describe('SharedExecutionShellService', () => {
         riskItems: expect.arrayContaining([
           expect.objectContaining({
             id: 'expected-evidence:supporting-photo',
-            title: 'Evidencia esperada ausente: supporting photo',
+            // Story 11.7: title reworded for actionability.
+            title: 'Evidencia esperada: supporting photo',
             severity: 'warning',
           }),
           expect.objectContaining({
             id: 'minimum-evidence:readings',
-            title: 'Evidencia minima ausente: readings',
+            title: 'Evidencia minima: readings',
             severity: 'warning',
           }),
         ]),
@@ -1682,7 +1683,11 @@ describe('SharedExecutionShellService', () => {
       riskItems: expect.arrayContaining([
         expect.objectContaining({
           id: 'expected-evidence:supporting-photo',
-          title: 'Evidencia esperada ausente: supporting photo',
+          // Story 11.7: reworded for actionability — used to say
+          // "Evidencia esperada ausente: supporting photo" with a generic
+          // detail; now leads with the label and routes the technician to
+          // the right input field.
+          title: 'Evidencia esperada: supporting photo',
           severity: 'warning',
         }),
       ]),

@@ -1488,6 +1488,13 @@ function buildRiskItems(
     }
   }
 
+  // Story 11.7 (residual #4B): make the "evidência ausente" warnings
+  // actionable. The previous wording said "Evidencia esperada ausente:
+  // {label}" which left the technician guessing what to provide. The
+  // helper formatEvidenceGuidance() turns a label into a specific
+  // instruction ("Adicione uma foto de apoio." / "Escreva uma observacao
+  // no campo Observacoes." / etc.) so the user knows exactly which
+  // input to fill on the report screen.
   for (const label of resolveMissingEvidenceLabels(
     context.template.expectedEvidence,
     context.evidence,
@@ -1496,12 +1503,11 @@ function buildRiskItems(
       id: buildEvidenceRiskId('expected-evidence', label),
       reasonType: 'missing-expected-evidence',
       severity: 'warning',
-      title: `Evidencia esperada ausente: ${label}`,
-      detail:
-        'O template marca esta evidencia como esperada para um pacote completo. O trabalho continua, mas a lacuna fica visivel.',
+      title: `Evidencia esperada: ${label}`,
+      detail: formatEvidenceGuidance(label, 'expected'),
       justificationRequired: true,
       justificationPrompt:
-        'Explique por que esta evidencia esperada nao foi capturada em campo.',
+        'Se nao for possivel capturar, explique por que esta evidencia ficou pendente.',
       justificationText: '',
     });
   }
@@ -1521,9 +1527,8 @@ function buildRiskItems(
       id: buildEvidenceRiskId('minimum-evidence', label),
       reasonType: 'missing-minimum-evidence',
       severity: 'warning',
-      title: `Evidencia minima ausente: ${label}`,
-      detail:
-        'Esta evidencia faz parte do minimo do template. Recomendado capturar antes do envio; o envio nao e bloqueado.',
+      title: `Evidencia minima: ${label}`,
+      detail: formatEvidenceGuidance(label, 'minimum'),
       justificationRequired: false,
       justificationPrompt: null,
       justificationText: '',
@@ -1663,7 +1668,20 @@ function isEvidenceKindSatisfied(
 ): boolean {
   switch (evidenceKind) {
     case 'structured-readings':
-      return evidence.calculationEvidenceUpdatedAt !== null;
+      // Story 11.1 (issue #6 + part of #4B): a loop-pattern template
+      // (valve stroke, pressure/temperature/level loop sweep) stores its
+      // structured points in `loopReadings` / `loopUpdatedAt` rather than
+      // in `calculationEvidenceUpdatedAt`. Accept either source so the
+      // server's minimumSubmissionEvidence validation (e.g.
+      // 'commanded points', 'observed travel responses') passes for
+      // loop-style tests; previously valve submissions silently failed
+      // with "Sync Error" because the references all came back
+      // satisfied=false.
+      return (
+        evidence.calculationEvidenceUpdatedAt !== null ||
+        evidence.loopUpdatedAt !== null ||
+        evidence.loopReadings.length > 0
+      );
     case 'observation-notes':
       return evidence.observationNotes.trim().length > 0;
     case 'photo-evidence':
@@ -1673,6 +1691,37 @@ function isEvidenceKindSatisfied(
 
 function normalizeEvidenceRequirementLabel(label: string): string {
   return label.trim().toLowerCase();
+}
+
+// Story 11.7 (residual #4B): produce an actionable PT-BR message that
+// tells the technician exactly where to provide the missing evidence
+// instead of the generic "Evidencia esperada ausente". Classified by
+// evidence kind so the wording always matches the input the technician
+// must fill in on the report screen.
+function formatEvidenceGuidance(
+  label: string,
+  level: 'minimum' | 'expected',
+): string {
+  const kind = resolveEvidenceRequirementKind(label);
+  const isMinimum = level === 'minimum';
+  switch (kind) {
+    case 'structured-readings':
+      return isMinimum
+        ? 'Salve a medicao desta etapa antes do envio (tela do teste).'
+        : 'Salve a medicao desta etapa para um pacote mais completo.';
+    case 'observation-notes':
+      return isMinimum
+        ? 'Escreva uma observacao tecnica no campo "Observacoes" do relatorio antes do envio.'
+        : 'Adicione uma observacao tecnica no campo "Observacoes" do relatorio.';
+    case 'photo-evidence':
+      return isMinimum
+        ? 'Anexe ao menos uma foto de apoio antes do envio.'
+        : 'Anexe ao menos uma foto de apoio para enriquecer o pacote.';
+    default:
+      return isMinimum
+        ? `Capture "${label}" antes do envio.`
+        : `Capture "${label}" para um pacote mais completo.`;
+  }
 }
 
 function buildEvidenceRiskId(
@@ -2058,10 +2107,17 @@ function buildEvidenceReferenceDetail(
   evidence: SharedExecutionEvidenceState,
 ): string {
   switch (evidenceKind) {
-    case 'structured-readings':
-      return evidence.calculationEvidenceUpdatedAt
-        ? `Structured readings saved ${new Date(evidence.calculationEvidenceUpdatedAt).toLocaleString()}.`
-        : 'Structured readings have not been saved yet.';
+    case 'structured-readings': {
+      // Story 11.1: loop-pattern templates persist their readings in
+      // loopUpdatedAt; surface whichever timestamp is newer so the
+      // technician sees "saved" instead of "not saved yet" right after a
+      // loop / stroke test save.
+      const savedAt =
+        evidence.calculationEvidenceUpdatedAt ?? evidence.loopUpdatedAt ?? null;
+      return savedAt
+        ? `Leituras estruturadas salvas em ${new Date(savedAt).toLocaleString()}.`
+        : 'Leituras estruturadas ainda nao foram salvas.';
+    }
     case 'observation-notes':
       return evidence.observationNotes.trim().length > 0
         ? 'Observation notes are captured locally.'

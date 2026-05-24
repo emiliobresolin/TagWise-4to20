@@ -72,6 +72,11 @@ export interface VisualReportProjection {
   templateTitle: string;
   lifecycleStateLabel: string;
   reportStateLabel: string;
+  // Story 11.6 (issue #5): raw report submission state so the report
+  // screen can hide the AI diagnosis button while the report is still
+  // a 'technician-owned-draft' (the AI endpoint 404s for unsubmitted
+  // reports because there is no report_submission_records row yet).
+  reportSubmissionState: SharedExecutionShell['report']['state'] | null;
   submitReadinessLabel: string;
   syncBadge: SyncStateBadgeModel;
   syncDetailRows: VisualReportSummaryRow[];
@@ -124,6 +129,7 @@ export function buildVisualReportProjection(
       templateTitle: 'Nenhum teste carregado',
       lifecycleStateLabel: 'Indisponivel',
       reportStateLabel: 'Indisponivel',
+      reportSubmissionState: null,
       submitReadinessLabel: 'Indisponivel',
       syncBadge: buildSyncStateBadgeModel('local-only'),
       syncDetailRows: [],
@@ -177,6 +183,7 @@ export function buildVisualReportProjection(
     templateTitle: shell.template.title,
     lifecycleStateLabel: report.lifecycleState,
     reportStateLabel: toReportStateLabel(report.state),
+    reportSubmissionState: report.state,
     submitReadinessLabel: manualInstrument
       ? 'Relatorio manual fica local ate existir reconciliacao com backend.'
       : shell.guidance.submitReadiness === 'blocked'
