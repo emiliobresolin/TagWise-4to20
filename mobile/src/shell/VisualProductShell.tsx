@@ -1,6 +1,7 @@
 import { CameraView, type BarcodeScanningResult } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import type { AppLanguage } from '../i18n';
 import {
   Alert,
   BackHandler,
@@ -126,6 +127,36 @@ import type {
 } from '../features/work-packages/model';
 import type { ManualInstrumentInput } from '../features/work-packages/manualInstrumentModel';
 import type { LocalQrScanResult } from '../features/work-packages/localQrScanService';
+
+class ShellErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, backgroundColor: '#07101d', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <Text style={{ color: '#ef4444', fontSize: 18, fontWeight: '600', marginBottom: 12 }}>
+            Erro inesperado / Unexpected error
+          </Text>
+          <Text style={{ color: '#94a3b8', fontSize: 14, textAlign: 'center' }}>
+            {this.state.error?.message ?? 'Reinicie o aplicativo.'}
+          </Text>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type VisualRoute =
   | 'dashboard'
@@ -296,6 +327,13 @@ export interface VisualProductShellProps {
   // Optional so existing tests / harnesses that build a shell without the
   // authoring service still typecheck.
   onOpenSupervisorAuthoring?: () => void;
+  // i18n: current app language and language change handler.
+  appLanguage?: AppLanguage;
+  // NetInfo: null = unknown, true = online, false = offline.
+  networkOnline?: boolean | null;
+  onLanguageChange?: (language: AppLanguage) => void;
+  // Handler to start a new visit after a report is invalidated/returned.
+  onStartNewVisit?: () => void;
 }
 
 export function VisualProductShell({
@@ -373,6 +411,10 @@ export function VisualProductShell({
   onSupervisorReturnCommentChange,
   onSupervisorEscalationRationaleChange,
   onOpenSupervisorAuthoring,
+  appLanguage,
+  networkOnline,
+  onLanguageChange,
+  onStartNewVisit,
 }: VisualProductShellProps) {
   const scrollRef = useRef<ScrollView>(null);
   const [route, setRoute] = useState<VisualRoute>('dashboard');
@@ -905,8 +947,23 @@ export function VisualProductShell({
 
   if (!session && !demoShellEnabled) {
     return (
+      <ShellErrorBoundary>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style="light" />
+        {networkOnline === false && (
+          <View style={{
+            backgroundColor: '#b45309',
+            paddingVertical: 6,
+            paddingHorizontal: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+          }}>
+            <Text style={{ color: '#fef3c7', fontSize: 12, fontWeight: '600' }}>
+              📡 {appLanguage === 'en' ? 'Offline – changes will sync when connected' : 'Offline – as alterações sincronizarão quando conectado'}
+            </Text>
+          </View>
+        )}
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.flexOne}
@@ -922,16 +979,54 @@ export function VisualProductShell({
             onPasswordChange={onPasswordChange}
             onSignIn={onSignIn}
           />
+          {/* Language selector on login screen */}
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>
+              {appLanguage === 'en' ? 'Language:' : 'Idioma:'}
+            </Text>
+            {(['en', 'pt-BR'] as const).map((lang) => (
+              <Pressable
+                key={lang}
+                onPress={() => onLanguageChange?.(lang)}
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 4,
+                  backgroundColor: appLanguage === lang ? '#2563eb' : '#1e293b',
+                }}
+              >
+                <Text style={{ color: appLanguage === lang ? '#ffffff' : '#94a3b8', fontSize: 12 }}>
+                  {lang === 'en' ? 'EN' : 'PT-BR'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
         </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+      </ShellErrorBoundary>
     );
   }
 
   return (
+    <ShellErrorBoundary>
     <ShellNavigationContext.Provider value={{ goHome, popRoute }}>
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
+      {networkOnline === false && (
+        <View style={{
+          backgroundColor: '#b45309',
+          paddingVertical: 6,
+          paddingHorizontal: 16,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+        }}>
+          <Text style={{ color: '#fef3c7', fontSize: 12, fontWeight: '600' }}>
+            📡 {appLanguage === 'en' ? 'Offline – changes will sync when connected' : 'Offline – as alterações sincronizarão quando conectado'}
+          </Text>
+        </View>
+      )}
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.flexOne}
@@ -987,6 +1082,8 @@ export function VisualProductShell({
             qrManualPayload={qrManualPayload}
             qrScanResult={qrScanResult}
             qrScannerVisible={qrScannerVisible}
+            appLanguage={appLanguage}
+            onLanguageChange={onLanguageChange}
           />
         ) : route === 'manual-intake' ? (
           <ManualInstrumentScreen
@@ -1248,6 +1345,8 @@ export function VisualProductShell({
                 void onUpdatePhotoTechnicianNote(evidenceId, note)
               }
               onRequestExecutionAiDiagnosis={() => void onRequestExecutionAiDiagnosis()}
+              onStartNewVisit={onStartNewVisit}
+              appLanguage={appLanguage}
             />
           ) : (
             <DemoReportScreen
@@ -1286,6 +1385,7 @@ export function VisualProductShell({
       <MessageToast message={shellMessage} onDismiss={() => setShellMessage(null)} />
     </SafeAreaView>
     </ShellNavigationContext.Provider>
+    </ShellErrorBoundary>
   );
 }
 
@@ -1368,6 +1468,8 @@ function DashboardScreen({
   qrManualPayload,
   qrScanResult,
   qrScannerVisible,
+  appLanguage,
+  onLanguageChange,
 }: {
   activeFilter: VisualTagCategory | 'all';
   apiBaseUrl: string;
@@ -1413,6 +1515,8 @@ function DashboardScreen({
   qrManualPayload: string;
   qrScanResult: LocalQrScanResult | null;
   qrScannerVisible: boolean;
+  appLanguage?: AppLanguage;
+  onLanguageChange?: (language: AppLanguage) => void;
 }) {
   const navigation = useShellNavigation();
   return (
@@ -1421,6 +1525,28 @@ function DashboardScreen({
         <View>
           <TagWiseLogo large onPress={navigation?.goHome} />
           <Text style={styles.headerSubtitle}>Campo, calculo e relatorio por tag</Text>
+        </View>
+        {/* Language selector in dashboard header */}
+        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <Text style={{ color: '#94a3b8', fontSize: 12 }}>
+            {appLanguage === 'en' ? 'Language:' : 'Idioma:'}
+          </Text>
+          {(['en', 'pt-BR'] as const).map((lang) => (
+            <Pressable
+              key={lang}
+              onPress={() => onLanguageChange?.(lang)}
+              style={{
+                paddingHorizontal: 10,
+                paddingVertical: 4,
+                borderRadius: 4,
+                backgroundColor: appLanguage === lang ? '#2563eb' : '#1e293b',
+              }}
+            >
+              <Text style={{ color: appLanguage === lang ? '#ffffff' : '#94a3b8', fontSize: 12 }}>
+                {lang === 'en' ? 'EN' : 'PT-BR'}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       </View>
 
@@ -4332,6 +4458,8 @@ function ServiceReportScreen({
   onSubmitReport,
   onUpdatePhotoTechnicianNote,
   onRequestExecutionAiDiagnosis,
+  onStartNewVisit,
+  appLanguage,
 }: {
   report: VisualReportProjection;
   stages: VisualExecutionStage[];
@@ -4355,6 +4483,9 @@ function ServiceReportScreen({
   onUpdatePhotoTechnicianNote: (evidenceId: string, note: string | null) => void;
   // Story 8.9 D-01: technician manual AI request handler.
   onRequestExecutionAiDiagnosis: () => void;
+  // Handler to start a new visit after a report is invalidated/returned.
+  onStartNewVisit?: () => void;
+  appLanguage?: AppLanguage;
 }) {
   if (report.state !== 'available') {
     return (
@@ -4395,6 +4526,23 @@ function ServiceReportScreen({
             </Text>
           ) : null}
         </View>
+      ) : null}
+      {report.invalidated && onStartNewVisit ? (
+        <Pressable
+          onPress={() => onStartNewVisit()}
+          style={{
+            backgroundColor: '#2563eb',
+            borderRadius: 8,
+            paddingVertical: 12,
+            paddingHorizontal: 20,
+            marginTop: 16,
+            alignItems: 'center',
+          }}
+        >
+          <Text style={{ color: '#ffffff', fontSize: 15, fontWeight: '600' }}>
+            {appLanguage === 'en' ? '+ Start New Visit' : '+ Iniciar Nova Visita'}
+          </Text>
+        </Pressable>
       ) : null}
 
       <View style={styles.summaryCard}>

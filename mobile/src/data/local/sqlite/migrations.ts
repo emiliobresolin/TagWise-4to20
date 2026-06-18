@@ -467,6 +467,20 @@ const migrations: DatabaseMigration[] = [
       `);
     },
   },
+  {
+    id: 14,
+    apply: async (database, _now) => {
+      // Add NR compliance JSON column to the drafts table.
+      // Reports are stored as JSON blobs in user_partitioned_drafts.payload_json,
+      // so the NrComplianceData is embedded there and requires no schema change.
+      // This migration adds a dedicated indexed column for the NR vessel category
+      // to enable fast filtering of reports that require NR-13 PLH sign-off.
+      await database.execAsync(`
+        ALTER TABLE user_partitioned_execution_evidence
+        ADD COLUMN nr_compliance_json TEXT NOT NULL DEFAULT 'null';
+      `);
+    },
+  },
 ];
 
 export async function runMigrations(

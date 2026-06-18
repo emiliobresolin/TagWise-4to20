@@ -142,6 +142,8 @@ export interface SharedExecutionGuidanceItem {
   whyItMatters: string;
   helpsRuleOut: string;
   sourceReference: string;
+  nrMandatory?: boolean;
+  nrArticle?: string;
 }
 
 export type SharedExecutionChecklistOutcome =
@@ -338,6 +340,54 @@ export interface SharedExecutionApprovalHistoryItem {
   comment: string | null;
 }
 
+// ── NR Compliance fields ────────────────────────────────────────────────────
+
+export type NrVesselCategory = 'I' | 'II' | 'III' | 'IV' | 'V' | 'A' | 'B';
+
+export interface NrAsFoundAsLeftReadings {
+  expectedValue: string;
+  observedValue: string;
+  unit: string | null;
+  signedDeviation: number;
+  absoluteDeviation: number;
+  percentOfSpan: number | null;
+  acceptance: SharedExecutionCalculationAcceptance;
+}
+
+export interface NrMeasurementUncertainty {
+  value: number;
+  coverageFactor: number;
+  confidenceLevel: number;
+  unit: string;
+}
+
+export interface NrEnvironmentalConditions {
+  temperatureC: number;
+  humidityPercent: number;
+  atmosphericPressureKPa: number;
+}
+
+export interface NrPlhIdentification {
+  engineerName: string;
+  creaNumber: string;
+  artNumber: string;
+}
+
+export interface NrComplianceData {
+  vesselCategory?: NrVesselCategory;
+  asFoundReadings?: NrAsFoundAsLeftReadings;
+  asLeftReadings?: NrAsFoundAsLeftReadings;
+  measurementUncertainty?: NrMeasurementUncertainty;
+  environmentalConditions?: NrEnvironmentalConditions;
+  plhIdentification?: NrPlhIdentification;
+  calibrationCertificateNumber?: string;
+  nextInspectionDate?: string;
+  electricalIsolationResult?: 'pass' | 'fail' | 'not-tested';
+  lockoutTagoutVerified?: boolean;
+}
+
+// ── Report draft state ───────────────────────────────────────────────────────
+
 export interface SharedExecutionReportDraftState {
   reportId: string;
   state: SharedExecutionReportState;
@@ -357,13 +407,7 @@ export interface SharedExecutionReportDraftState {
   submittedAt: string | null;
   syncIssue?: string | null;
   syncIssueReasonCode?: string | null;
-  // Story 8.12 finding #2: when a supervisor returns a report, the draft
-  // is marked `invalidated: true` so the technician cannot keep editing
-  // the same row. Re-opening the tag mints a fresh draft (new reportId),
-  // and the invalidated row remains as a read-only history entry the
-  // technician can review but not re-submit. `invalidationReason` carries
-  // the supervisor's "Devolver" comment so the technician understands
-  // what needs to change in the new visit.
+  nrCompliance?: NrComplianceData;
   invalidated?: boolean;
   invalidationReason?: string | null;
   approvalHistory?: {

@@ -40,6 +40,8 @@ import type { InstrumentsService } from '../modules/instruments/instrumentsServi
 import type { AuthRepository } from '../modules/auth/authRepository';
 import type { HttpRequestContext } from '../platform/health/httpHealthServer';
 
+const LOGIN_RATE_LIMIT = { maxAttempts: 10, windowMs: 60_000 };
+
 export interface ApiRequestHandlerDependencies {
   authService: AuthService;
   /**
@@ -72,6 +74,22 @@ export interface ApiRequestHandlerDependencies {
 }
 
 export function createApiRequestHandler(dependencies: ApiRequestHandlerDependencies) {
+  // Per-instance rate limiter — scoped here so tests get independent state per handler
+  const loginAttempts = new Map<string, { count: number; windowStart: number }>();
+
+  function checkLoginRateLimit(ip: string): void {
+    const now = Date.now();
+    const entry = loginAttempts.get(ip);
+    if (!entry || now - entry.windowStart > LOGIN_RATE_LIMIT.windowMs) {
+      loginAttempts.set(ip, { count: 1, windowStart: now });
+      return;
+    }
+    if (entry.count >= LOGIN_RATE_LIMIT.maxAttempts) {
+      throw Object.assign(new Error('Too many login attempts. Try again in a minute.'), { statusCode: 429 });
+    }
+    entry.count++;
+  }
+
   return async function handleRequest(
     request: IncomingMessage,
     response: ServerResponse,
@@ -88,6 +106,7 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
       }
 
       try {
+        checkLoginRateLimit(request.socket.remoteAddress ?? 'unknown');
         const session = await dependencies.authService.loginConnected({
           email: body.email,
           password: body.password,
@@ -100,11 +119,18 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
         });
         writeJson(response, 200, session);
       } catch (error) {
-        context.logger.warn('auth.login.failed', {
-          statusCode:
-            error instanceof AuthenticationError ? error.statusCode : 500,
-        });
-        writeAuthError(response, error);
+        const statusCode =
+          error instanceof AuthenticationError
+            ? error.statusCode
+            : isErrorWithStatusCode(error)
+              ? error.statusCode
+              : 500;
+        context.logger.warn('auth.login.failed', { statusCode });
+        if (isErrorWithStatusCode(error) && !(error instanceof AuthenticationError)) {
+          writeJson(response, error.statusCode, { message: (error as Error).message });
+        } else {
+          writeAuthError(response, error);
+        }
       }
 
       return true;
@@ -130,6 +156,27 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
         context.logger.warn('auth.refresh.failed', {
           statusCode:
             error instanceof AuthenticationError ? error.statusCode : 500,
+        });
+        writeAuthError(response, error);
+      }
+
+      return true;
+    }
+
+    if (method === 'POST' && url === '/auth/logout') {
+      try {
+        const session = await authenticateRequest(request, dependencies.authService);
+        await dependencies.authService.logoutConnected(session.id, {
+          correlationId: context.correlationId,
+        });
+        context.logger.info('auth.logout.succeeded', {
+          actorId: session.id,
+          actorRole: session.role,
+        });
+        writeJson(response, 200, { message: 'Signed out.' });
+      } catch (error) {
+        context.logger.warn('auth.logout.failed', {
+          statusCode: error instanceof AuthenticationError ? error.statusCode : 500,
         });
         writeAuthError(response, error);
       }
@@ -1076,13 +1123,23 @@ async function authenticateRequest(request: IncomingMessage, authService: AuthSe
 
 async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
 
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > 2 * 1024 * 1024) {
+      throw new Error('Request body too large.');
+    }
+    chunks.push(buffer);
   }
 
   const raw = Buffer.concat(chunks).toString('utf-8');
-  return (raw ? JSON.parse(raw) : {}) as T;
+  try {
+    return (raw ? JSON.parse(raw) : {}) as T;
+  } catch {
+    throw Object.assign(new Error('Request body is not valid JSON.'), { statusCode: 400 });
+  }
 }
 
 type MobileDiagnosticsJsonBody = {
@@ -1293,7 +1350,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isErrorWithStatusCode(error: unknown): error is Error & { statusCode: number } {
+  return (
+    error instanceof Error &&
+    'statusCode' in error &&
+    typeof (error as Record<string, unknown>).statusCode === 'number'
+  );
+}
+
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {
-  response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
+  response.writeHead(statusCode, {
+    'content-type': 'application/json; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+  });
   response.end(JSON.stringify(payload));
 }

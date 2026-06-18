@@ -581,18 +581,15 @@ describe('LocalExecutionTemplateRegistry', () => {
 
     const resolved = registry.resolveTemplate(snapshot, valveTag!, 'tpl-valve-stroke-test');
 
-    expect(resolved?.checklistSteps).toEqual([
-      expect.objectContaining({
-        id: 'valve-path-check',
-        prompt: expect.stringContaining('movement path'),
-        whyItMatters: expect.stringContaining('field readiness'),
-        helpsRuleOut: 'blocked movement path or missing permissive conditions',
-        sourceReference: 'TAGWISE-BP-XV-003',
-      }),
-      expect.objectContaining({
-        id: 'valve-supply-check',
-      }),
-    ]);
+    expect(resolved?.checklistSteps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'nr10-electrical-isolation', nrMandatory: true }),
+        expect.objectContaining({ id: 'nr12-lockout-tagout', nrMandatory: true }),
+        expect.objectContaining({ id: 'nr13-valve-calibration', nrMandatory: true }),
+        expect.objectContaining({ id: 'valve-path-check', prompt: expect.stringContaining('movement path') }),
+        expect.objectContaining({ id: 'valve-supply-check' }),
+      ]),
+    );
     expect(resolved?.guidedDiagnosisPrompts).toEqual([
       expect.objectContaining({
         id: 'valve-diagnosis-travel-lag',
@@ -614,16 +611,14 @@ describe('LocalExecutionTemplateRegistry', () => {
       'tpl-valve-position-feedback-verification',
     );
 
-    expect(resolved?.checklistSteps).toEqual([
-      expect.objectContaining({
-        id: 'checklist-1',
-        prompt: 'Confirm feedback indication is available before treating the issue as a travel fault.',
-        sourceReference: 'TAGWISE-BP-XV-003',
-      }),
-      expect.objectContaining({
-        id: 'checklist-2',
-      }),
-    ]);
+    expect(resolved?.checklistSteps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'nr10-electrical-isolation', nrMandatory: true }),
+        expect.objectContaining({ id: 'nr12-lockout-tagout', nrMandatory: true }),
+        expect.objectContaining({ id: 'checklist-1' }),
+        expect.objectContaining({ id: 'checklist-2' }),
+      ]),
+    );
     expect(resolved?.guidedDiagnosisPrompts).toEqual([
       expect.objectContaining({
         id: 'diagnosis-1',

@@ -1,3 +1,5 @@
+import * as FileSystem from 'expo-file-system';
+
 export interface EvidenceBinaryUploadBoundary {
   uploadBinary(input: {
     localFileUri: string;
@@ -7,25 +9,17 @@ export interface EvidenceBinaryUploadBoundary {
   }): Promise<void>;
 }
 
-export function createEvidenceBinaryUploadBoundary(
-  fetchImplementation: typeof fetch = fetch,
-): EvidenceBinaryUploadBoundary {
+export function createEvidenceBinaryUploadBoundary(): EvidenceBinaryUploadBoundary {
   return {
     async uploadBinary(input) {
-      const localResponse = await fetchImplementation(input.localFileUri);
-      if (!localResponse.ok) {
-        throw new Error('Unable to read the local evidence binary for upload.');
-      }
-
-      const body = await localResponse.blob();
-      const uploadResponse = await fetchImplementation(input.uploadUrl, {
-        method: input.uploadMethod,
+      const uploadResult = await FileSystem.uploadAsync(input.uploadUrl, input.localFileUri, {
+        httpMethod: input.uploadMethod,
         headers: input.requiredHeaders,
-        body,
+        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
       });
 
-      if (!uploadResponse.ok) {
-        throw new Error(`Evidence binary upload failed with ${uploadResponse.status}.`);
+      if (uploadResult.status < 200 || uploadResult.status >= 300) {
+        throw new Error(`Evidence binary upload failed with ${uploadResult.status}.`);
       }
     },
   };

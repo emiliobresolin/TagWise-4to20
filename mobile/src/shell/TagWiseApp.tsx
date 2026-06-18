@@ -122,6 +122,9 @@ import {
   type VisualTechnicianReportRecord,
   type VisualTechnicianReportSummary,
 } from '../features/visual-shell/technicianReports';
+import NetInfo from '@react-native-community/netinfo';
+import '../i18n'; // initialize i18n — must be imported before any child that calls useTranslation
+import { setAppLanguage, type AppLanguage } from '../i18n';
 import { closeRuntimeIfInactive } from './runtimeCleanup';
 import { VisualProductShell } from './VisualProductShell';
 
@@ -205,14 +208,18 @@ const placeholderRoutes = [
 
 export function TagWiseApp() {
   const [status, setStatus] = useState<BootstrapStatus>({ type: 'loading' });
-  const [email, setEmail] = useState('tech@tagwise.local');
-  const [password, setPassword] = useState('TagWise123!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   // Story 9.4: supervisor authoring overlay visibility. Kept as a separate
   // top-level state instead of threading through readyState because the
   // screen is a self-contained modal flow that only depends on the
   // supervisor session + the authoring service.
   const [supervisorAuthoringVisible, setSupervisorAuthoringVisible] = useState(false);
+  // i18n: persisted language preference for the app UI
+  const [appLanguage, setAppLanguageState] = useState<AppLanguage>('pt-BR');
+  // NetInfo: granular online/offline tracking independent of session mode
+  const [isOnline, setIsOnline] = useState<boolean | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -297,6 +304,13 @@ export function TagWiseApp() {
         const qrScanService = new LocalQrScanService({
           userPartitions: runtime.repositories.userPartitions,
         });
+        // Load saved language preference and apply to i18n
+        const savedLanguage = await runtime.repositories.appPreferences.getLanguage();
+        setAppLanguage(savedLanguage);
+        if (isActive) {
+          setAppLanguageState(savedLanguage);
+        }
+
         const restoredSession = await sessionController.restoreSession();
         const session =
           restoredSession.state === 'signed_in' ? restoredSession.session ?? null : null;
@@ -413,6 +427,9 @@ export function TagWiseApp() {
   // 30 seconds so a foreground/background toggle storm cannot flood the API.
   const regainBusyRef = useRef(false);
   const lastRegainAttemptAtRef = useRef(0);
+  // Story: exponential backoff for connectivity-regain sync retries
+  const [retryBackoffMs, setRetryBackoffMs] = useState(0);
+  const retryBackoffRef = useRef(0);
   useEffect(() => {
     if (status.type !== 'ready' || !status.session) {
       return;
@@ -427,11 +444,12 @@ export function TagWiseApp() {
     const sessionController = status.sessionController;
     const syncStateService = status.syncStateService;
 
-    async function handleForeground(nextState: AppStateStatus) {
-      if (nextState !== 'active') return;
+    async function handleConnectivityRegain() {
       if (regainBusyRef.current) return;
       const now = Date.now();
       if (now - lastRegainAttemptAtRef.current < 30_000) return;
+      // Exponential backoff: skip if still within backoff window
+      if (now < retryBackoffRef.current) return;
       lastRegainAttemptAtRef.current = now;
       regainBusyRef.current = true;
 
@@ -444,32 +462,62 @@ export function TagWiseApp() {
         });
 
         if (result.state !== 'reconnected') {
+          // Back off on non-reconnect outcomes to avoid hammering the API
+          retryBackoffRef.current = Date.now() + Math.min((retryBackoffMs || 0) * 2 || 5000, 300_000);
+          setRetryBackoffMs((prev) => Math.min(prev * 2 || 5000, 300_000));
           return;
         }
 
+        // Successful reconnect: reset backoff
+        retryBackoffRef.current = 0;
+        setRetryBackoffMs(0);
+
+        const retrySummary = result.retrySummary;
         setStatus((current) => {
           if (current.type !== 'ready') return current;
-          const summary = result.retrySummary;
           const summaryMessage =
-            summary.attempted === 0
+            retrySummary.attempted === 0
               ? 'Conexao restaurada. Nada na fila local para sincronizar.'
-              : `Conexao restaurada. Sincronizados ${summary.succeeded} de ${summary.attempted} itens da fila local.`;
+              : `Conexao restaurada. Sincronizados ${retrySummary.succeeded} de ${retrySummary.attempted} itens da fila local.`;
           return {
             ...current,
             session: result.session,
             authMessage: summaryMessage,
           };
         });
+
+        // Auto-poll AI diagnosis status after successful sync
+        if (retrySummary.succeeded > 0) {
+          // Give the server a moment to process the AI job
+          setTimeout(() => {
+            void handleRefreshExecutionReportServerStatus();
+          }, 3000);
+        }
       } finally {
         regainBusyRef.current = false;
       }
     }
 
+    async function handleForeground(nextState: AppStateStatus) {
+      if (nextState !== 'active') return;
+      await handleConnectivityRegain();
+    }
+
     const subscription = AppState.addEventListener('change', handleForeground);
+
+    // NetInfo subscription catches reconnects while app stays in foreground
+    const netInfoUnsubscribe = NetInfo.addEventListener((state) => {
+      setIsOnline(state.isConnected === true && state.isInternetReachable === true);
+      if (state.isConnected && state.isInternetReachable) {
+        void handleConnectivityRegain();
+      }
+    });
+
     return () => {
       subscription.remove();
+      netInfoUnsubscribe();
     };
-  }, [status]);
+  }, [status, retryBackoffMs]);
 
   if (status.type === 'loading') {
     return (
@@ -515,6 +563,12 @@ export function TagWiseApp() {
             route,
           },
     );
+  }
+
+  async function handleLanguageChange(language: AppLanguage): Promise<void> {
+    setAppLanguage(language);
+    setAppLanguageState(language);
+    await readyState.runtime.repositories.appPreferences.setLanguage(language);
   }
 
   async function handleManualWrite() {
@@ -2966,6 +3020,8 @@ export function TagWiseApp() {
     <>
     <VisualProductShell
       apiBaseUrl={getDefaultAuthApiBaseUrl()}
+      appLanguage={appLanguage}
+      networkOnline={isOnline}
       authBusy={readyState.authBusy}
       authMessage={readyState.authMessage}
       email={email}
@@ -3047,6 +3103,7 @@ export function TagWiseApp() {
       onRetryReportSync={() => handleRetryExecutionReportSync()}
       onSwitchUser={() => void handleSwitchUser()}
       onOpenSupervisorAuthoring={() => setSupervisorAuthoringVisible(true)}
+      onLanguageChange={(language) => void handleLanguageChange(language)}
     />
     {supervisorAuthoringVisible && readyState.session ? (
       <SupervisorAuthoringScreen

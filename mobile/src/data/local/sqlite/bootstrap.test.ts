@@ -59,7 +59,7 @@ describe('runMigrations', () => {
       `,
     );
 
-    expect(summary.currentSchemaVersion).toBe(13);
+    expect(summary.currentSchemaVersion).toBe(14);
     expect(summary.appliedMigrationIds).toEqual([
       '1',
       '2',
@@ -74,6 +74,7 @@ describe('runMigrations', () => {
       '11',
       '12',
       '13',
+      '14',
     ]);
     expect(record?.count).toBe(1);
     expect(route?.count).toBe(0);
@@ -114,6 +115,7 @@ describe('runMigrations', () => {
       { id: 11 },
       { id: 12 },
       { id: 13 },
+      { id: 14 },
     ]);
     expect(record?.count).toBe(1);
 
@@ -214,8 +216,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-legacy-001', 'tag-legacy-001', 'tpl-pressure'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(13);
-    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11', '12', '13']);
+    expect(summary.currentSchemaVersion).toBe(14);
+    expect(summary.appliedMigrationIds).toEqual(['9', '10', '11', '12', '13', '14']);
     expect(migratedRows).toEqual([
       {
         template_version: '2026-04-v1',
@@ -365,8 +367,8 @@ describe('runMigrations', () => {
       ['user-technician', 'wp-loop-001', 'tag-loop-001', 'tpl-loop-integrity', '2026-04-v1'],
     );
 
-    expect(summary.currentSchemaVersion).toBe(13);
-    expect(summary.appliedMigrationIds).toEqual(['10', '11', '12', '13']);
+    expect(summary.currentSchemaVersion).toBe(14);
+    expect(summary.appliedMigrationIds).toEqual(['10', '11', '12', '13', '14']);
     expect(migratedRow).toEqual({
       execution_context_json: '{}',
       raw_inputs_json: '{"expectedValue":"12","observedValue":"12.1"}',
@@ -486,8 +488,8 @@ describe('runMigrations', () => {
       ],
     );
 
-    expect(summary.currentSchemaVersion).toBe(13);
-    expect(summary.appliedMigrationIds).toEqual(['12', '13']);
+    expect(summary.currentSchemaVersion).toBe(14);
+    expect(summary.appliedMigrationIds).toEqual(['12', '13', '14']);
     expect(migratedRow).toEqual({
       observation_notes_text: 'Impulse path checked locally.',
       checklist_outcomes_json:

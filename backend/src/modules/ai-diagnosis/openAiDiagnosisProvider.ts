@@ -64,16 +64,14 @@ export class OpenAiDiagnosisProvider implements AiDiagnosisProvider {
       }
 
       const body = (await response.json()) as unknown;
-      const summary = extractResponseText(body);
+      const rawText = extractResponseText(body);
+      const structured = parseStructuredDiagnosis(rawText);
 
       return {
         provider: 'openai',
         model: this.options.model,
         generatedAt: this.now().toISOString(),
-        summary,
-        likelyIssuePatterns: [],
-        recommendedChecks: [],
-        missingEvidenceWarnings: [],
+        ...structured,
         disclaimer: 'assistive-ai-suggestion',
       };
     } catch (error) {
@@ -112,8 +110,46 @@ function buildDiagnosisPrompt(input: AiDiagnosisInput): string {
     `Evidence: ${input.evidenceSummary}`,
     'Risk flags:',
     riskFlags,
-    'Return a short summary with likely issue patterns, recommended checks, and missing evidence warnings. Make clear this is assistive only.',
+    'Make clear this is assistive only and does not replace supervisor review.',
+    '',
+    'Format your response EXACTLY as follows (use these exact section headers):',
+    'SUMMARY: <one paragraph summary>',
+    'LIKELY_ISSUES:',
+    '- <issue pattern 1>',
+    '- <issue pattern 2>',
+    'RECOMMENDED_CHECKS:',
+    '- <check 1>',
+    '- <check 2>',
+    'MISSING_EVIDENCE:',
+    '- <warning 1>',
   ].join('\n');
+}
+
+function parseStructuredDiagnosis(text: string): {
+  summary: string;
+  likelyIssuePatterns: string[];
+  recommendedChecks: string[];
+  missingEvidenceWarnings: string[];
+} {
+  const summaryMatch = text.match(/SUMMARY:\s*([\s\S]*?)(?=LIKELY_ISSUES:|RECOMMENDED_CHECKS:|MISSING_EVIDENCE:|$)/i);
+  const issuesMatch = text.match(/LIKELY_ISSUES:\s*([\s\S]*?)(?=RECOMMENDED_CHECKS:|MISSING_EVIDENCE:|$)/i);
+  const checksMatch = text.match(/RECOMMENDED_CHECKS:\s*([\s\S]*?)(?=MISSING_EVIDENCE:|$)/i);
+  const evidenceMatch = text.match(/MISSING_EVIDENCE:\s*([\s\S]*?)$/i);
+
+  function parseList(section: string | undefined): string[] {
+    if (!section) return [];
+    return section
+      .split('\n')
+      .map(line => line.replace(/^-\s*/, '').trim())
+      .filter(line => line.length > 0);
+  }
+
+  return {
+    summary: summaryMatch?.[1]?.trim() ?? text.trim(),
+    likelyIssuePatterns: parseList(issuesMatch?.[1]),
+    recommendedChecks: parseList(checksMatch?.[1]),
+    missingEvidenceWarnings: parseList(evidenceMatch?.[1]),
+  };
 }
 
 function extractResponseText(body: unknown): string {

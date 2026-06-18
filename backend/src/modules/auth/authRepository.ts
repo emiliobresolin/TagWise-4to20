@@ -114,6 +114,15 @@ export class AuthRepository {
     }));
   }
 
+  async incrementSessionVersion(userId: string): Promise<void> {
+    await this.database.query(
+      `
+        UPDATE auth_users SET session_version = session_version + 1 WHERE id = $1;
+      `,
+      [userId],
+    );
+  }
+
   async findById(id: string): Promise<StoredAuthUser | null> {
     const result = await this.database.query<AuthUserRow>(
       `

@@ -49,4 +49,23 @@ export class LocalWorkStateRepository {
       [ACTIVE_STATE_KEY, Math.max(0, count), now],
     );
   }
+
+  async reconcileUnsyncedCount(): Promise<number> {
+    const row = await this.database.getFirstAsync<{ count: number }>(
+      `SELECT COUNT(*) as count
+       FROM user_partitioned_queue_items
+       WHERE item_kind IN ('submit-report', 'upload-evidence-metadata', 'upload-evidence-binary');`,
+    );
+
+    const actual = row?.count ?? 0;
+
+    await this.database.runAsync(
+      `UPDATE local_work_state
+       SET unsynced_work_count = ?, updated_at = ?
+       WHERE state_key = ?;`,
+      [actual, new Date().toISOString(), ACTIVE_STATE_KEY],
+    );
+
+    return actual;
+  }
 }

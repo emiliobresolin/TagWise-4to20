@@ -123,6 +123,29 @@ export class AuthService {
     return session;
   }
 
+  async logoutConnected(
+    userId: string,
+    context: { correlationId: string },
+  ): Promise<void> {
+    const user = await this.repository.findById(userId);
+
+    await this.repository.incrementSessionVersion(userId);
+
+    await this.auditEvents.recordEvent({
+      actorId: userId,
+      actorRole: user?.role ?? 'technician',
+      actionType: 'auth.logout.connected',
+      targetObjectType: 'user-session',
+      targetObjectId: userId,
+      correlationId: context.correlationId,
+      priorState: 'connected',
+      nextState: 'signed_out',
+      metadata: {
+        email: user?.email ?? '',
+      },
+    });
+  }
+
   async authenticateAccessToken(accessToken: string): Promise<AuthenticatedUser> {
     const claims = verifyAccessToken(accessToken, this.config);
     const user = await this.repository.findById(claims.sub);
