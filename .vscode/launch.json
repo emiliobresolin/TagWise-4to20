@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Backend: API",
+      "runtimeExecutable": "${workspaceFolder}/backend/node_modules/.bin/tsx",
+      "runtimeArgs": ["--env-file=.env", "watch", "src/api/main.ts"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Backend: Worker",
+      "runtimeExecutable": "${workspaceFolder}/backend/node_modules/.bin/tsx",
+      "runtimeArgs": ["--env-file=.env", "watch", "src/worker/main.ts"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Backend: API + Worker",
+      "configurations": ["Backend: API", "Backend: Worker"]
+    }
+  ]
+}

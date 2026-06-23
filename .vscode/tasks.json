@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Docker: Start Infrastructure",
+      "type": "shell",
+      "command": "docker compose up -d",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Backend: Migrate DB",
+      "type": "shell",
+      "command": "npm run db:migrate",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Backend: Start API",
+      "type": "shell",
+      "command": "npm run dev:api",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Backend: Start Worker",
+      "type": "shell",
+      "command": "npm run dev:worker",
+      "options": { "cwd": "${workspaceFolder}/backend" },
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Mobile: Start Expo",
+      "type": "shell",
+      "command": "npm start",
+      "options": { "cwd": "${workspaceFolder}/mobile" },
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Mobile: Build APK",
+      "type": "shell",
+      "command": "npm run build:android:preview",
+      "options": { "cwd": "${workspaceFolder}/mobile" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}
