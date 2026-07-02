@@ -115,3 +115,7 @@ That means decisions should continue to favor:
 - clean per-tag report semantics over work-package shortcuts
 
 If the team keeps following the approved artifacts, the resulting app should stay meaningfully aligned with the image set while remaining much more production-ready than a pure mockup-first build.
+
+## Demo
+
+The demo-day kit lives in [docs/demo](docs/demo). [DEMO-RUNBOOK.md](docs/demo/DEMO-RUNBOOK.md) takes a cold Windows PC from `docker compose up` to a demo-ready LAN backend plus a phone-installed APK — required `backend\.env` edits (LAN storage endpoint, AI provider), migrate/seed, firewall rules, build and verification commands, and a symptom→cause→fix troubleshooting table. [PHONE-SMOKE-CHECKLIST.md](docs/demo/PHONE-SMOKE-CHECKLIST.md) is the numbered manual test script for the physical-phone pass, covering the full technician→supervisor→technician golden path with exact PT-BR UI strings. [FIX-SUMMARY-2026-07-02.md](docs/demo/FIX-SUMMARY-2026-07-02.md) is the engineer-facing changelog of the pre-demo fix campaign, including what still needs on-device confirmation and the post-demo backlog.

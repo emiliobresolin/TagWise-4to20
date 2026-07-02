@@ -1,7 +1,6 @@
 import { CameraView, type BarcodeScanningResult } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import type { AppLanguage } from '../i18n';
 import {
   Alert,
   BackHandler,
@@ -114,7 +113,7 @@ import {
   type VisualTechnicianReportSummary,
   type VisualTagWorkStatus,
 } from '../features/visual-shell/technicianReports';
-import type { ReportSyncDetail } from '../features/sync/syncStateService';
+import type { ReportSyncDetail, WorkPackageSyncSummary } from '../features/sync/syncStateService';
 import type {
   SupervisorReviewQueueItem,
   SupervisorReviewReportDetail,
@@ -127,6 +126,7 @@ import type {
 } from '../features/work-packages/model';
 import type { ManualInstrumentInput } from '../features/work-packages/manualInstrumentModel';
 import type { LocalQrScanResult } from '../features/work-packages/localQrScanService';
+import { isLoopbackApiBaseUrl, normalizeApiBaseUrl } from '../platform/http/apiBaseUrl';
 
 class ShellErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -327,13 +327,23 @@ export interface VisualProductShellProps {
   // Optional so existing tests / harnesses that build a shell without the
   // authoring service still typecheck.
   onOpenSupervisorAuthoring?: () => void;
-  // i18n: current app language and language change handler.
-  appLanguage?: AppLanguage;
+  // Runtime-configurable server URL: signed-out login screen only. Persists
+  // the (already normalized) URL and rebuilds the API clients. Resolves true
+  // when applied, false when rejected. Optional so test harnesses that build
+  // the shell without the handler still typecheck.
+  onSaveApiBaseUrl?: (url: string) => Promise<boolean>;
   // NetInfo: null = unknown, true = online, false = offline.
   networkOnline?: boolean | null;
-  onLanguageChange?: (language: AppLanguage) => void;
   // Handler to start a new visit after a report is invalidated/returned.
   onStartNewVisit?: () => void;
+  // Toast channel merge (toast-coverage-partial): the floating MessageToast
+  // now also shows authMessage; dismissing/auto-clearing must clear the
+  // TagWiseApp-owned channel too or the message reappears when shellMessage
+  // clears.
+  onClearAuthMessage?: () => void;
+  // Sync diagnostics card (qa-p1-ux-sync-diag-card): per-package outbound
+  // queue summaries loaded by TagWiseApp via SyncStateService.
+  packageSyncSummaries?: Record<string, WorkPackageSyncSummary>;
 }
 
 export function VisualProductShell({
@@ -411,10 +421,11 @@ export function VisualProductShell({
   onSupervisorReturnCommentChange,
   onSupervisorEscalationRationaleChange,
   onOpenSupervisorAuthoring,
-  appLanguage,
+  onSaveApiBaseUrl,
   networkOnline,
-  onLanguageChange,
   onStartNewVisit,
+  onClearAuthMessage,
+  packageSyncSummaries,
 }: VisualProductShellProps) {
   const scrollRef = useRef<ScrollView>(null);
   const [route, setRoute] = useState<VisualRoute>('dashboard');
@@ -463,6 +474,31 @@ export function VisualProductShell({
       })),
     );
   }, [loopReadingsHydrationKey, executionShell]);
+  // Reset the shared loop-point state whenever the ACTIVE TEMPLATE IDENTITY
+  // changes (wp + tag + template) so a curve filled on one template never
+  // bleeds into another template's loop screen — and never gets saved and
+  // rendered under the wrong template's report. When the incoming template
+  // carries persisted readings the hydration effect above applies them;
+  // otherwise fall back to a fresh default grid. Same-identity shell
+  // replacements (e.g. after attaching a per-point photo) keep mid-edit
+  // values untouched.
+  const lastLoopTemplateIdentityRef = useRef<string | null>(null);
+  useEffect(() => {
+    const identity = executionShell
+      ? `${executionShell.workPackageId}:${executionShell.tagId}:${executionShell.template.id}`
+      : null;
+    if (identity === lastLoopTemplateIdentityRef.current) {
+      return;
+    }
+    lastLoopTemplateIdentityRef.current = identity;
+    if (!identity) {
+      return;
+    }
+    if ((executionShell?.evidence.loopReadings ?? []).length === 0) {
+      setLoopPoints(createDefaultLoopPoints());
+      setLoopInputMode('pv');
+    }
+  }, [executionShell]);
   const [activeHistoryPointId, setActiveHistoryPointId] = useState('current-result');
   const [calculatorApplyTargetId, setCalculatorApplyTargetId] = useState('expectedValue:main');
   const [activeReviewGroupKey, setActiveReviewGroupKey] =
@@ -751,13 +787,16 @@ export function VisualProductShell({
     const didOpen = await onOpenExecutionTemplate(templateId);
 
     if (didOpen) {
-      setShellMessage(`${pattern.label}: ${pattern.detail}`);
       // Story 8.10 finding #9: route to the test execution via `openRoute` so
       // the current route ('detail') is pushed onto the navigation history.
       // Without this, pressing `Voltar` from the test screen incorrectly
       // popped past the detail hub. The Story 8.7 stack now correctly maps
       // dashboard -> detail -> calculation/loop-test.
+      // Navigate-then-notify: openRoute clears shellMessage, so the pattern
+      // explainer message must be set AFTER the navigation or it never shows
+      // (new-loop-save-toast-wiped-by-poproute audit).
       openRoute(pattern.route);
+      setShellMessage(`${pattern.label}: ${pattern.detail}`);
       return;
     }
 
@@ -801,10 +840,14 @@ export function VisualProductShell({
       inputMode: loopInputMode,
       worstCase,
     });
+    // Navigate-then-notify: popRoute unconditionally clears shellMessage, so
+    // the confirmation must be set AFTER navigating back to the instrument
+    // hub or the technician gets zero feedback that the loop test saved
+    // (new-loop-save-toast-wiped-by-poproute).
+    popRoute();
     setShellMessage(
       'Teste de loop salvo localmente. Volte ao instrumento para escolher outro teste ou avancar para Comparacao.',
     );
-    popRoute();
   }
 
   function handleApplyCalculatorResult() {
@@ -960,7 +1003,7 @@ export function VisualProductShell({
             gap: 8,
           }}>
             <Text style={{ color: '#fef3c7', fontSize: 12, fontWeight: '600' }}>
-              📡 {appLanguage === 'en' ? 'Offline – changes will sync when connected' : 'Offline – as alterações sincronizarão quando conectado'}
+              📡 Offline – as alterações sincronizarão quando conectado
             </Text>
           </View>
         )}
@@ -977,32 +1020,16 @@ export function VisualProductShell({
             password={password}
             onEmailChange={onEmailChange}
             onPasswordChange={onPasswordChange}
+            onSaveApiBaseUrl={onSaveApiBaseUrl}
             onSignIn={onSignIn}
           />
-          {/* Language selector on login screen */}
-          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', paddingVertical: 12 }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>
-              {appLanguage === 'en' ? 'Language:' : 'Idioma:'}
-            </Text>
-            {(['en', 'pt-BR'] as const).map((lang) => (
-              <Pressable
-                key={lang}
-                onPress={() => onLanguageChange?.(lang)}
-                style={{
-                  paddingHorizontal: 10,
-                  paddingVertical: 4,
-                  borderRadius: 4,
-                  backgroundColor: appLanguage === lang ? '#2563eb' : '#1e293b',
-                }}
-              >
-                <Text style={{ color: appLanguage === lang ? '#ffffff' : '#94a3b8', fontSize: 12 }}>
-                  {lang === 'en' ? 'EN' : 'PT-BR'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
         </ScrollView>
         </KeyboardAvoidingView>
+        {/* toast-coverage-partial: login feedback also surfaces via the
+            floating toast so errors are visible even when the form has
+            scrolled. The inline card inside the login screen remains as the
+            durable copy near the form. */}
+        <MessageToast message={authMessage} onDismiss={() => onClearAuthMessage?.()} />
       </SafeAreaView>
       </ShellErrorBoundary>
     );
@@ -1023,7 +1050,7 @@ export function VisualProductShell({
           gap: 8,
         }}>
           <Text style={{ color: '#fef3c7', fontSize: 12, fontWeight: '600' }}>
-            📡 {appLanguage === 'en' ? 'Offline – changes will sync when connected' : 'Offline – as alterações sincronizarão quando conectado'}
+            📡 Offline – as alterações sincronizarão quando conectado
           </Text>
         </View>
       )}
@@ -1082,8 +1109,7 @@ export function VisualProductShell({
             qrManualPayload={qrManualPayload}
             qrScanResult={qrScanResult}
             qrScannerVisible={qrScannerVisible}
-            appLanguage={appLanguage}
-            onLanguageChange={onLanguageChange}
+            packageSyncSummaries={packageSyncSummaries}
           />
         ) : route === 'manual-intake' ? (
           <ManualInstrumentScreen
@@ -1123,24 +1149,47 @@ export function VisualProductShell({
           <TagDetailScreen
             // Story 8.14 finding #5: lock the test affordances on the
             // detail screen when this tag has an approved report. The
-            // lock auto-clears when a fresh package is downloaded (a
-            // new packageVersion brings new templates/data and the
-            // approved drafts no longer pin the current view).
+            // lock is scoped to the packageVersion the approval happened
+            // under (stamped into the report draft at save/submit), so a
+            // fresh snapshot with a bumped packageVersion actually
+            // unlocks the tag. Legacy drafts without the stamp
+            // (packageVersion === null) keep the conservative lock.
             approvedReportLock={Boolean(
               selectedLocalTag &&
-                technicianReports.some(
-                  (report) =>
-                    report.workPackageId === selectedLocalTag.workPackageId &&
-                    report.tagId === selectedLocalTag.tagId &&
-                    report.status === 'approved',
-                ),
+                technicianReports.some((report) => {
+                  if (
+                    report.workPackageId !== selectedLocalTag.workPackageId ||
+                    report.tagId !== selectedLocalTag.tagId ||
+                    report.status !== 'approved'
+                  ) {
+                    return false;
+                  }
+                  if (report.packageVersion === null) {
+                    return true;
+                  }
+                  const currentPackageVersion = workPackages.find(
+                    (workPackage) => workPackage.id === selectedLocalTag.workPackageId,
+                  )?.packageVersion;
+                  return (
+                    currentPackageVersion === undefined ||
+                    report.packageVersion === currentPackageVersion
+                  );
+                }),
             )}
             lastValueLabel={model.lastValueLabel}
             selectedExecutionTemplateId={selectedExecutionTemplateId}
             selectedTag={selectedTag}
             selectedTagContext={selectedTagContext}
             executionTemplateStatuses={executionTemplateStatuses}
-            photoAttachments={executionShell?.evidence.photoAttachments ?? []}
+            // Instrument thumbnails must not be blind until a template is
+            // opened: prefer the live shell (so a just-attached photo shows
+            // instantly) and fall back to the per-visit aggregate that
+            // openTagContext already loads with the tag.
+            photoAttachments={
+              executionShell?.evidence.photoAttachments ??
+              instrumentVisit?.photoAttachments ??
+              []
+            }
             variableRangeLabel={model.variableRangeLabel}
             onAttachInstrumentPhoto={(source) =>
               void onAttachReportPhoto(source, 'Instrumento', {
@@ -1346,7 +1395,6 @@ export function VisualProductShell({
               }
               onRequestExecutionAiDiagnosis={() => void onRequestExecutionAiDiagnosis()}
               onStartNewVisit={onStartNewVisit}
-              appLanguage={appLanguage}
             />
           ) : (
             <DemoReportScreen
@@ -1381,8 +1429,20 @@ export function VisualProductShell({
           confirmation and error messages rendered inline at the top of
           each screen and scrolled out of view while the user was filling
           a form lower on the page. The toast auto-clears after 5s and
-          can be dismissed manually. */}
-      <MessageToast message={shellMessage} onDismiss={() => setShellMessage(null)} />
+          can be dismissed manually.
+          toast-coverage-partial: the toast now merges BOTH message
+          channels (shell-local shellMessage and TagWiseApp-owned
+          authMessage) so feedback like "Foto salva localmente" reaches
+          every screen — including TagDetailScreen, which renders neither
+          channel inline. Dismissal clears both channels so the auto-clear
+          does not resurface the other channel's stale text. */}
+      <MessageToast
+        message={shellMessage ?? authMessage}
+        onDismiss={() => {
+          setShellMessage(null);
+          onClearAuthMessage?.();
+        }}
+      />
     </SafeAreaView>
     </ShellNavigationContext.Provider>
     </ShellErrorBoundary>
@@ -1468,8 +1528,7 @@ function DashboardScreen({
   qrManualPayload,
   qrScanResult,
   qrScannerVisible,
-  appLanguage,
-  onLanguageChange,
+  packageSyncSummaries,
 }: {
   activeFilter: VisualTagCategory | 'all';
   apiBaseUrl: string;
@@ -1515,8 +1574,7 @@ function DashboardScreen({
   qrManualPayload: string;
   qrScanResult: LocalQrScanResult | null;
   qrScannerVisible: boolean;
-  appLanguage?: AppLanguage;
-  onLanguageChange?: (language: AppLanguage) => void;
+  packageSyncSummaries?: Record<string, WorkPackageSyncSummary>;
 }) {
   const navigation = useShellNavigation();
   return (
@@ -1525,28 +1583,6 @@ function DashboardScreen({
         <View>
           <TagWiseLogo large onPress={navigation?.goHome} />
           <Text style={styles.headerSubtitle}>Campo, calculo e relatorio por tag</Text>
-        </View>
-        {/* Language selector in dashboard header */}
-        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-          <Text style={{ color: '#94a3b8', fontSize: 12 }}>
-            {appLanguage === 'en' ? 'Language:' : 'Idioma:'}
-          </Text>
-          {(['en', 'pt-BR'] as const).map((lang) => (
-            <Pressable
-              key={lang}
-              onPress={() => onLanguageChange?.(lang)}
-              style={{
-                paddingHorizontal: 10,
-                paddingVertical: 4,
-                borderRadius: 4,
-                backgroundColor: appLanguage === lang ? '#2563eb' : '#1e293b',
-              }}
-            >
-              <Text style={{ color: appLanguage === lang ? '#ffffff' : '#94a3b8', fontSize: 12 }}>
-                {lang === 'en' ? 'EN' : 'PT-BR'}
-              </Text>
-            </Pressable>
-          ))}
         </View>
       </View>
 
@@ -1559,6 +1595,19 @@ function DashboardScreen({
           onOpenReports={onOpenReports}
           onOpenStandaloneCalculator={onOpenStandaloneCalculator}
           onSyncWithServer={onSyncWithServer}
+        />
+      ) : null}
+
+      {/* qa-p1-ux-sync-diag-card: compact connectivity/sync diagnostics for
+          the technician role. Shows the configured server URL, connection
+          state, outbound queue counts, and a one-tap backend reachability
+          probe — the antidote to the loopback-URL and firewall failure
+          classes that burned prior demos. */}
+      {session && session.role === 'technician' ? (
+        <SyncDiagnosticsCard
+          apiBaseUrl={apiBaseUrl}
+          connectionMode={session.connectionMode}
+          packageSyncSummaries={packageSyncSummaries}
         />
       ) : null}
 
@@ -1622,7 +1671,6 @@ function DashboardScreen({
         />
       </ScrollView>
 
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
 
       <SectionHeader title="Abertas recentemente" />
       <ScrollView
@@ -1717,6 +1765,7 @@ function SignedOutLoginScreen({
   password,
   onEmailChange,
   onPasswordChange,
+  onSaveApiBaseUrl,
   onSignIn,
 }: {
   apiBaseUrl: string;
@@ -1726,6 +1775,7 @@ function SignedOutLoginScreen({
   password: string;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
+  onSaveApiBaseUrl?: (url: string) => Promise<boolean>;
   onSignIn: () => void;
 }) {
   return (
@@ -1782,7 +1832,215 @@ function SignedOutLoginScreen({
           </Pressable>
         </View>
       </View>
+
+      {/* Runtime-configurable server URL (api-base-url ledger items): the APK
+          no longer needs a rebuild when the backend PC's LAN IP changes — the
+          technician edits the URL here, signed-out only. */}
+      <ServerUrlCard apiBaseUrl={apiBaseUrl} onSave={onSaveApiBaseUrl} />
     </>
+  );
+}
+
+// Compact 'Servidor' section for the signed-out login screen. Collapsed it
+// shows the effective runtime URL; tapping expands a pre-filled input with
+// Salvar/Cancelar. 'Testar' probes <url>/health/live with a 4s timeout and
+// reports the result inline (same idiom as SyncDiagnosticsCard).
+function ServerUrlCard({
+  apiBaseUrl,
+  onSave,
+}: {
+  apiBaseUrl: string;
+  onSave?: (url: string) => Promise<boolean>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [draftUrl, setDraftUrl] = useState(apiBaseUrl);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [probeBusy, setProbeBusy] = useState(false);
+  const [probeResult, setProbeResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // Keep the collapsed prefill in sync when a save re-bootstraps the app and
+  // the effective URL prop changes underneath this (still-mounted) card.
+  useEffect(() => {
+    if (!expanded) {
+      setDraftUrl(apiBaseUrl);
+    }
+  }, [apiBaseUrl, expanded]);
+
+  function handleExpand() {
+    setDraftUrl(apiBaseUrl);
+    setValidationError(null);
+    setExpanded(true);
+  }
+
+  function handleCancel() {
+    setDraftUrl(apiBaseUrl);
+    setValidationError(null);
+    setExpanded(false);
+  }
+
+  async function handleSave() {
+    if (!onSave || saveBusy) {
+      return;
+    }
+    const normalized = normalizeApiBaseUrl(draftUrl);
+    if (normalized === null) {
+      setValidationError(
+        'URL invalida. Use o formato http://host:porta (ex.: http://192.168.0.10:4100).',
+      );
+      return;
+    }
+    setValidationError(null);
+    setSaveBusy(true);
+    try {
+      const applied = await onSave(normalized);
+      if (applied) {
+        setExpanded(false);
+        setProbeResult(null);
+      }
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function handleProbe() {
+    if (probeBusy) {
+      return;
+    }
+    const target = expanded ? normalizeApiBaseUrl(draftUrl) : apiBaseUrl;
+    if (target === null) {
+      setValidationError(
+        'URL invalida. Use o formato http://host:porta (ex.: http://192.168.0.10:4100).',
+      );
+      return;
+    }
+    setValidationError(null);
+    setProbeBusy(true);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const atLabel = new Date().toLocaleTimeString('pt-BR');
+    try {
+      const response = await fetch(`${target}/health/live`, { signal: controller.signal });
+      setProbeResult(
+        response.ok
+          ? { ok: true, message: `Servidor alcancavel em ${target}. (${atLabel})` }
+          : {
+              ok: false,
+              message: `Servidor respondeu com status ${response.status}. (${atLabel})`,
+            },
+      );
+    } catch {
+      setProbeResult({
+        ok: false,
+        message: `Servidor inalcancavel em ${target}. Verifique rede e URL. (${atLabel})`,
+      });
+    } finally {
+      clearTimeout(timer);
+      setProbeBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.connectionCard}>
+      <View style={styles.connectionHeader}>
+        <View style={styles.flexOne}>
+          <Text style={styles.connectionTitle}>Servidor</Text>
+          {expanded ? (
+            <Text style={styles.connectionBody}>
+              Informe a URL do backend TagWise na rede local.
+            </Text>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              disabled={!onSave}
+              onPress={handleExpand}
+            >
+              <Text style={styles.connectionBody}>{apiBaseUrl}</Text>
+              {onSave ? (
+                <Text style={styles.connectionMessage}>Toque para alterar a URL do servidor.</Text>
+              ) : null}
+            </Pressable>
+          )}
+        </View>
+        <StatusPill label="URL" severity="medium" />
+      </View>
+
+      {isLoopbackApiBaseUrl(expanded ? draftUrl : apiBaseUrl) ? (
+        <Text style={[styles.connectionMessage, { color: colors.red }]}>
+          Atencao: URL de loopback — o telefone nao alcanca o backend em 127.0.0.1/localhost.
+        </Text>
+      ) : null}
+
+      {expanded ? (
+        <View style={styles.loginGrid}>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            onChangeText={(value) => {
+              setDraftUrl(value);
+              if (validationError) {
+                setValidationError(null);
+              }
+            }}
+            placeholder="http://192.168.0.10:4100"
+            placeholderTextColor={colors.textSubtle}
+            style={styles.darkInput}
+            value={draftUrl}
+          />
+          {validationError ? (
+            <Text style={[styles.connectionMessage, { color: colors.red }]}>
+              {validationError}
+            </Text>
+          ) : null}
+          <View style={styles.connectionActionRow}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={saveBusy}
+              onPress={() => void handleSave()}
+              style={[styles.smallActionButton, saveBusy ? styles.disabledAction : null]}
+            >
+              <Text style={styles.smallActionLabel}>{saveBusy ? 'Salvando...' : 'Salvar'}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={saveBusy}
+              onPress={handleCancel}
+              style={[styles.smallGhostButton, saveBusy ? styles.disabledAction : null]}
+            >
+              <Text style={styles.smallGhostLabel}>Cancelar</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={probeBusy}
+              onPress={() => void handleProbe()}
+              style={[styles.smallGhostButton, probeBusy ? styles.disabledAction : null]}
+            >
+              <Text style={styles.smallGhostLabel}>{probeBusy ? 'Testando...' : 'Testar'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.connectionActionRow}>
+          <Pressable
+            accessibilityRole="button"
+            disabled={probeBusy}
+            onPress={() => void handleProbe()}
+            style={[styles.smallGhostButton, probeBusy ? styles.disabledAction : null]}
+          >
+            <Text style={styles.smallGhostLabel}>{probeBusy ? 'Testando...' : 'Testar'}</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {probeResult ? (
+        <Text
+          style={[styles.connectionMessage, probeResult.ok ? null : { color: colors.red }]}
+        >
+          {probeResult.message}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -2179,6 +2437,111 @@ function DashboardActionPanel({
           </Text>
         </Pressable>
       </View>
+    </View>
+  );
+}
+
+// qa-p1-ux-sync-diag-card: compact diagnostics card for the technician
+// dashboard. Surfaces the configured API base URL, session connection state,
+// outbound queue counts (from the SyncStateService summaries TagWiseApp
+// already loads) and a one-tap backend reachability probe against the
+// unauthenticated /health/live endpoint.
+function SyncDiagnosticsCard({
+  apiBaseUrl,
+  connectionMode,
+  packageSyncSummaries,
+}: {
+  apiBaseUrl: string;
+  connectionMode: 'connected' | 'offline';
+  packageSyncSummaries?: Record<string, WorkPackageSyncSummary>;
+}) {
+  const [probeBusy, setProbeBusy] = useState(false);
+  const [probeResult, setProbeResult] = useState<{
+    ok: boolean;
+    message: string;
+    atLabel: string;
+  } | null>(null);
+
+  const summaries = Object.values(packageSyncSummaries ?? {});
+  const queuedCount = summaries.reduce((total, summary) => total + summary.queueItemCount, 0);
+  const issueCount = summaries.reduce((total, summary) => total + summary.issueCount, 0);
+
+  async function handleProbeConnection() {
+    if (probeBusy) {
+      return;
+    }
+    setProbeBusy(true);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const atLabel = new Date().toLocaleTimeString('pt-BR');
+    try {
+      const response = await fetch(`${apiBaseUrl}/health/live`, {
+        signal: controller.signal,
+      });
+      setProbeResult(
+        response.ok
+          ? { ok: true, message: 'Servidor alcancavel.', atLabel }
+          : {
+              ok: false,
+              message: `Servidor respondeu com status ${response.status}.`,
+              atLabel,
+            },
+      );
+    } catch {
+      setProbeResult({
+        ok: false,
+        message: `Servidor inalcancavel em ${apiBaseUrl}. Verifique rede e URL.`,
+        atLabel,
+      });
+    } finally {
+      clearTimeout(timer);
+      setProbeBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.quickActionPanel}>
+      <Text style={styles.sectionTitle}>Diagnostico de conexao</Text>
+      <SummaryLine label="Servidor configurado" value={apiBaseUrl} variant="vertical" />
+      <SummaryLine
+        label="Sessao"
+        value={
+          connectionMode === 'connected'
+            ? 'Conectada ao servidor'
+            : 'Offline (usando cache local)'
+        }
+        variant="vertical"
+      />
+      <SummaryLine
+        label="Fila de envio"
+        value={`${queuedCount} item(ns) pendente(s), ${issueCount} com problema de sync.`}
+        danger={issueCount > 0}
+        variant="vertical"
+      />
+      <SummaryLine
+        label="Ultimo teste de conexao"
+        value={
+          probeResult
+            ? `${probeResult.message} (${probeResult.atLabel})`
+            : 'Ainda nao executado nesta sessao.'
+        }
+        danger={probeResult ? !probeResult.ok : false}
+        variant="vertical"
+      />
+      <Pressable
+        accessibilityRole="button"
+        disabled={probeBusy}
+        onPress={() => void handleProbeConnection()}
+        style={({ pressed }) => [
+          styles.smallGhostButton,
+          probeBusy ? styles.disabledAction : null,
+          pressed ? styles.cardPressed : null,
+        ]}
+      >
+        <Text style={styles.smallGhostLabel}>
+          {probeBusy ? 'Testando conexao...' : 'Testar conexao'}
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -3166,7 +3529,9 @@ function TagDetailScreen({
             <Text style={styles.resultTitle}>
               {toHistoryResultLabel(selectedTagContext?.historyPreview.lastResult)}
             </Text>
-            <Text style={styles.resultSubtitle}>{selectedTagContext?.historyPreview.state ?? 'demo'}</Text>
+            <Text style={styles.resultSubtitle}>
+              {toHistoryPreviewStateLabel(selectedTagContext?.historyPreview.state)}
+            </Text>
           </View>
         </View>
       </View>
@@ -3303,7 +3668,6 @@ function ServiceCalculationScreen({
   return (
     <>
       <ScreenHeader onBack={onBack} />
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
       <ExecutionStageStepper activeRoute="calculation" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.tagHeroTitle}>{calculation.tagCode || selectedTag.code}</Text>
       <Text style={styles.tagHeroSubtitle}>{calculation.templateTitle}</Text>
@@ -3486,7 +3850,6 @@ function LoopExecutionScreen({
   return (
     <>
       <ScreenHeader onBack={onBack} />
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
       <ExecutionStageStepper activeRoute="loop-test" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.tagHeroTitle}>{calculation.tagCode || selectedTag.code}</Text>
       <Text style={styles.tagHeroSubtitle}>Teste de loop do instrumento</Text>
@@ -3746,7 +4109,6 @@ function ServiceHistoryScreen({
   return (
     <>
       <ScreenHeader onBack={onBack} />
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
       <ExecutionStageStepper activeRoute="history" stages={stages} onOpenStage={onOpenStage} />
       <View style={styles.titleRow}>
         <View>
@@ -3803,10 +4165,13 @@ function ServiceHistoryScreen({
                 ...priorReadingsForPoint.map((r) => Math.abs(r.signedDeviation)),
                 0.0001,
               );
+              // priorReadingsForPoint arrives newest-first (DESC). Take the
+              // 6 NEWEST readings and reverse them so the chart renders
+              // left-to-right chronologically — slicing after the reverse
+              // used to show the 6 OLDEST sessions instead.
               return priorReadingsForPoint
-                .slice()
-                .reverse()
                 .slice(0, 6)
+                .reverse()
                 .map((reading) => {
                   const height = 28 + Math.min(60, (Math.abs(reading.signedDeviation) / maxAbs) * 60);
                   const hot = reading.result !== 'pass';
@@ -3836,7 +4201,7 @@ function ServiceHistoryScreen({
           <Pressable
             accessibilityRole="button"
             onPress={onOpenDiagnosis}
-            style={styles.pendingCard}
+            style={({ pressed }) => [styles.pendingCard, pressed ? styles.cardPressed : null]}
           >
             <Text style={styles.pendingTitle}>
               {priorReadings.length === 0
@@ -4255,7 +4620,6 @@ function ServiceGuidanceScreen({
   return (
     <>
       <ScreenHeader onBack={onBack} />
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
       <ExecutionStageStepper activeRoute="diagnosis" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.tagHeroTitle}>{guidance.tagCode || selectedTag.code}</Text>
       <Text style={styles.tagHeroSubtitle}>{guidance.title}</Text>
@@ -4459,7 +4823,6 @@ function ServiceReportScreen({
   onUpdatePhotoTechnicianNote,
   onRequestExecutionAiDiagnosis,
   onStartNewVisit,
-  appLanguage,
 }: {
   report: VisualReportProjection;
   stages: VisualExecutionStage[];
@@ -4485,7 +4848,6 @@ function ServiceReportScreen({
   onRequestExecutionAiDiagnosis: () => void;
   // Handler to start a new visit after a report is invalidated/returned.
   onStartNewVisit?: () => void;
-  appLanguage?: AppLanguage;
 }) {
   if (report.state !== 'available') {
     return (
@@ -4501,7 +4863,6 @@ function ServiceReportScreen({
   return (
     <>
       <ScreenHeader onBack={onBack} />
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
       <ExecutionStageStepper activeRoute="report" stages={stages} onOpenStage={onOpenStage} />
       <Text style={styles.screenTitle}>Relatorio</Text>
 
@@ -4540,7 +4901,7 @@ function ServiceReportScreen({
           }}
         >
           <Text style={{ color: '#ffffff', fontSize: 15, fontWeight: '600' }}>
-            {appLanguage === 'en' ? '+ Start New Visit' : '+ Iniciar Nova Visita'}
+            + Iniciar Nova Visita
           </Text>
         </Pressable>
       ) : null}
@@ -4651,9 +5012,10 @@ function ServiceReportScreen({
             accessibilityRole="button"
             key={action.id}
             onPress={() => onNavigatePending(action.route)}
-            style={[
+            style={({ pressed }) => [
               styles.pendingActionCard,
               action.blocking ? styles.guidanceCardWarning : null,
+              pressed ? styles.cardPressed : null,
             ]}
           >
             <View style={styles.loopPointHeader}>
@@ -4723,7 +5085,11 @@ function ServiceReportScreen({
             accessibilityRole="button"
             key={`${reference.evidenceKind}:${reference.label}`}
             onPress={() => (unsatisfied ? onNavigatePending(targetRoute) : undefined)}
-            style={[styles.guidanceCard, flagged ? styles.guidanceCardWarning : null]}
+            style={({ pressed }) => [
+              styles.guidanceCard,
+              flagged ? styles.guidanceCardWarning : null,
+              pressed && unsatisfied ? styles.cardPressed : null,
+            ]}
           >
             <Text style={styles.historyTitle}>{reference.label}</Text>
             <Text style={styles.pendingText}>
@@ -4772,9 +5138,10 @@ function ServiceReportScreen({
             accessibilityRole="button"
             key={riskFlag.id}
             onPress={() => onNavigatePending('diagnosis')}
-            style={[
+            style={({ pressed }) => [
               styles.guidanceCard,
               riskFlag.severity === 'submit-block' ? styles.guidanceCardWarning : null,
+              pressed ? styles.cardPressed : null,
             ]}
           >
             <Text style={styles.historyTitle}>{riskFlag.title}</Text>
@@ -4814,7 +5181,10 @@ function ServiceReportScreen({
         <Pressable
           accessibilityRole="button"
           onPress={() => onNavigatePending('diagnosis')}
-          style={styles.smallGhostButton}
+          style={({ pressed }) => [
+            styles.smallGhostButton,
+            pressed ? styles.cardPressed : null,
+          ]}
         >
           <Text style={styles.smallGhostLabel}>Abrir checklist para editar</Text>
         </Pressable>
@@ -4984,7 +5354,6 @@ function ServiceReviewScreen({
   return (
     <>
       <ScreenHeader onBack={onBack} />
-      {shellMessage ? <InlineMessage text={shellMessage} /> : null}
       <Text style={styles.screenTitle}>Revisao</Text>
 
       <View style={styles.summaryCard}>
@@ -5351,7 +5720,9 @@ function ReviewDetailView({
             !detail.canReturn || busy || !returnReady ? styles.disabledAction : null,
           ]}
         >
-          <Text style={styles.smallGhostLabel}>Devolver</Text>
+          {/* qa-p5-f02: "Devolver" invalidates the report and forces the
+              technician to start a NEW visit — the label must convey that. */}
+          <Text style={styles.smallGhostLabel}>Devolver (invalidar)</Text>
         </Pressable>
         {detail.canEscalate ? (
           <Pressable
@@ -5497,7 +5868,7 @@ function ApprovalScreen({
           <Text style={styles.approveLabel}>✓  Aprovar</Text>
         </Pressable>
         <Pressable accessibilityRole="button" onPress={onReturn} style={styles.returnButton}>
-          <Text style={styles.returnLabel}>↶  Devolver</Text>
+          <Text style={styles.returnLabel}>↶  Devolver (invalidar)</Text>
         </Pressable>
       </View>
     </>
@@ -6517,6 +6888,23 @@ function toChecklistOutcomeLabel(value: SharedExecutionChecklistOutcome) {
 // Story 8.7 AC 4/9: translate raw history-result enums (e.g. backend seed values
 // like 'pass-with-note', 'pass', 'fail') into technician-facing PT-BR copy so
 // they never leak into the instrument detail screen as raw kebab-case strings.
+// ptbr-label-leaks: the history-preview state token ('available', 'stale',
+// 'missing', ...) rendered raw on the tag detail tile. Map it to PT-BR.
+function toHistoryPreviewStateLabel(state: string | null | undefined): string {
+  switch (state) {
+    case 'available':
+      return 'disponivel';
+    case 'stale':
+      return 'desatualizado';
+    case 'missing':
+      return 'ausente';
+    case 'unavailable':
+      return 'indisponivel';
+    default:
+      return state ?? 'demo';
+  }
+}
+
 function toHistoryResultLabel(value: string | null | undefined): string {
   if (!value) {
     return 'Historico';
@@ -8458,6 +8846,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceRaised,
     padding: spacing.md,
     marginBottom: spacing.xl,
+  },
+  // qa-p1-s02: shared pressed-state overlay for tappable cards. Applied via
+  // Pressable style functions so taps produce visible feedback.
+  cardPressed: {
+    opacity: 0.7,
+    backgroundColor: colors.surfacePressed,
   },
   pendingTitle: {
     color: colors.amber,

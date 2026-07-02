@@ -37,6 +37,51 @@ describe('service-backed visual report adapter', () => {
     expect(JSON.stringify(report)).not.toContain('Alimentacao eletrica');
   });
 
+  it('routes unsatisfied evidence pending actions to the screen that resolves them', () => {
+    const shell = buildShell();
+    shell.report.evidenceReferences = [
+      {
+        label: 'Structured readings',
+        requirementLevel: 'minimum',
+        evidenceKind: 'structured-readings',
+        satisfied: false,
+        detail: 'Readings are still missing.',
+      },
+      {
+        label: 'Photo evidence',
+        requirementLevel: 'expected',
+        evidenceKind: 'photo-evidence',
+        satisfied: false,
+        detail: 'Expected photo can be justified.',
+      },
+      {
+        label: 'Observation notes',
+        requirementLevel: 'expected',
+        evidenceKind: 'observation-notes',
+        satisfied: false,
+        detail: 'Notes have not been captured.',
+      },
+    ];
+
+    const report = buildVisualReportProjection(shell, buildSyncDetail());
+    const evidenceActions = report.pendingActions.filter((action) =>
+      action.id.startsWith('evidence:'),
+    );
+
+    expect(
+      evidenceActions.find((action) => action.id.includes('Structured readings'))?.route,
+    ).toBe('calculation');
+    expect(
+      evidenceActions.find((action) => action.id.includes('Photo evidence'))?.route,
+    ).toBe('diagnosis');
+    expect(
+      evidenceActions.find((action) => action.id.includes('Observation notes'))?.route,
+    ).toBe('diagnosis');
+    // The report screen is read-only, so no evidence pending action may
+    // self-route back to it (rca86-f06 residual).
+    expect(evidenceActions.some((action) => action.route === 'report')).toBe(false);
+  });
+
   it('keeps technician-owned draft and unsynced submissions editable', () => {
     const draft = buildVisualReportProjection(buildShell(), null);
     const submitted = buildVisualReportProjection(

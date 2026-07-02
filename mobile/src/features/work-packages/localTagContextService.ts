@@ -181,9 +181,9 @@ function mapHistoryPreview(
   if (!historySummaryId) {
     return {
       state: 'unavailable',
-      title: 'History preview',
-      summary: 'No local history summary was attached to this tag.',
-      detail: 'Proceed with visible risk if history is needed later.',
+      title: 'Previa do historico',
+      summary: 'Nenhum resumo de historico local foi anexado a esta tag.',
+      detail: 'Prossiga com risco visivel se o historico for necessario depois.',
       lastObservedAt: null,
       lastResult: null,
       recurrenceCue: null,
@@ -194,9 +194,9 @@ function mapHistoryPreview(
   if (!summary) {
     return {
       state: 'missing',
-      title: 'History preview',
-      summary: 'History reference is missing from the downloaded package.',
-      detail: `Expected local history summary ${historySummaryId}.`,
+      title: 'Previa do historico',
+      summary: 'A referencia de historico esta ausente no pacote baixado.',
+      detail: `Resumo de historico local esperado: ${historySummaryId}.`,
       lastObservedAt: null,
       lastResult: null,
       recurrenceCue: null,
@@ -207,7 +207,7 @@ function mapHistoryPreview(
 
   return {
     state: freshness.state,
-    title: 'History preview',
+    title: 'Previa do historico',
     summary: summary.summaryText,
     detail: buildHistoryDetail(summary, freshness.detail),
     lastObservedAt: summary.lastObservedAt,
@@ -230,7 +230,7 @@ function mapReferencePointers(
       templates: [],
       executionTemplates: [],
       guidance: [],
-      detail: 'No local procedure or guidance references were attached.',
+      detail: 'Nenhuma referencia local de procedimento ou orientacao foi anexada.',
     };
   }
 
@@ -256,7 +256,7 @@ function mapReferencePointers(
     templates: matchedTemplates.map(formatTemplateOptionLabel),
     executionTemplates: matchedTemplates,
     guidance: matchedGuidance,
-    detail: 'Local procedure and guidance references are ready for execution handoff.',
+    detail: 'Referencias locais de procedimento e orientacao prontas para a execucao.',
   };
 }
 
@@ -354,27 +354,27 @@ function resolveHistoryFreshness(
     return {
       state: 'age-unknown',
       detail:
-        'History freshness metadata is missing. Refresh this package while connected before trusting the comparison.',
+        'Os metadados de atualidade do historico estao ausentes. Atualize este pacote conectado antes de confiar na comparacao.',
     };
   }
 
   if (isStale(snapshotGeneratedAt, now)) {
     return {
       state: 'stale',
-      detail: `The cached history came from an upstream snapshot older than ${ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS} hours. Compare carefully and refresh when connected.`,
+      detail: `O historico em cache veio de um snapshot com mais de ${ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS} horas. Compare com cautela e atualize quando estiver conectado.`,
     };
   }
 
   if (isStale(downloadedAt, now)) {
     return {
       state: 'stale',
-      detail: `This package has not been refreshed locally for more than ${ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS} hours. Refresh it before relying on the cached history.`,
+      detail: `Este pacote nao e atualizado localmente ha mais de ${ASSIGNED_WORK_PACKAGE_STALE_AFTER_HOURS} horas. Atualize antes de confiar no historico em cache.`,
     };
   }
 
   return {
     state: 'available',
-    detail: 'Cached history is recent enough for local comparison.',
+    detail: 'O historico em cache e recente o suficiente para a comparacao local.',
   };
 }
 

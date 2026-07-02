@@ -1,42 +1,60 @@
-import type { AuthApiClient } from '../../features/auth/authApiClient';
-import type { SecureKeyValueStore } from '../secure-storage/secureStorageBoundary';
-
-const ACCESS_TOKEN_KEY = 'tagwise_access_token';
-const REFRESH_TOKEN_KEY = 'tagwise_refresh_token';
+import type { SessionRestoreResult } from '../../features/auth/model';
+import { secureStorageKeys, type SecureKeyValueStore } from '../secure-storage/secureStorageBoundary';
 
 export interface AuthenticatedFetchOptions {
-  authApiClient: AuthApiClient;
   secureStorage: SecureKeyValueStore;
+  // Session refresh must flow through SessionController.restoreSession so the
+  // renewed tokens land in secure storage AND the auth session cache stays in
+  // sync (a direct authApiClient.refresh would leave the cache stale).
+  restoreSession: () => Promise<SessionRestoreResult>;
+  // Invoked when the refresh definitively fails (refresh token expired or
+  // rejected) and the user must sign in again. Not invoked for transient
+  // failures such as the cached-offline fallback.
   onSessionInvalidated: () => void;
+  fetchImplementation?: typeof fetch;
 }
 
+/**
+ * Centralized refresh-on-401 fetch wrapper. Inject as `fetchImplementation`
+ * into the feature API clients (work packages, evidence upload, supervisor
+ * review, supervisor authoring, diagnostics) so any request rejected with 401
+ * triggers exactly one session refresh and one retry with the renewed access
+ * token. The auth client itself (login/refresh) must NOT use this wrapper.
+ *
+ * The clients attach their own `authorization` header on the first attempt;
+ * this wrapper only overrides it on the retry with the token that
+ * `restoreSession` persisted into secure storage. Refreshes are single-flight:
+ * concurrent 401s share one `restoreSession` call.
+ */
 export function createAuthenticatedFetch(options: AuthenticatedFetchOptions): typeof fetch {
-  let isRefreshing = false;
+  const baseFetch = options.fetchImplementation ?? fetch;
   let refreshPromise: Promise<string | null> | null = null;
 
   async function refreshAccessToken(): Promise<string | null> {
-    if (isRefreshing && refreshPromise) {
+    if (refreshPromise) {
       return refreshPromise;
     }
 
-    isRefreshing = true;
     refreshPromise = (async () => {
       try {
-        const refreshToken = await options.secureStorage.getItem(REFRESH_TOKEN_KEY);
-        if (!refreshToken) {
+        const restored = await options.restoreSession();
+        if (restored.state === 'signed_out') {
           options.onSessionInvalidated();
           return null;
         }
 
-        const session = await options.authApiClient.refresh({ refreshToken });
-        await options.secureStorage.setItem(ACCESS_TOKEN_KEY, session.tokens.accessToken);
-        await options.secureStorage.setItem(REFRESH_TOKEN_KEY, session.tokens.refreshToken);
-        return session.tokens.accessToken;
+        if (restored.session?.connectionMode !== 'connected') {
+          // Cached-offline fallback: the refresh endpoint was unreachable, so
+          // no new token exists. Surface the original 401 to the caller
+          // without invalidating the (still potentially valid) session.
+          return null;
+        }
+
+        return await options.secureStorage.getItem(secureStorageKeys.sessionAccessToken);
       } catch {
         options.onSessionInvalidated();
         return null;
       } finally {
-        isRefreshing = false;
         refreshPromise = null;
       }
     })();
@@ -48,26 +66,19 @@ export function createAuthenticatedFetch(options: AuthenticatedFetchOptions): ty
     input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> {
-    const accessToken = await options.secureStorage.getItem(ACCESS_TOKEN_KEY);
+    const response = await baseFetch(input, init);
 
-    const headers = new Headers(init?.headers);
-    if (accessToken) {
-      headers.set('authorization', `Bearer ${accessToken}`);
+    if (response.status !== 401) {
+      return response;
     }
 
-    const response = await fetch(input, { ...init, headers });
-
-    if (response.status === 401) {
-      const newToken = await refreshAccessToken();
-      if (!newToken) {
-        return response;
-      }
-
-      const retryHeaders = new Headers(init?.headers);
-      retryHeaders.set('authorization', `Bearer ${newToken}`);
-      return fetch(input, { ...init, headers: retryHeaders });
+    const refreshedToken = await refreshAccessToken();
+    if (!refreshedToken) {
+      return response;
     }
 
-    return response;
+    const retryHeaders = new Headers(init?.headers);
+    retryHeaders.set('authorization', `Bearer ${refreshedToken}`);
+    return baseFetch(input, { ...init, headers: retryHeaders });
   };
 }

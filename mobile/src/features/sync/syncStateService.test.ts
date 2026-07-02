@@ -192,6 +192,93 @@ describe('SyncStateService', () => {
     expect(syncSubmittedReportEvidence).toHaveBeenCalledWith(connectedSession, shell);
   });
 
+  it('keeps failed photo uploads retryable after the server accepted the report', async () => {
+    // Per-photo sync failures must remain recoverable once the report state
+    // advanced to 'submitted-pending-review' (report accepted server-side
+    // while a photo upload failed).
+    const shell = buildSubmittedShell({
+      reportId: 'tag-report:wp-1:tag-1',
+      workPackageId: 'wp-1',
+      tagId: 'tag-1',
+      syncState: 'synced',
+      attachmentSyncState: 'sync-issue',
+      state: 'submitted-pending-review',
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+    });
+    const syncSubmittedReportEvidence = vi.fn(async () => undefined);
+    const service = new SyncStateService({
+      userPartitions: buildStoreFactory({
+        drafts: [
+          buildDraftRecord({
+            reportId: shell.report.reportId,
+            workPackageId: shell.workPackageId,
+            tagId: shell.tagId,
+            syncState: 'synced',
+            state: 'submitted-pending-review',
+            lifecycleState: 'Submitted - Pending Supervisor Review',
+          }),
+        ],
+        evidence: [
+          buildEvidenceRecord({
+            evidenceId: 'evidence-1',
+            reportId: shell.report.reportId,
+            syncState: 'sync-issue',
+            syncIssue: 'binary upload unavailable',
+          }),
+        ],
+        queueItems: [
+          buildQueueItem({
+            queueItemId: 'upload-evidence-binary:evidence-1',
+            reportId: shell.report.reportId,
+            itemKind: 'upload-evidence-binary',
+            retryCount: 1,
+          }),
+        ],
+      }),
+      executionShellService: { loadShell: vi.fn(async () => shell) },
+      evidenceUploadOrchestrator: {
+        syncSubmittedReportEvidence,
+        refreshReportServerStatus: vi.fn(async () => null),
+      },
+    });
+
+    const detail = await service.getReportSyncDetail(connectedSession, shell);
+    expect(detail.canRetry).toBe(true);
+
+    await expect(service.retryEligibleReports(connectedSession)).resolves.toMatchObject({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+    });
+    expect(syncSubmittedReportEvidence).toHaveBeenCalledWith(connectedSession, shell);
+  });
+
+  it('does not flag accepted reports as retryable once no queue work remains', async () => {
+    const shell = buildSubmittedShell({
+      reportId: 'tag-report:wp-1:tag-1',
+      workPackageId: 'wp-1',
+      tagId: 'tag-1',
+      syncState: 'synced',
+      attachmentSyncState: 'synced',
+      state: 'submitted-pending-review',
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+    });
+    const service = new SyncStateService({
+      userPartitions: buildStoreFactory({
+        drafts: [],
+        evidence: [],
+        queueItems: [],
+      }),
+      executionShellService: buildExecutionShellService(),
+      evidenceUploadOrchestrator: buildEvidenceUploadOrchestrator(),
+    });
+
+    const detail = await service.getReportSyncDetail(connectedSession, shell);
+
+    expect(detail.retryableQueueItemCount).toBe(0);
+    expect(detail.canRetry).toBe(false);
+  });
+
   it('keeps failed automatic retries counted without reporting success', async () => {
     const shell = buildSubmittedShell({
       reportId: 'tag-report:wp-1:tag-1',
@@ -416,6 +503,8 @@ function buildDraftRecord(input: {
   workPackageId: string;
   tagId: string;
   syncState: SharedExecutionShell['report']['syncState'];
+  state?: SharedExecutionShell['report']['state'];
+  lifecycleState?: SharedExecutionShell['report']['lifecycleState'];
 }): UserOwnedDraftRecord {
   return {
     ownerUserId: connectedSession.userId,
@@ -428,8 +517,8 @@ function buildDraftRecord(input: {
       tagId: input.tagId,
       templateId: 'pressure-template',
       templateVersion: '2026.04',
-      state: 'submitted-pending-sync',
-      lifecycleState: 'Submitted - Pending Sync',
+      state: input.state ?? 'submitted-pending-sync',
+      lifecycleState: input.lifecycleState ?? 'Submitted - Pending Sync',
       syncState: input.syncState,
       updatedAt: '2026-04-24T10:00:00.000Z',
     }),
@@ -524,6 +613,8 @@ function buildSubmittedShell(input: {
   tagId: string;
   syncState: SharedExecutionShell['report']['syncState'];
   attachmentSyncState: SharedExecutionShell['report']['syncState'];
+  state?: SharedExecutionShell['report']['state'];
+  lifecycleState?: SharedExecutionShell['report']['lifecycleState'];
 }): SharedExecutionShell {
   return {
     workPackageId: input.workPackageId,
@@ -574,7 +665,7 @@ function buildSubmittedShell(input: {
     },
     evidence: {
       draftReportId: input.reportId,
-      draftReportState: 'submitted-pending-sync',
+      draftReportState: input.state ?? 'submitted-pending-sync',
       observationNotes: '',
       calculationEvidenceUpdatedAt: null,
       guidanceEvidenceUpdatedAt: null,
@@ -611,8 +702,8 @@ function buildSubmittedShell(input: {
     },
     report: {
       reportId: input.reportId,
-      state: 'submitted-pending-sync',
-      lifecycleState: 'Submitted - Pending Sync',
+      state: input.state ?? 'submitted-pending-sync',
+      lifecycleState: input.lifecycleState ?? 'Submitted - Pending Sync',
       syncState: input.syncState,
       technicianName: 'Field Technician',
       technicianEmail: 'tech@tagwise.local',

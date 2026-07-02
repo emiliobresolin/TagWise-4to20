@@ -55,9 +55,16 @@ export class EvidenceUploadOrchestrator {
     session: ActiveUserSession,
     shell: SharedExecutionShell,
   ): Promise<void> {
+    // 'submitted-pending-review' stays retry-eligible: the backend can
+    // accept a report while individual photo uploads still fail, and those
+    // photos must remain retryable after acceptance. Re-running the submit
+    // phase is safe because submitReportForServerValidation no-ops once the
+    // submit queue item is gone, and processAttachment skips photos that
+    // already finalized server presence.
     if (
       session.connectionMode !== 'connected' ||
-      shell.report.state !== 'submitted-pending-sync'
+      (shell.report.state !== 'submitted-pending-sync' &&
+        shell.report.state !== 'submitted-pending-review')
     ) {
       return;
     }
@@ -81,6 +88,16 @@ export class EvidenceUploadOrchestrator {
     }
 
     await this.submitReportForServerValidation(store, shell);
+
+    // When the report was already accepted server-side, the submit phase
+    // above no-ops (the submit queue item was deleted at acceptance) and
+    // never runs the post-acceptance promotion. Promote photos whose
+    // presence finalized during this retry pass to 'synced' here so a
+    // successful per-photo retry does not leave them stuck in
+    // 'pending-validation'.
+    if (shell.report.state === 'submitted-pending-review') {
+      await markFinalizedPhotoRecordsSynced(store, shell.report.reportId);
+    }
 
     // Story 8.12 finding #2 / N-3: previously this rethrew the first
     // per-photo failure, but the report itself was already accepted by
@@ -279,7 +296,10 @@ export class EvidenceUploadOrchestrator {
           templateVersion: shell.template.version,
           evidenceId: attachment.evidenceId,
           fileName: attachment.fileName,
-          mimeType: attachment.mimeType,
+          // Attach-time hardening defaults the mime type for new photos;
+          // this fallback covers attachments persisted before that fix so
+          // the backend does not 400 on a null declared file type.
+          mimeType: attachment.mimeType ?? 'image/jpeg',
           fileSizeBytes: attachment.fileSize ?? 0,
           executionStepId: attachment.executionStepId,
           source: attachment.source,
@@ -598,14 +618,21 @@ function resolveInvalidationReason(
   history: ReportSubmissionStatusResponse['approvalHistory'] | undefined,
 ): string | null {
   // Story 8.12 finding #2: the supervisor's return comment lives in the
-  // last approval-history item with actionType === 'returned'. Surface
-  // it so the technician knows what to fix in the new visit.
+  // last approval-history item whose actionType records a return. The
+  // backend emits namespaced action types ('report.supervisor.returned' /
+  // 'report.manager.returned'), so match the '.returned' suffix as well as
+  // the bare 'returned' form. Surface it so the technician knows what to
+  // fix in the new visit.
   if (!history?.items) {
     return null;
   }
   for (let index = history.items.length - 1; index >= 0; index -= 1) {
     const item = history.items[index];
-    if (item && item.actionType === 'returned' && item.comment) {
+    if (
+      item &&
+      (item.actionType === 'returned' || item.actionType.endsWith('.returned')) &&
+      item.comment
+    ) {
       return item.comment;
     }
   }
@@ -656,7 +683,8 @@ async function ensureMetadataQueueItem(
     templateVersion: shell.template.version,
     evidenceId: attachment.evidenceId,
     fileName: attachment.fileName,
-    mimeType: attachment.mimeType,
+    // Same legacy-record fallback as the syncEvidenceMetadata request above.
+    mimeType: attachment.mimeType ?? 'image/jpeg',
     fileSizeBytes: attachment.fileSize ?? 0,
     executionStepId: attachment.executionStepId,
     source: attachment.source,

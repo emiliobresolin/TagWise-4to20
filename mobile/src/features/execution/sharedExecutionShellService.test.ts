@@ -8,10 +8,14 @@ import { createNodeAppSandboxBoundary } from '../../../tests/helpers/createNodeA
 import { createNodeSqliteDatabase } from '../../../tests/helpers/createNodeSqliteDatabase';
 import { bootstrapLocalDatabase } from '../../data/local/bootstrapLocalDatabase';
 import type { ActiveUserSession } from '../auth/model';
+import { buildVisualReportProjection } from '../visual-shell/serviceBackedReport';
 import { LocalTagContextService } from '../work-packages/localTagContextService';
 import type { AssignedWorkPackageSnapshot } from '../work-packages/model';
 import type { SharedExecutionShell } from './model';
-import { SharedExecutionShellService } from './sharedExecutionShellService';
+import {
+  SharedExecutionShellService,
+  listUnsatisfiedMinimumEvidenceLabels,
+} from './sharedExecutionShellService';
 
 const createdDirectories: string[] = [];
 
@@ -1314,6 +1318,10 @@ describe('SharedExecutionShellService', () => {
       workPackageId: baseSnapshot.summary.id,
       tagId: 'tag-001',
       state: 'technician-owned-draft',
+      // approved-tag-lock scoping: the persisted draft must carry the
+      // package snapshot version it was worked under so the approved lock
+      // survives (and correctly clears after) a package snapshot refresh.
+      packageVersion: baseSnapshot.summary.packageVersion,
     });
 
     await firstRuntime.database.closeAsync?.();
@@ -2190,6 +2198,248 @@ describe('SharedExecutionShellService', () => {
         businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
       }),
     ).resolves.toEqual([]);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('defaults picker-omitted mime type and probes the sandbox copy size when attaching photo evidence', async () => {
+    // Backend metadata validation rejects null mimeType and non-positive
+    // fileSizeBytes; pickers can omit both fields. Attach-time hardening
+    // must default the mime type ('.jpg' pairing with 'image/jpeg') and
+    // backfill the size from the sandbox copy's real byte count.
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-photo-null-metadata-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    const photoBytes = 'metadata-less-fake-jpeg-bytes';
+    const sourcePhotoPath = join(tempDirectory, 'metadata-less-photo');
+    writeFileSync(sourcePhotoPath, photoBytes);
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const initialShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    const attachedShell = await service.attachPhotoEvidence(
+      session,
+      await service.selectStep(session, initialShell!, 'guidance'),
+      {
+        source: 'camera',
+        uri: sourcePhotoPath,
+        fileName: null,
+        mimeType: null,
+        width: null,
+        height: null,
+        fileSize: null,
+      },
+    );
+
+    const [photoAttachment] = attachedShell.evidence.photoAttachments;
+    expect(photoAttachment).toBeDefined();
+    expect(photoAttachment!.mimeType).toBe('image/jpeg');
+    expect(photoAttachment!.fileName.endsWith('.jpg')).toBe(true);
+    expect(photoAttachment!.fileSize).toBe(photoBytes.length);
+
+    const [record] = await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .evidenceMetadata.listEvidenceByBusinessObject({
+        businessObjectType: 'per-tag-report',
+        businessObjectId: `tag-report:${baseSnapshot.summary.id}:tag-001`,
+      });
+    expect(record).toBeDefined();
+    expect(record!.mimeType).toBe('image/jpeg');
+    expect(JSON.parse(record!.payloadJson)).toMatchObject({
+      fileSize: photoBytes.length,
+    });
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('starts a new visit from an invalidated returned report, restoring editability and keeping approval history', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-start-new-visit-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const reportId = `tag-report:${baseSnapshot.summary.id}:tag-001`;
+    const approvalHistory = {
+      items: [
+        {
+          auditEventId: 'audit-return-1',
+          actorRole: 'supervisor',
+          actionType: 'report.supervisor.returned',
+          occurredAt: '2026-04-19T10:45:00.000Z',
+          correlationId: 'corr-return-1',
+          priorState: 'Submitted - Pending Supervisor Review',
+          nextState: 'Returned by Supervisor',
+          comment: 'Refazer as leituras de pressao.',
+        },
+      ],
+      placeholder: '',
+    };
+    // Seed the post-return draft exactly as refreshReportServerStatus stamps
+    // it: technician-owned state locked by the invalidated flag.
+    await runtime.repositories.userPartitions.forUser(session.userId).drafts.saveDraft({
+      businessObjectType: 'per-tag-report',
+      businessObjectId: reportId,
+      summaryText: 'Returned by Supervisor report for PT-101',
+      payloadJson: JSON.stringify({
+        reportId,
+        workPackageId: baseSnapshot.summary.id,
+        tagId: 'tag-001',
+        templateId: 'tpl-pressure-as-found',
+        templateVersion: '2026-04-v1',
+        state: 'technician-owned-draft',
+        lifecycleState: 'Returned by Supervisor',
+        syncState: 'synced',
+        reviewNotes: 'Notas da visita invalidada',
+        savedAt: '2026-04-19T10:30:00.000Z',
+        submittedAt: '2026-04-19T10:40:00.000Z',
+        syncIssue: null,
+        syncIssueReasonCode: null,
+        invalidated: true,
+        invalidationReason: 'Refazer as leituras de pressao.',
+        approvalHistory,
+        updatedAt: '2026-04-19T10:45:00.000Z',
+      }),
+    });
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const invalidatedShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+    expect(invalidatedShell!.report).toMatchObject({
+      invalidated: true,
+      invalidationReason: 'Refazer as leituras de pressao.',
+    });
+    expect(buildVisualReportProjection(invalidatedShell, null).editable).toBe(false);
+
+    const freshVisitShell = await service.startNewVisit(session, invalidatedShell!);
+
+    expect(freshVisitShell.report).toMatchObject({
+      reportId,
+      state: 'technician-owned-draft',
+      lifecycleState: 'In Progress',
+      syncState: 'local-only',
+      invalidated: false,
+      invalidationReason: null,
+      reviewNotes: '',
+      savedAt: null,
+      submittedAt: null,
+    });
+    // The previous visit's approval history stays on the draft as audit
+    // context for the invalidated report.
+    expect(freshVisitShell.report.approvalHistory?.items).toEqual([
+      expect.objectContaining({
+        actionType: 'report.supervisor.returned',
+        comment: 'Refazer as leituras de pressao.',
+      }),
+    ]);
+    expect(buildVisualReportProjection(freshVisitShell, null).editable).toBe(true);
+
+    await runtime.database.closeAsync?.();
+  });
+
+  it('does not reset reports that were not invalidated when a new visit is requested', async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), 'tagwise-start-new-visit-guard-'));
+    createdDirectories.push(tempDirectory);
+
+    const runtime = await bootstrapLocalDatabase(
+      () => Promise.resolve(createNodeSqliteDatabase(join(tempDirectory, 'tagwise.db'))),
+      () => Promise.resolve(createNodeAppSandboxBoundary(join(tempDirectory, 'sandbox'))),
+    );
+
+    await runtime.repositories.userPartitions
+      .forUser(session.userId)
+      .workPackages.saveDownloadedSnapshot(baseSnapshot, '2026-04-19T10:15:00.000Z');
+
+    const reportId = `tag-report:${baseSnapshot.summary.id}:tag-001`;
+    // A report accepted by the server (pending review) must never be reset
+    // into an editable draft by the new-visit escape hatch.
+    await runtime.repositories.userPartitions.forUser(session.userId).drafts.saveDraft({
+      businessObjectType: 'per-tag-report',
+      businessObjectId: reportId,
+      summaryText: 'Submitted - Pending Supervisor Review report for PT-101',
+      payloadJson: JSON.stringify({
+        reportId,
+        workPackageId: baseSnapshot.summary.id,
+        tagId: 'tag-001',
+        templateId: 'tpl-pressure-as-found',
+        templateVersion: '2026-04-v1',
+        state: 'submitted-pending-review',
+        lifecycleState: 'Submitted - Pending Supervisor Review',
+        syncState: 'synced',
+        reviewNotes: '',
+        savedAt: null,
+        submittedAt: '2026-04-19T10:40:00.000Z',
+        syncIssue: null,
+        syncIssueReasonCode: null,
+        invalidated: false,
+        invalidationReason: null,
+        updatedAt: '2026-04-19T10:45:00.000Z',
+      }),
+    });
+
+    const service = new SharedExecutionShellService({
+      userPartitions: runtime.repositories.userPartitions,
+      tagContextService: new LocalTagContextService({
+        userPartitions: runtime.repositories.userPartitions,
+        now: () => new Date('2026-04-19T11:00:00.000Z'),
+      }),
+      now: () => new Date('2026-04-19T11:05:00.000Z'),
+    });
+
+    const loadedShell = await service.loadShell(
+      session,
+      baseSnapshot.summary.id,
+      'tag-001',
+      'tpl-pressure-as-found',
+    );
+
+    const unchangedShell = await service.startNewVisit(session, loadedShell!);
+
+    expect(unchangedShell).toBe(loadedShell);
+    expect(unchangedShell.report).toMatchObject({
+      state: 'submitted-pending-review',
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+      invalidated: false,
+    });
 
     await runtime.database.closeAsync?.();
   });
@@ -3660,5 +3910,65 @@ describe('SharedExecutionShellService', () => {
     expect(loopEntry?.loopInputMode).toBe('pv');
 
     await runtime.database.closeAsync?.();
+  });
+});
+
+describe('listUnsatisfiedMinimumEvidenceLabels', () => {
+  it('lists only minimum-level references the backend would reject', () => {
+    expect(
+      listUnsatisfiedMinimumEvidenceLabels([
+        {
+          label: 'readings',
+          requirementLevel: 'minimum',
+          evidenceKind: 'structured-readings',
+          satisfied: false,
+          detail: 'Leituras estruturadas ainda nao foram salvas.',
+        },
+        {
+          label: 'observations',
+          requirementLevel: 'minimum',
+          evidenceKind: 'observation-notes',
+          satisfied: true,
+          detail: 'Observation notes are captured locally.',
+        },
+        {
+          label: 'reference photo',
+          requirementLevel: 'expected',
+          evidenceKind: 'photo-evidence',
+          satisfied: false,
+          detail: 'No local photo attachment is linked yet.',
+        },
+        {
+          // Unmapped minimum labels are never satisfied on-device and the
+          // backend rejects them too, so they must appear in the warning.
+          label: 'exotic requirement',
+          requirementLevel: 'minimum',
+          evidenceKind: 'unmapped',
+          satisfied: false,
+          detail: 'No explicit evidence kind mapping is defined for this requirement label yet.',
+        },
+      ]),
+    ).toEqual(['readings', 'exotic requirement']);
+  });
+
+  it('returns an empty list when every minimum reference is satisfied', () => {
+    expect(
+      listUnsatisfiedMinimumEvidenceLabels([
+        {
+          label: 'readings',
+          requirementLevel: 'minimum',
+          evidenceKind: 'structured-readings',
+          satisfied: true,
+          detail: 'Leituras estruturadas salvas.',
+        },
+        {
+          label: 'reference photo',
+          requirementLevel: 'expected',
+          evidenceKind: 'photo-evidence',
+          satisfied: false,
+          detail: 'No local photo attachment is linked yet.',
+        },
+      ]),
+    ).toEqual([]);
   });
 });

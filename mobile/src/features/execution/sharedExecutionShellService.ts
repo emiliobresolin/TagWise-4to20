@@ -78,6 +78,10 @@ interface StoredPerTagReportDraftPayload {
   tagId: string;
   templateId: string;
   templateVersion: string;
+  // Package snapshot version the report was worked under. Lets the
+  // approved/returned lock (and history grouping) stay scoped to that
+  // version instead of pinning the tag forever after a snapshot refresh.
+  packageVersion?: number;
   state: SharedExecutionReportState;
   lifecycleState?: SharedExecutionReportLifecycleState;
   syncState?: SharedExecutionSyncState;
@@ -743,13 +747,23 @@ export class SharedExecutionShellService {
       ? options.executionStepIdOverride
       : toExecutionStepKind(shell.progress.currentStepId);
 
+    // Backend metadata validation rejects null mimeType (400 'Evidence file
+    // type must be declared.') and non-positive fileSizeBytes, but pickers
+    // can omit both fields. Default the mime type from the resolved file
+    // extension (consistent with resolvePhotoFileExtension's '.jpg' default
+    // so the backend extension/mime match check passes) and backfill the
+    // size from the sandbox copy's real byte count.
+    const mimeType = photo.mimeType ?? resolveDefaultPhotoMimeType(photo);
+    const fileSize =
+      photo.fileSize && photo.fileSize > 0 ? photo.fileSize : sandboxFile.sizeBytes ?? null;
+
     await store.evidenceMetadata.saveEvidenceMetadata({
       evidenceId: buildPhotoEvidenceId(updatedAt),
       businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
       businessObjectId: draftReportId,
       fileName: sandboxFile.fileName,
       mediaRelativePath: sandboxFile.relativePath,
-      mimeType: photo.mimeType,
+      mimeType,
       payloadJson: JSON.stringify({
         kind: 'photo',
         workPackageId: shell.workPackageId,
@@ -763,7 +777,7 @@ export class SharedExecutionShellService {
         source: photo.source,
         width: photo.width,
         height: photo.height,
-        fileSize: photo.fileSize,
+        fileSize,
         syncState: isSubmittedReport(shell.report) ? QUEUED_SYNC_STATE : LOCAL_ONLY_SYNC_STATE,
         metadataSyncedAt: null,
         serverEvidenceId: null,
@@ -1117,6 +1131,67 @@ export class SharedExecutionShellService {
 
     return reloadedShell ?? shell;
   }
+
+  /**
+   * Story 8.12 finding #2 follow-up: escape hatch for supervisor-returned
+   * (invalidated) reports. Resets the per-tag draft back to a fresh
+   * technician-owned state so a new visit can be executed and resubmitted
+   * for the same tag. The deterministic reportId is reused on purpose —
+   * the backend replaces returned submissions under the same id with a
+   * fresh objectVersion/idempotencyKey — and the approval history is kept
+   * on the draft as audit context of the previous (invalidated) visit.
+   * Execution rows and photo metadata were already purged when the return
+   * was stamped, so only the draft payload needs the reset. Guarded on
+   * `invalidated` so approved or in-flight reports can never be reset.
+   */
+  async startNewVisit(
+    session: ActiveUserSession,
+    shell: SharedExecutionShell,
+  ): Promise<SharedExecutionShell> {
+    if (!shell.report.invalidated) {
+      return shell;
+    }
+
+    const store = this.dependencies.userPartitions.forUser(session.userId);
+    const existingDraft = await store.drafts.getDraft({
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+    });
+    const existingPayload = parseStoredPerTagReportDraftPayload(existingDraft);
+    if (!existingPayload || !existingPayload.invalidated) {
+      return shell;
+    }
+
+    const updatedAt = this.now().toISOString();
+    await store.drafts.saveDraft({
+      businessObjectType: LOCAL_DRAFT_REPORT_BUSINESS_OBJECT_TYPE,
+      businessObjectId: shell.report.reportId,
+      summaryText: buildDraftSummaryText(shell, 'In Progress'),
+      payloadJson: JSON.stringify({
+        ...existingPayload,
+        state: TECHNICIAN_OWNED_DRAFT_REPORT_STATE,
+        lifecycleState: 'In Progress',
+        syncState: LOCAL_ONLY_SYNC_STATE,
+        reviewNotes: '',
+        savedAt: null,
+        submittedAt: null,
+        syncIssue: null,
+        syncIssueReasonCode: null,
+        invalidated: false,
+        invalidationReason: null,
+        updatedAt,
+      } satisfies StoredPerTagReportDraftPayload),
+    });
+
+    const reloadedShell = await this.loadShell(
+      session,
+      shell.workPackageId,
+      shell.tagId,
+      shell.template.id,
+    );
+
+    return reloadedShell ?? shell;
+  }
 }
 
 function buildExecutionShell(
@@ -1251,6 +1326,7 @@ function buildExecutionShell(
   return {
     workPackageId: snapshot.summary.id,
     workPackageTitle: snapshot.summary.title,
+    packageVersion: snapshot.summary.packageVersion,
     tagId: tag.id,
     tagCode: tag.tagCode,
     template,
@@ -2076,6 +2152,22 @@ function buildReportEvidenceReferences(
   ];
 }
 
+// Submit-rule mismatch guard (mobile-only): the backend enforces the
+// minimum-evidence rule at submission time (422 'minimum-evidence-missing'
+// for any minimum reference with satisfied:false) while the mobile shell
+// deliberately never hard-blocks (Story 8.10). Expose the unmet minimum
+// labels so the submit path can warn precisely what the server will reject
+// before the technician commits to the submission.
+export function listUnsatisfiedMinimumEvidenceLabels(
+  references: readonly SharedExecutionReportEvidenceReference[],
+): string[] {
+  return references
+    .filter(
+      (reference) => reference.requirementLevel === 'minimum' && !reference.satisfied,
+    )
+    .map((reference) => reference.label);
+}
+
 function buildReportEvidenceReference(
   label: string,
   requirementLevel: SharedExecutionReportEvidenceReference['requirementLevel'],
@@ -2187,7 +2279,7 @@ function buildReportStepDetail(report: SharedExecutionReportDraftState): string 
       .find((item) => item.comment && item.comment.trim().length > 0)?.comment;
     return latestComment
       ? `Reviewer comment: ${latestComment}`
-      : 'This returned report is editable again for technician rework and resubmission.';
+      : 'This returned report is kept as read-only history. Start a new visit for this tag to rework and resubmit.';
   }
 
   if (report.lifecycleState === 'Approved') {
@@ -3168,6 +3260,8 @@ function parseStoredPerTagReportDraftPayload(
       tagId: parsed.tagId,
       templateId: parsed.templateId,
       templateVersion: parsed.templateVersion,
+      packageVersion:
+        typeof parsed.packageVersion === 'number' ? parsed.packageVersion : undefined,
       state: parsed.state,
       lifecycleState:
         isSharedExecutionLifecycleState(parsed.lifecycleState)
@@ -3227,6 +3321,7 @@ function buildStoredPerTagReportDraftPayload(
     tagId: shell.tagId,
     templateId: shell.template.id,
     templateVersion: shell.template.version,
+    packageVersion: shell.packageVersion,
     state: input.state,
     lifecycleState: input.lifecycleState,
     syncState: input.syncState,
@@ -3351,7 +3446,10 @@ function buildUploadEvidenceMetadataQueuePayload(
     templateVersion: shell.template.version,
     evidenceId: attachment.evidenceId,
     fileName: attachment.fileName,
-    mimeType: attachment.mimeType,
+    // Attach-time hardening keeps mimeType non-null for new photos; the
+    // fallback covers attachments persisted before that fix so the backend
+    // metadata validation does not reject a null declared file type.
+    mimeType: attachment.mimeType ?? 'image/jpeg',
     fileSizeBytes: attachment.fileSize ?? 0,
     executionStepId: attachment.executionStepId,
     source: attachment.source,
@@ -3436,6 +3534,25 @@ function resolvePhotoFileExtension(photo: SharedExecutionPhotoAttachmentInput): 
       return '.webp';
     default:
       return '.jpg';
+  }
+}
+
+// Default mime type when the picker omits it, derived from the same
+// extension resolution used for the stored file name so the backend's
+// extension/mime match validation stays consistent ('.jpg' pairs with
+// 'image/jpeg').
+function resolveDefaultPhotoMimeType(photo: SharedExecutionPhotoAttachmentInput): string {
+  switch (resolvePhotoFileExtension(photo)) {
+    case '.png':
+      return 'image/png';
+    case '.heic':
+      return 'image/heic';
+    case '.heif':
+      return 'image/heif';
+    case '.webp':
+      return 'image/webp';
+    default:
+      return 'image/jpeg';
   }
 }
 

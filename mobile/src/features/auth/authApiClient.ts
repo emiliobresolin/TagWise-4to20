@@ -1,3 +1,4 @@
+import { resolveApiBaseUrl } from '../../platform/http/apiBaseUrl';
 import type { AuthSessionPayload } from './model';
 
 export interface AuthApiClient {
@@ -17,8 +18,14 @@ export class AuthApiError extends Error {
   }
 }
 
+/**
+ * Build-time default only — does NOT see the runtime-configurable stored
+ * preference (SQLite is not readable here). Production code should construct
+ * clients from the effective runtime URL resolved in TagWiseApp's bootstrap;
+ * this remains as the default parameter fallback for tests/harnesses.
+ */
 export function getDefaultAuthApiBaseUrl(): string {
-  return process.env.EXPO_PUBLIC_TAGWISE_API_BASE_URL?.trim() || 'http://127.0.0.1:4100';
+  return resolveApiBaseUrl(null);
 }
 
 export function createFetchAuthApiClient(

@@ -124,6 +124,11 @@ export interface SharedExecutionRiskInputs {
 export interface SharedExecutionShell {
   workPackageId: string;
   workPackageTitle: string;
+  // Version of the package snapshot this shell was built from. Stamped into
+  // the persisted report draft so approved/returned locks and history
+  // grouping stay scoped to the package version they happened under.
+  // Optional for legacy shells / test fixtures built before the stamp.
+  packageVersion?: number;
   tagId: string;
   tagCode: string;
   template: SharedExecutionTemplateContract;

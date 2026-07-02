@@ -689,6 +689,40 @@ export function translateVisibleText(value: string | null | undefined): string |
   }
 
   return trimmed
+    // ptbr-label-leaks: phrase-level mappings for operational sentences that
+    // previously leaked as English/Portuglish on the guaranteed demo path
+    // (report "Execucao"/"Historico" summary rows, compare screen rows).
+    // Longer phrases must run before the word-level replacements below.
+    .replace(
+      /\bStructured readings have not been saved yet for this draft report\b/gi,
+      'As leituras estruturadas ainda nao foram salvas neste rascunho de relatorio',
+    )
+    .replace(
+      /\bNo cached history was included with this tag\b/gi,
+      'Nenhum historico em cache foi incluido com esta tag',
+    )
+    .replace(
+      /\bThe cached history pointer is missing from this package\b/gi,
+      'O ponteiro do historico em cache esta ausente neste pacote',
+    )
+    .replace(
+      /\bPrior result label is not available in the cached history\b/gi,
+      'O rotulo do resultado anterior nao esta disponivel no historico em cache',
+    )
+    .replace(/\bPrior result label missing\b/gi, 'Rotulo do resultado anterior ausente')
+    .replace(/\bNo recurrence cue attached\b/gi, 'Sem indicacao de recorrencia')
+    .replace(/\bCurrent result saved\b/gi, 'Resultado atual salvo')
+    .replace(/\bExpected comparison\b/gi, 'Comparacao esperada')
+    .replace(/\bSigned deviation\b/gi, 'Desvio com sinal')
+    .replace(/\bAbsolute deviation\b/gi, 'Desvio absoluto')
+    .replace(/\bPercent of span\b/gi, 'Percentual do span')
+    .replace(/\bNot entered yet\b/gi, 'Nao informado ainda')
+    .replace(/\bNot available\b/gi, 'Nao disponivel')
+    .replace(/\bLast result\b/gi, 'Ultimo resultado')
+    .replace(/\bRecurrence cue\b/gi, 'Recorrencia')
+    .replace(/\bnow versus\b/gi, 'agora versus')
+    .replace(/\bpreviously\b/gi, 'anteriormente')
+    .replace(/\bno prior result\b/gi, 'sem resultado anterior')
     .replace(/\bCached history is stale\b/gi, 'Historico local desatualizado')
     .replace(/\bExpected evidence missing\b/gi, 'Evidencia esperada ausente')
     .replace(/\bMinimum evidence missing\b/gi, 'Evidencia minima ausente')

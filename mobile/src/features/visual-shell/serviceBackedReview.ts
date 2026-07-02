@@ -313,7 +313,14 @@ export function buildVisualReviewDetailProjection(
           item.nextState ?? 'Desconhecido'
         }`,
       })),
-      placeholder: report.approvalHistory.placeholder,
+      // english-approval-history-placeholder: the backend mints an English
+      // placeholder sentence when a report has no approval decisions yet.
+      // Replace the pass-through with PT-BR copy so the first review of any
+      // freshly submitted report stays in the app language.
+      placeholder:
+        report.approvalHistory.items.length === 0
+          ? 'Nenhuma decisao de aprovacao foi registrada para este relatorio ainda.'
+          : '',
     },
     aiDiagnosis: buildVisualAiDiagnosisProjection(aiDiagnosis),
     canApprove: canAct,

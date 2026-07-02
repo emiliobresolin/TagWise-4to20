@@ -73,6 +73,11 @@ class AuthRepository {
             role: row.role,
         }));
     }
+    async incrementSessionVersion(userId) {
+        await this.database.query(`
+        UPDATE auth_users SET session_version = session_version + 1 WHERE id = $1;
+      `, [userId]);
+    }
     async findById(id) {
         const result = await this.database.query(`
         SELECT

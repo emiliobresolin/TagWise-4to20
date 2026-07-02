@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -61,6 +61,7 @@ export function createNodeAppSandboxBoundary(rootDirectory: string): AppSandboxB
       const uri = join(rootDirectory, ...relativePath.split('/'));
 
       await copyFile(request.sourceUri, uri);
+      const copiedStats = await stat(uri);
 
       return {
         ownerUserId: request.ownerUserId,
@@ -69,6 +70,7 @@ export function createNodeAppSandboxBoundary(rootDirectory: string): AppSandboxB
         fileName: request.fileName,
         relativePath,
         uri,
+        sizeBytes: copiedStats.size,
       };
     },
 

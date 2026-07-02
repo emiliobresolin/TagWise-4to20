@@ -432,7 +432,9 @@ describe('createApiRequestHandler', () => {
         fileName: 'field-photo.jpg',
         mimeType: 'image/jpeg',
         fileSizeBytes: 2048,
-        executionStepId: 'guidance',
+        // 'instrument' locks the mobile contract parity: the tag-detail photo
+        // panel stamps executionStepId 'instrument' and the API must accept it.
+        executionStepId: 'instrument',
         source: 'camera',
         localCapturedAt: '2026-04-23T14:25:00.000Z',
         metadataIdempotencyKey:
@@ -510,19 +512,21 @@ describe('createApiRequestHandler', () => {
 
     const evidenceRows = (await pool.query(
       `
-        SELECT file_size_bytes, retention_policy, retention_expires_at
+        SELECT execution_step_id, file_size_bytes, retention_policy, retention_expires_at
         FROM evidence_sync_records
         WHERE server_evidence_id = $1;
       `,
       [metadataBody.serverEvidenceId],
     )) as {
       rows: Array<{
+        execution_step_id: string;
         file_size_bytes: number;
         retention_policy: string;
         retention_expires_at: string;
       }>;
     };
     expect(evidenceRows.rows[0]).toEqual({
+      execution_step_id: 'instrument',
       file_size_bytes: 2048,
       retention_policy: EVIDENCE_BINARY_POLICY.id,
       retention_expires_at: '2027-04-23T14:30:00.000Z',

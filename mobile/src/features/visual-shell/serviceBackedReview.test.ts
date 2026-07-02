@@ -137,6 +137,24 @@ describe('service-backed visual review adapter', () => {
       state: 'unavailable',
       blocking: false,
     });
+    // When decisions exist, no placeholder is rendered.
+    expect(detail.approvalHistory.placeholder).toBe('');
+  });
+
+  it('replaces the backend English empty-history placeholder with PT-BR copy', () => {
+    const access = buildVisualReviewAccess(buildSession({ role: 'supervisor' }));
+    const report = buildReportDetail();
+    report.approvalHistory = {
+      items: [],
+      placeholder: 'No approval decisions have been recorded for this report yet.',
+    };
+
+    const detail = buildVisualReviewDetailProjection(report, access);
+
+    expect(detail.approvalHistory.items).toHaveLength(0);
+    expect(detail.approvalHistory.placeholder).toBe(
+      'Nenhuma decisao de aprovacao foi registrada para este relatorio ainda.',
+    );
   });
 
   it('requires confirmation before approval dispatch', async () => {

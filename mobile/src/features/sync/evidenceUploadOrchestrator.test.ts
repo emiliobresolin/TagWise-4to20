@@ -561,6 +561,89 @@ describe('EvidenceUploadOrchestrator', () => {
     expect(existsSync(localFile)).toBe(true);
   });
 
+  it('retries failed photo uploads after the report was already accepted by the server', async () => {
+    // Photos whose upload failed during the original sync pass must stay
+    // retryable once the report reached 'submitted-pending-review': the
+    // submit queue item is gone (report accepted), so only the pending
+    // photo work runs and finalized photos are promoted to 'synced'.
+    const { store, shell: baseShell, attachment, localFile } = await createFixture();
+    const shell: SharedExecutionShell = {
+      ...baseShell,
+      evidence: {
+        ...baseShell.evidence,
+        draftReportState: 'submitted-pending-review',
+      },
+      report: {
+        ...baseShell.report,
+        state: 'submitted-pending-review',
+        lifecycleState: 'Submitted - Pending Supervisor Review',
+        syncState: 'synced',
+      },
+    };
+    await seedEvidenceQueueItems(store, shell, attachment);
+    const syncEvidenceMetadata = vi.fn(async () => ({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: 'server-evidence-retry',
+      reportId: shell.report.reportId,
+      evidenceId: attachment.evidenceId,
+      metadataReceivedAt: '2026-04-23T15:10:00.000Z',
+      presenceStatus: 'metadata-recorded' as const,
+    }));
+    const authorizeEvidenceBinaryUpload = vi.fn(async () => ({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: 'server-evidence-retry',
+      reportId: shell.report.reportId,
+      evidenceId: attachment.evidenceId,
+      objectKey: 'objects/server-evidence-retry',
+      uploadUrl: 'https://storage.tagwise.test/upload-retry',
+      uploadMethod: 'PUT' as const,
+      requiredHeaders: { 'content-type': 'image/jpeg' },
+      expiresAt: '2026-04-23T15:30:00.000Z',
+    }));
+    const finalizeEvidenceBinaryUpload = vi.fn(async () => ({
+      contractVersion: EVIDENCE_SYNC_API_CONTRACT_VERSION,
+      serverEvidenceId: 'server-evidence-retry',
+      reportId: shell.report.reportId,
+      evidenceId: attachment.evidenceId,
+      presenceStatus: 'binary-finalized' as const,
+      presenceFinalizedAt: '2026-04-23T15:12:00.000Z',
+    }));
+    const submitReportForValidation = vi.fn();
+    const uploadBinary = vi.fn(
+      async (_input: Parameters<EvidenceBinaryUploadBoundary['uploadBinary']>[0]) => undefined,
+    );
+    const orchestrator = new EvidenceUploadOrchestrator({
+      userPartitions: shellRuntimeUserPartitions(store),
+      apiClient: {
+        syncEvidenceMetadata,
+        authorizeEvidenceBinaryUpload,
+        finalizeEvidenceBinaryUpload,
+        submitReportForValidation,
+      } as unknown as EvidenceUploadApiClient,
+      binaryUploadBoundary: { uploadBinary },
+      now: () => new Date('2026-04-23T15:11:00.000Z'),
+    });
+
+    await orchestrator.syncSubmittedReportEvidence(connectedSession, shell);
+
+    expect(uploadBinary).toHaveBeenCalledWith({
+      localFileUri: localFile,
+      uploadUrl: 'https://storage.tagwise.test/upload-retry',
+      uploadMethod: 'PUT',
+      requiredHeaders: { 'content-type': 'image/jpeg' },
+    });
+    // The accepted report is never resubmitted (submit queue item absent).
+    expect(submitReportForValidation).not.toHaveBeenCalled();
+    // The retried photo lands on 'synced', not stuck in pending-validation.
+    await expect(loadPhotoPayload(store, attachment.evidenceId)).resolves.toMatchObject({
+      syncState: 'synced',
+      serverEvidenceId: 'server-evidence-retry',
+      presenceFinalizedAt: '2026-04-23T15:12:00.000Z',
+      syncIssue: null,
+    });
+    await expect(listEvidenceQueuePayloads(store, shell.report.reportId)).resolves.toEqual([]);
+  });
+
   it('cleans no-op evidence queue items when returned report resubmission is accepted with finalized photo evidence', async () => {
     const syncedAttachment = buildPhotoAttachment({
       metadataSyncedAt: '2026-04-23T14:10:00.000Z',
@@ -625,7 +708,7 @@ describe('EvidenceUploadOrchestrator', () => {
     await expect(runtime.repositories.localWorkState.getUnsyncedWorkCount()).resolves.toBe(0);
   });
 
-  it('refreshes returned server status into editable local rework state with approval history', async () => {
+  it('refreshes returned server status into an invalidated read-only draft with the supervisor reason', async () => {
     const syncedAttachment = buildPhotoAttachment({
       metadataSyncedAt: '2026-04-23T14:10:00.000Z',
       serverEvidenceId: 'server-evidence-1',
@@ -690,6 +773,12 @@ describe('EvidenceUploadOrchestrator', () => {
       syncState: 'synced',
       syncIssue: null,
       syncIssueReasonCode: null,
+      // Story 8.12 finding #2: a supervisor return invalidates the local
+      // draft and surfaces the supervisor's return comment (resolved from
+      // the namespaced 'report.supervisor.returned' action type) so the
+      // technician knows what to fix in the new visit.
+      invalidated: true,
+      invalidationReason: 'Rework the observations before approval.',
       approvalHistory: {
         items: [
           expect.objectContaining({

@@ -13,7 +13,7 @@ export interface EvidenceMetadataSyncRequest {
   fileName: string;
   mimeType: string | null;
   fileSizeBytes: number;
-  executionStepId: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
+  executionStepId: 'context' | 'instrument' | 'calculation' | 'history' | 'guidance' | 'report';
   source: 'camera' | 'library';
   localCapturedAt: string;
   metadataIdempotencyKey: string;

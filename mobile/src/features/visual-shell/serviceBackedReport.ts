@@ -375,7 +375,12 @@ function buildReportPendingActions(
           ? `Adicionar evidencia minima: ${translateOperationalMessage(reference.label)}`
           : `Justificar evidencia esperada: ${translateOperationalMessage(reference.label)}`,
       detail: translateOperationalMessage(reference.detail),
-      route: 'report' as const,
+      // rca86-f06 / evidence pending self-route: the report screen is
+      // read-only (Story 8.14 #9), so routing evidence pendings back to
+      // 'report' was a no-op self-navigation. Route by evidenceKind to the
+      // screen where the gap can actually be resolved (mirrors
+      // VisualProductShell.resolveEvidenceRefRoute).
+      route: resolveEvidencePendingActionRoute(reference.evidenceKind),
       blocking: reference.requirementLevel === 'minimum',
     }));
 
@@ -390,6 +395,22 @@ function buildReportPendingActions(
     }));
 
   return [...evidenceActions, ...riskActions];
+}
+
+// Map an evidence-reference kind to the screen where the technician can fix
+// the gap: structured readings live on the calculation screen; observation
+// notes and photo evidence live on the checklist (diagnosis) screen. Unknown
+// kinds default to the checklist so the tap always lands on an editable
+// surface.
+function resolveEvidencePendingActionRoute(
+  evidenceKind: SharedExecutionReportEvidenceReference['evidenceKind'],
+): VisualReportPendingActionRoute {
+  switch (evidenceKind) {
+    case 'structured-readings':
+      return 'calculation';
+    default:
+      return 'diagnosis';
+  }
 }
 
 function toReportStateLabel(state: SharedExecutionShell['report']['state']) {

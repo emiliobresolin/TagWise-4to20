@@ -241,6 +241,13 @@ export class EvidenceUploadApiError extends Error {
   }
 }
 
+// Default timeout for evidence/report sync calls. Generous enough to ride
+// out LAN/hotspot hiccups (a mid-flight abort can leave a POST the server
+// still commits, surfacing a scary 'sync-issue' that only clears on retry);
+// still bounded so a dead host fails visibly. Overridable per construction
+// site via options.timeoutMs.
+export const DEFAULT_EVIDENCE_SYNC_TIMEOUT_MS = 15000;
+
 export function createFetchEvidenceUploadApiClient(options: {
   baseUrl: string;
   secureStorage: SecureKeyValueStore;
@@ -248,7 +255,7 @@ export function createFetchEvidenceUploadApiClient(options: {
   timeoutMs?: number;
 }): EvidenceUploadApiClient {
   const fetchImplementation = options.fetchImplementation ?? fetch;
-  const timeoutMs = options.timeoutMs ?? 5000;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_EVIDENCE_SYNC_TIMEOUT_MS;
 
   return {
     syncEvidenceMetadata(request) {

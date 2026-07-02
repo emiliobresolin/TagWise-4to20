@@ -31,6 +31,40 @@ describe('loadServiceEnvironment', () => {
     });
   });
 
+  it('defaults the public storage endpoint to the internal endpoint', () => {
+    const environment = loadServiceEnvironment('api', baseEnv);
+
+    expect(environment.objectStorage.endpoint).toBe('http://127.0.0.1:9000');
+    expect(environment.objectStorage.publicEndpoint).toBe('http://127.0.0.1:9000');
+  });
+
+  it('uses TAGWISE_STORAGE_PUBLIC_ENDPOINT for client-facing presigned URLs when set', () => {
+    const environment = loadServiceEnvironment('api', {
+      ...baseEnv,
+      TAGWISE_STORAGE_PUBLIC_ENDPOINT: 'http://192.168.0.50:9000',
+    });
+
+    expect(environment.objectStorage.endpoint).toBe('http://127.0.0.1:9000');
+    expect(environment.objectStorage.publicEndpoint).toBe('http://192.168.0.50:9000');
+  });
+
+  it('rejects local public storage endpoints in release environments', () => {
+    expect(() =>
+      loadServiceEnvironment('worker', {
+        ...baseEnv,
+        TAGWISE_DEPLOYMENT_ENV: 'staging',
+        TAGWISE_NODE_ENV: 'production',
+        TAGWISE_DATABASE_URL:
+          'postgres://tagwise_app:staging-password@staging-db.internal:5432/tagwise',
+        TAGWISE_STORAGE_ENDPOINT: 'https://storage.staging.example',
+        TAGWISE_STORAGE_PUBLIC_ENDPOINT: 'http://127.0.0.1:9000',
+        TAGWISE_STORAGE_AUTO_CREATE_BUCKET: 'false',
+        TAGWISE_STORAGE_ACCESS_KEY_ID: 'staging-access-key',
+        TAGWISE_STORAGE_SECRET_ACCESS_KEY: 'staging-secret-key',
+      }),
+    ).toThrow('local object storage endpoint');
+  });
+
   it('rejects missing required values', () => {
     expect(() =>
       loadServiceEnvironment('worker', {

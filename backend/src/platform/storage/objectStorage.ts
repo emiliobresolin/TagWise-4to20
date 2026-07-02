@@ -108,10 +108,23 @@ export class S3ObjectStorageSmokeClient implements ObjectStorageSmokeClient {
 }
 
 export class S3EvidenceObjectStorageClient implements EvidenceObjectStorageClient {
+  /**
+   * Presigned URLs are consumed by external clients (the mobile app), so they
+   * must be signed against the publicly reachable endpoint. SigV4 signs the
+   * Host header, which is why the public endpoint cannot be swapped in after
+   * signing — it needs its own S3 client. Internal operations (HeadObject)
+   * keep using the internal client. When no distinct public endpoint is
+   * configured, both are the same client.
+   */
+  private readonly presignClient: S3Client;
+
   constructor(
     private readonly client: S3Client,
     private readonly config: ObjectStorageConfig,
-  ) {}
+    presignClient: S3Client = client,
+  ) {
+    this.presignClient = presignClient;
+  }
 
   async createBinaryUploadAuthorization(input: {
     objectKey: string;
@@ -124,7 +137,7 @@ export class S3EvidenceObjectStorageClient implements EvidenceObjectStorageClien
       ContentType: input.contentType,
     });
 
-    const uploadUrl = await getSignedUrl(this.client, command, {
+    const uploadUrl = await getSignedUrl(this.presignClient, command, {
       expiresIn: input.expiresInSeconds,
     });
     const expiresAt = new Date(Date.now() + input.expiresInSeconds * 1000).toISOString();
@@ -167,7 +180,7 @@ export class S3EvidenceObjectStorageClient implements EvidenceObjectStorageClien
       Key: input.objectKey,
     });
 
-    const downloadUrl = await getSignedUrl(this.client, command, {
+    const downloadUrl = await getSignedUrl(this.presignClient, command, {
       expiresIn: input.expiresInSeconds,
     });
     const expiresAt = new Date(Date.now() + input.expiresInSeconds * 1000).toISOString();
@@ -188,7 +201,14 @@ export function createS3ObjectStorageClient(config: ObjectStorageConfig): S3Obje
 export function createS3EvidenceObjectStorageClient(
   config: ObjectStorageConfig,
 ): S3EvidenceObjectStorageClient {
-  return new S3EvidenceObjectStorageClient(createS3Client(config), config);
+  const internalClient = createS3Client(config);
+  const publicEndpoint = config.publicEndpoint ?? config.endpoint;
+  const presignClient =
+    publicEndpoint && publicEndpoint !== config.endpoint
+      ? createS3Client({ ...config, endpoint: publicEndpoint })
+      : internalClient;
+
+  return new S3EvidenceObjectStorageClient(internalClient, config, presignClient);
 }
 
 export async function runObjectStorageBootstrapSmoke(

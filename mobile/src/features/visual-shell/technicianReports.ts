@@ -22,6 +22,10 @@ export interface VisualTechnicianReportRecord {
   tagId: string;
   templateId: string;
   templateVersion: string;
+  // Package snapshot version the report was worked under (null for drafts
+  // persisted before the stamp landed). Used to scope the approved-tag lock
+  // to the package version the approval happened in.
+  packageVersion: number | null;
   reportState: SharedExecutionReportState;
   lifecycleState: SharedExecutionReportLifecycleState;
   syncState: SharedExecutionSyncState;
@@ -36,6 +40,7 @@ export interface VisualTechnicianReportSummary {
   workPackageId: string;
   tagId: string;
   templateId: string;
+  packageVersion: number | null;
   tagCode: string;
   title: string;
   status: VisualTechnicianReportStatus;
@@ -73,6 +78,7 @@ export function buildTechnicianReportSummaries(input: {
         workPackageId: record.workPackageId,
         tagId: record.tagId,
         templateId: record.templateId,
+        packageVersion: record.packageVersion,
         tagCode: tag?.tagCode ?? record.tagId,
         title: tag?.shortDescription ?? record.reportId,
         status,
@@ -183,7 +189,9 @@ function buildReportDetail(
     case 'pending-review':
       return 'Servidor aceitou o envio. Aguarda revisao.';
     case 'returned':
-      return 'Relatorio devolvido. Abra para corrigir ou registrar nova revisao.';
+      // qa-p5-f02: a returned report is invalidated (read-only history);
+      // the rework path is starting a NEW visit from the report screen.
+      return 'Relatorio devolvido e invalidado. Abra e inicie uma nova visita para corrigir.';
     case 'approved':
       return 'Relatorio aprovado no ciclo de revisao.';
     case 'manual-local':

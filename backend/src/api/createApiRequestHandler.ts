@@ -307,7 +307,13 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           fileName?: string;
           mimeType?: string | null;
           fileSizeBytes?: number;
-          executionStepId?: 'context' | 'calculation' | 'history' | 'guidance' | 'report';
+          executionStepId?:
+            | 'context'
+            | 'instrument'
+            | 'calculation'
+            | 'history'
+            | 'guidance'
+            | 'report';
           source?: 'camera' | 'library';
           localCapturedAt?: string;
           metadataIdempotencyKey?: string;
@@ -750,6 +756,29 @@ export function createApiRequestHandler(dependencies: ApiRequestHandlerDependenc
           user,
           input,
         );
+
+        // Supervisor review reads INNER JOIN supervisor_review_routes, and the
+        // boot-time ensureSeedRoutes pass only covers packages that existed at
+        // startup. Register the review route for every supervisor immediately
+        // so reports submitted against this authored package are reviewable
+        // without an API restart. upsertSupervisorRoute is idempotent
+        // (ON CONFLICT DO UPDATE), so repeated registrations are safe. A route
+        // failure must not fail the 201 — the package itself was created.
+        try {
+          if (dependencies.authRepository) {
+            const supervisors = await dependencies.authRepository.listByRole('supervisor');
+            for (const supervisor of supervisors) {
+              await dependencies.supervisorReviewService.ensureSeedRoutes(supervisor.id, [
+                snapshot.summary.id,
+              ]);
+            }
+          }
+        } catch (routeError) {
+          context.logger.warn('supervisor-authoring.review-route.register.failed', {
+            workPackageId: snapshot.summary.id,
+            message: routeError instanceof Error ? routeError.message : 'unknown',
+          });
+        }
 
         context.logger.info('supervisor-authoring.work-package.created', {
           actorId: user.id,

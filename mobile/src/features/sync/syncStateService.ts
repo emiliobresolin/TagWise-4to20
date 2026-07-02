@@ -179,9 +179,14 @@ export class SyncStateService {
       queueItemCount: queueItems.length,
       retryableQueueItemCount,
       issueCount,
+      // 'submitted-pending-review' remains retryable while photo queue work
+      // is pending: the backend accepts reports whose photo binaries arrive
+      // later, so per-photo sync failures must stay recoverable after the
+      // report itself was accepted.
       canRetry:
         session.connectionMode === 'connected' &&
-        shell.report.state === 'submitted-pending-sync' &&
+        (shell.report.state === 'submitted-pending-sync' ||
+          shell.report.state === 'submitted-pending-review') &&
         retryableQueueItemCount > 0,
     };
   }
@@ -294,11 +299,17 @@ export class SyncStateService {
 
     const store = this.dependencies.userPartitions.forUser(session.userId);
     const drafts = await store.drafts.listDrafts();
+    // Reports already accepted by the server ('submitted-pending-review')
+    // stay in the sweep so per-photo sync failures remain retryable after
+    // acceptance; getReportSyncDetail().canRetry still filters out reports
+    // with no retryable queue work left.
     const submittedReports = drafts
       .map(parseStoredReportSyncPayload)
       .filter(
         (report): report is StoredReportSyncPayload =>
-          report !== null && report.state === 'submitted-pending-sync',
+          report !== null &&
+          (report.state === 'submitted-pending-sync' ||
+            report.state === 'submitted-pending-review'),
       );
     const summary: SyncRetrySummary = {
       attempted: 0,

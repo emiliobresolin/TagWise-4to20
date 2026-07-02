@@ -36,6 +36,7 @@ describe('technician report projections', () => {
           templateId: 'tpl-pressure',
           reportState: 'submitted-pending-sync',
           syncState: 'queued',
+          packageVersion: 4,
         }),
       ],
     });
@@ -46,6 +47,10 @@ describe('technician report projections', () => {
       statusLabel: 'Pendente sync',
       canOpen: true,
       canEdit: true,
+      // approved-tag-lock scoping: the summary must carry the package
+      // version the report was worked under so the lock predicate can
+      // compare it against the currently-downloaded snapshot version.
+      packageVersion: 4,
     });
     expect(JSON.stringify(reports)).not.toContain('approve');
 
@@ -64,6 +69,7 @@ function record(
     tagId: string;
     templateId: string;
     templateVersion: string;
+    packageVersion: number | null;
     reviewNotes: string;
     updatedAt: string;
     submittedAt: string | null;
@@ -76,6 +82,7 @@ function record(
     tagId: overrides.tagId ?? 'tag-001',
     templateId: overrides.templateId ?? 'tpl-local',
     templateVersion: overrides.templateVersion ?? '1',
+    packageVersion: overrides.packageVersion ?? null,
     reportState: overrides.reportState ?? 'technician-owned-draft',
     lifecycleState: overrides.lifecycleState ?? 'In Progress',
     syncState: overrides.syncState ?? 'local-only',

@@ -460,12 +460,68 @@ describe('TagWise API E2E workflow', () => {
     ).toBe(true);
 
     const downloaded = await getJson<{
+      contractVersion: string;
       summary: { id: string; tagCount: number };
-      tags: Array<{ id: string; tagCode: string }>;
+      tags: Array<{ id: string; tagCode: string; templateIds: string[] }>;
+      templates: Array<{ id: string; minimumSubmissionEvidence: string[] }>;
     }>(baseUrl, `/work-packages/${encodeURIComponent(newPackageId)}/download`, technicianAuth);
     expect(downloaded.response.status).toBe(200);
     expect(downloaded.body.summary.id).toBe(newPackageId);
     expect(downloaded.body.tags.length).toBe(2);
+
+    // Regression (review-route gap): a report submitted against the freshly
+    // authored package must reach the supervisor review queue immediately —
+    // review reads INNER JOIN supervisor_review_routes, and boot-time
+    // ensureSeedRoutes cannot cover packages authored after startup.
+    const authoredTag = downloaded.body.tags.find((item) => item.templateIds.length > 0);
+    const authoredTemplate = authoredTag
+      ? downloaded.body.templates.find((item) => authoredTag.templateIds.includes(item.id))
+      : undefined;
+    if (!authoredTag || !authoredTemplate) {
+      throw new Error('Expected the authored package to include a tag/template pair.');
+    }
+
+    const authoredReportId = `tag-report:${newPackageId}:${authoredTag.id}:e2e`;
+    const authoredSubmission = await postJson<{
+      reportId: string;
+      lifecycleState: string;
+    }>(baseUrl, '/sync/report-submissions', buildReportSubmissionPayload({
+      reportId: authoredReportId,
+      workPackageId: newPackageId,
+      tagId: authoredTag.id,
+      templateId: authoredTemplate.id,
+      templateVersion: downloaded.body.contractVersion,
+      minimumEvidenceLabels: authoredTemplate.minimumSubmissionEvidence,
+    }), technicianAuth);
+    expect(authoredSubmission.response.status).toBe(200);
+    expect(authoredSubmission.body).toMatchObject({
+      reportId: authoredReportId,
+      lifecycleState: 'Submitted - Pending Supervisor Review',
+    });
+
+    const supervisorQueue = await getJson<{
+      items: Array<{ reportId: string; workPackageId: string; lifecycleState: string }>;
+    }>(baseUrl, '/review/supervisor/reports', supervisorAuth);
+    expect(supervisorQueue.response.status).toBe(200);
+    expect(supervisorQueue.body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reportId: authoredReportId,
+          workPackageId: newPackageId,
+          lifecycleState: 'Submitted - Pending Supervisor Review',
+        }),
+      ]),
+    );
+
+    const supervisorDetail = await getJson<{
+      report: { reportId: string };
+    }>(
+      baseUrl,
+      `/review/supervisor/reports/${encodeURIComponent(authoredReportId)}`,
+      supervisorAuth,
+    );
+    expect(supervisorDetail.response.status).toBe(200);
+    expect(supervisorDetail.body.report.reportId).toBe(authoredReportId);
   });
 
   it('rejects unauthenticated access and malformed report submissions over HTTP', async () => {
@@ -693,7 +749,7 @@ function buildReportSubmissionPayload(input: {
   templateId: string;
   templateVersion: string;
   minimumEvidenceLabels: string[];
-  photoAttachment: {
+  photoAttachment?: {
     evidenceId: string;
     serverEvidenceId: string;
     presenceFinalizedAt: string;
@@ -723,13 +779,17 @@ function buildReportSubmissionPayload(input: {
         satisfied: true,
         detail: `${label} captured during the E2E workflow.`,
       })),
-      {
-        label: 'supporting photo',
-        requirementLevel: 'expected',
-        evidenceKind: 'photo-evidence',
-        satisfied: true,
-        detail: 'Photo evidence was finalized in object storage before report submission.',
-      },
+      ...(input.photoAttachment
+        ? [
+            {
+              label: 'supporting photo',
+              requirementLevel: 'expected',
+              evidenceKind: 'photo-evidence',
+              satisfied: true,
+              detail: 'Photo evidence was finalized in object storage before report submission.',
+            },
+          ]
+        : []),
     ],
     riskFlags: [
       {
@@ -739,13 +799,15 @@ function buildReportSubmissionPayload(input: {
         justificationText: 'Escalated because the guided diagnosis found a higher-risk signal.',
       },
     ],
-    photoAttachments: [
-      {
-        evidenceId: input.photoAttachment.evidenceId,
-        serverEvidenceId: input.photoAttachment.serverEvidenceId,
-        presenceFinalizedAt: input.photoAttachment.presenceFinalizedAt,
-        syncState: 'synced',
-      },
-    ],
+    photoAttachments: input.photoAttachment
+      ? [
+          {
+            evidenceId: input.photoAttachment.evidenceId,
+            serverEvidenceId: input.photoAttachment.serverEvidenceId,
+            presenceFinalizedAt: input.photoAttachment.presenceFinalizedAt,
+            syncState: 'synced',
+          },
+        ]
+      : [],
   };
 }

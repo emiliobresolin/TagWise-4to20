@@ -1,4 +1,8 @@
-import * as FileSystem from 'expo-file-system';
+// expo-file-system >= 19 removed uploadAsync/FileSystemUploadType from the
+// root entry (root uploadAsync throws at runtime and FileSystemUploadType is
+// undefined). The legacy subpath keeps the identical API surface, matching
+// how appSandboxBoundary.ts already loads the filesystem module.
+import * as FileSystem from 'expo-file-system/legacy';
 
 export interface EvidenceBinaryUploadBoundary {
   uploadBinary(input: {

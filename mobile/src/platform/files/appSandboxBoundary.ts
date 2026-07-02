@@ -18,6 +18,10 @@ export interface UserOwnedSandboxFile {
   fileName: string;
   relativePath: string;
   uri: string;
+  // Byte size of the stored copy, probed after the write. Populated by the
+  // media copy path so callers can backfill picker metadata (some pickers
+  // omit fileSize); null when the platform probe cannot resolve a size.
+  sizeBytes?: number | null;
 }
 
 export interface UserOwnedTextFileWriteRequest {
@@ -57,6 +61,7 @@ interface ExpoFileSystemModule {
   writeAsStringAsync(uri: string, contents: string): Promise<void>;
   copyAsync(options: { from: string; to: string }): Promise<void>;
   deleteAsync(uri: string, options?: { idempotent?: boolean }): Promise<void>;
+  getInfoAsync(uri: string): Promise<{ exists: boolean; size?: number }>;
 }
 
 export interface UserOwnedMediaSandbox {
@@ -142,6 +147,17 @@ export function createAppSandboxBoundary(
         to: uri,
       });
 
+      // Probe the stored copy's real byte size so callers can backfill
+      // metadata the picker omitted. A probe failure must never fail the
+      // copy itself; sizeBytes stays null in that case.
+      let sizeBytes: number | null = null;
+      try {
+        const info = await fileSystem.getInfoAsync(uri);
+        sizeBytes = info.exists && typeof info.size === 'number' ? info.size : null;
+      } catch {
+        sizeBytes = null;
+      }
+
       return {
         ownerUserId: request.ownerUserId,
         businessObjectType: request.businessObjectType,
@@ -149,6 +165,7 @@ export function createAppSandboxBoundary(
         fileName: sanitizedFileName,
         relativePath,
         uri,
+        sizeBytes,
       };
     },
 

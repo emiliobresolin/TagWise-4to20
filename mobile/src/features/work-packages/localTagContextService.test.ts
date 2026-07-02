@@ -150,7 +150,9 @@ describe('LocalTagContextService', () => {
       historyPreview: {
         state: 'available',
         summary: 'Last calibration was within tolerance.',
-        detail: expect.stringContaining('Cached history is recent enough for local comparison.'),
+        detail: expect.stringContaining(
+          'O historico em cache e recente o suficiente para a comparacao local.',
+        ),
         lastResult: 'Pass',
         recurrenceCue: 'Stable over the last two interventions.',
       },
@@ -232,7 +234,7 @@ describe('LocalTagContextService', () => {
       dueIndicator: { value: 'Missing', state: 'missing' },
       historyPreview: {
         state: 'unavailable',
-        summary: 'No local history summary was attached to this tag.',
+        summary: 'Nenhum resumo de historico local foi anexado a esta tag.',
         lastResult: null,
         recurrenceCue: null,
       },
@@ -270,7 +272,7 @@ describe('LocalTagContextService', () => {
         state: 'stale',
         summary: 'Last calibration was within tolerance.',
         detail: expect.stringContaining(
-          'The cached history came from an upstream snapshot older than 24 hours. Compare carefully and refresh when connected.',
+          'O historico em cache veio de um snapshot com mais de 24 horas. Compare com cautela e atualize quando estiver conectado.',
         ),
         lastResult: 'Pass',
         recurrenceCue: 'Stable over the last two interventions.',
@@ -441,7 +443,7 @@ describe('LocalTagContextService', () => {
         state: 'age-unknown',
         summary: 'Last calibration was within tolerance.',
         detail: expect.stringContaining(
-          'History freshness metadata is missing. Refresh this package while connected before trusting the comparison.',
+          'Os metadados de atualidade do historico estao ausentes. Atualize este pacote conectado antes de confiar na comparacao.',
         ),
         lastResult: 'Pass',
         recurrenceCue: 'Stable over the last two interventions.',

@@ -7,6 +7,14 @@ export interface ObjectStorageConfig {
   bucket: string;
   region: string;
   endpoint?: string;
+  /**
+   * Endpoint embedded in presigned URLs handed to external clients (the
+   * mobile app). Internal S3 operations (HeadObject, bucket bootstrap) keep
+   * using `endpoint`. Defaults to `endpoint` when
+   * TAGWISE_STORAGE_PUBLIC_ENDPOINT is not set. Needed in LAN demos where the
+   * backend reaches MinIO at 127.0.0.1 but the phone must use the PC's LAN IP.
+   */
+  publicEndpoint?: string;
   accessKeyId: string;
   secretAccessKey: string;
   forcePathStyle: boolean;
@@ -79,6 +87,9 @@ export function loadServiceEnvironment(
       bucket: requireValue(source.TAGWISE_STORAGE_BUCKET, 'TAGWISE_STORAGE_BUCKET'),
       region: source.TAGWISE_STORAGE_REGION?.trim() || 'us-east-1',
       endpoint: optionalValue(source.TAGWISE_STORAGE_ENDPOINT),
+      publicEndpoint:
+        optionalValue(source.TAGWISE_STORAGE_PUBLIC_ENDPOINT) ??
+        optionalValue(source.TAGWISE_STORAGE_ENDPOINT),
       accessKeyId: requireValue(source.TAGWISE_STORAGE_ACCESS_KEY_ID, 'TAGWISE_STORAGE_ACCESS_KEY_ID'),
       secretAccessKey: requireValue(
         source.TAGWISE_STORAGE_SECRET_ACCESS_KEY,
@@ -265,7 +276,13 @@ function assertReleaseSafeEnvironment(
   assertReleaseConfiguredValue(environment.objectStorage.bucket, 'TAGWISE_STORAGE_BUCKET');
   assertReleaseConfiguredValue(environment.objectStorage.region, 'TAGWISE_STORAGE_REGION');
   if (environment.objectStorage.endpoint) {
-    assertReleaseStorageEndpoint(environment.objectStorage.endpoint);
+    assertReleaseStorageEndpoint(environment.objectStorage.endpoint, 'TAGWISE_STORAGE_ENDPOINT');
+  }
+  if (environment.objectStorage.publicEndpoint) {
+    assertReleaseStorageEndpoint(
+      environment.objectStorage.publicEndpoint,
+      'TAGWISE_STORAGE_PUBLIC_ENDPOINT',
+    );
   }
   assertReleaseConfiguredValue(
     environment.objectStorage.accessKeyId,
@@ -360,8 +377,8 @@ function assertReleaseDatabaseUrl(databaseUrl: string): void {
   }
 }
 
-function assertReleaseStorageEndpoint(endpoint: string): void {
-  assertNoReleasePlaceholder(endpoint, 'TAGWISE_STORAGE_ENDPOINT');
+function assertReleaseStorageEndpoint(endpoint: string, key: string): void {
+  assertNoReleasePlaceholder(endpoint, key);
 
   let parsed: URL;
   try {
